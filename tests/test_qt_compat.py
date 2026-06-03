@@ -51,7 +51,7 @@ class TestQtCompat(unittest.TestCase):
     def test_target_ui_files_do_not_use_exec_legacy_or_qt_flag_bitwise_or(self):
         offenders: list[str] = []
         for path in sorted(_UI_ROOT.rglob("*.py")):
-            tree = ast.parse(path.read_text(), filename=str(path))
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             relative_path = path.relative_to(_REPO_ROOT)
             for node in ast.walk(tree):
                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "exec_":
