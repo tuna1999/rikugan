@@ -24,6 +24,17 @@ python3 -m mypy rikugan/core rikugan/providers  # Type check
 
 Branch model: `feat/*` / `fix/*` → `dev` → `main`. Direct pushes to `main` are blocked.
 
+### Windows Dev Notes
+
+IDA Pro loads plugins from `IDAUSR/plugins/` (typically `D:\ProgramFiles\IDAdata\IDAUSR\plugins\`). Symlink or copy `D:\re_dev_projects\Rikugan` → `IDAUSR\plugins\Rikugan` for live testing.
+
+Runtime config lives in `~/.idapro/rikugan/`:
+- `config.json` — saved settings (providers, enabled skills, MCP configs)
+- `skills/` — user-created skills (override built-ins with same slug)
+- `rikugan_debug.log` — debug output
+
+Use `python` (not `python3`) on Windows for all commands above.
+
 ## Architecture
 
 ### Dual-Host Structure
@@ -86,6 +97,23 @@ base prompt (ida.py or binja.py)
 
 Host-specific base prompts are in `rikugan/agent/prompts/`.
 
+### Subagent System
+
+`rikugan/agent/subagent.py` provides `SubagentRunner` — lightweight nested agent loops spawned by the `spawn_subagent` pseudo-tool. Subagents share the parent's tool registry but run in their own thread with independent token budgets.
+
+Built-in subagent profiles live in `rikugan/agent/agents/` (e.g. `network_recon.py`).
+
+### Agent Modes
+
+`rikugan/agent/modes/` contains mode-specific orchestration:
+- `exploration.py` — structured binary exploration with phase tracking
+- `plan.py` — multi-step plan generation with user approval gates
+- `research.py` — deep research with source gathering and synthesis
+- `normal.py` — standard single-turn chat
+- `phase_tracker.py` — shared phase state machine used by exploration/plan
+
+Mode is selected by skill frontmatter (`mode: exploration`) or the `/explore`, `/plan`, `/research` commands.
+
 ## Critical Security Notes
 
 Rikugan processes **adversarial binaries**. Binary content (strings, names, decompiled code) flows directly into LLM prompts. Every data path from binary to model is an attack surface.
@@ -103,7 +131,7 @@ Data enters prompts wrapped in delimiters (`<tool_result>`, `<binary_info>`, etc
 
 ### Script Execution Safety
 
-The `execute_python` tool (`rikugan/tools/scripting.py`) is the highest-risk surface:
+The `execute_python` tool (`rikugan/ida/tools/scripting.py`, `rikugan/binja/tools/scripting.py`) is the highest-risk surface:
 - `rikugan/tools/script_guard.py` AST-checks code before user approval
 - Blocked: `subprocess`, `os.system`, `os.popen`, `os.exec*`, `os.spawn*`, `__import__`
 - Runs in sandboxed `exec()` with redirected stdout/stderr
@@ -143,6 +171,12 @@ Tools with `mutating=True` in `@tool` have pre-state captured for undo. Mutation
 | `rikugan/providers/base.py` | `LLMProvider` ABC |
 | `rikugan/ui/panel_core.py` | `PanelCore` — multi-tab chat, event routing |
 | `rikugan/state/session.py` | `SessionState` — message history, token tracking |
+| `rikugan/agent/subagent.py` | `SubagentRunner` — nested agent loops |
+| `rikugan/agent/pseudo_tool_schemas.py` | JSON schemas for pseudo-tools (ask_user, spawn_subagent, etc.) |
+| `rikugan/ui/session_controller_base.py` | Session lifecycle, skill registry, runtime init |
+| `rikugan/core/external_sources.py` | Discover skills/MCP from Claude Code & Codex |
+| `rikugan/skills/loader.py` | Skill discovery and frontmatter parsing |
+| `rikugan/skills/registry.py` | `SkillRegistry` — query, resolve, trigger matching |
 
 ## Adding New Features
 
