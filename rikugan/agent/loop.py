@@ -223,6 +223,10 @@ class AgentLoop:
     def cancel(self) -> None:
         """Cancel the current run."""
         self._cancelled.set()
+        # Abort the in-flight HTTP stream so the blocked generator
+        # unblocks immediately instead of waiting for the next chunk.
+        if self.provider is not None:
+            self.provider.cancel_current_request()
 
     def _drain_queue(self, q: queue.Queue[str]) -> None:
         """Remove any stale item from a maxsize=1 queue (non-blocking)."""

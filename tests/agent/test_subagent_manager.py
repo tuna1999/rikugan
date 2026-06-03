@@ -51,7 +51,7 @@ class _StubProvider(LLMProvider):
     def _normalize_response(self, raw):  # pragma: no cover
         return raw
 
-    def _build_request_kwargs(self, messages, tools, temperature, max_tokens, **kwargs):  # pragma: no cover
+    def _build_request_kwargs(self, messages, tools, **kwargs):  # pragma: no cover
         return {}
 
     def _call_api(self, client, kwargs):  # pragma: no cover

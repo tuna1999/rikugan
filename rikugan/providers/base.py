@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from abc import ABC, abstractmethod
 from collections.abc import Generator
 from typing import Any, NoReturn
@@ -38,6 +39,9 @@ class LLMProvider(ABC):
         self.api_base = api_base
         self.model = model
         self._client: Any = None
+        # Stream abort: protected by _request_lock.
+        self._request_lock = threading.Lock()
+        self._active_stream: Any = None
 
     # -- Abstract interface ----------------------------------------------------
 
@@ -143,7 +147,33 @@ class LLMProvider(ABC):
         """
         client = self._get_client()
         kwargs = self._build_request_kwargs(messages, tools, system)
-        yield from self._stream_chunks(client, kwargs)
+        # Register stream handle for abort, then clear on completion.
+        with self._request_lock:
+            self._active_stream = None
+        gen = self._stream_chunks(client, kwargs)
+        try:
+            with self._request_lock:
+                self._active_stream = gen
+            yield from gen
+        finally:
+            with self._request_lock:
+                self._active_stream = None
+
+    def cancel_current_request(self) -> None:
+        """Abort the in-flight streaming request, if any.
+
+        Safe to call from any thread (typically the UI thread on cancel).
+        """
+        with self._request_lock:
+            stream = self._active_stream
+            self._active_stream = None
+        if stream is not None:
+            close = getattr(stream, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
 
     # -- Concrete shared implementations ---------------------------------------
 
