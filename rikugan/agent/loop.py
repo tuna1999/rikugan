@@ -26,7 +26,7 @@ from ..core.sanitize import (
     strip_injection_markers,
     strip_iocs,
 )
-from ..core.types import Message, Role, TokenUsage, ToolCall, ToolResult
+from ..core.types import INTERNAL_EVENT_KEY, Message, Role, TokenUsage, ToolCall, ToolResult
 from ..providers.base import LLMProvider
 from ..skills.registry import SkillRegistry
 from ..state.session import SessionState
@@ -1353,6 +1353,14 @@ class AgentLoop:
             yield from run_normal_loop(self, system_prompt, tools_schema)
 
         except CancellationError:
+            # Record a UI-only cancelled marker so the session history
+            # shows the cancellation visually, but the message is filtered
+            # out when building the provider message list.
+            self.session.add_message(Message(
+                role=Role.ASSISTANT,
+                content="*[Cancelled by user]*",
+                metadata={INTERNAL_EVENT_KEY: True},
+            ))
             yield TurnEvent.cancelled_event()
         except Exception as e:
             log_error(f"Agent loop error: {e}\n{traceback.format_exc()}")

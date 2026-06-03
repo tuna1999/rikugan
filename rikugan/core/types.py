@@ -16,6 +16,10 @@ class Role(str, Enum):
     TOOL = "tool"
 
 
+# Metadata key for UI-only messages that should never be sent to the LLM provider.
+INTERNAL_EVENT_KEY = "internal"
+
+
 @dataclass
 class ToolCall:
     id: str
@@ -60,6 +64,9 @@ class Message:
     timestamp: float = field(default_factory=time.time)
     token_usage: TokenUsage | None = None
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    # Internal metadata (e.g. {"internal": True} for UI-only messages that
+    # should not be sent to the LLM provider).
+    metadata: dict[str, Any] = field(default_factory=dict)
     # Provider-specific raw response data (e.g. Gemini parts with thought_signatures).
     # Not serialized to JSON — only kept in-memory for the current session.
     _raw_parts: Any = field(default=None, repr=False)
@@ -96,6 +103,8 @@ class Message:
                 "cache_read_tokens": self.token_usage.cache_read_tokens,
                 "cache_creation_tokens": self.token_usage.cache_creation_tokens,
             }
+        if self.metadata:
+            d["metadata"] = self.metadata
         return d
 
     @classmethod
@@ -132,6 +141,7 @@ class Message:
             timestamp=d.get("timestamp", time.time()),
             token_usage=usage,
             id=d.get("id", uuid.uuid4().hex[:12]),
+            metadata=d.get("metadata", {}),
         )
 
 

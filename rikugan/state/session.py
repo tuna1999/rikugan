@@ -10,7 +10,7 @@ from dataclasses import dataclass, field, replace
 
 from ..core.logging import log_debug
 from ..core.sanitize import strip_injection_markers
-from ..core.types import Message, Role, TokenUsage, ToolResult
+from ..core.types import INTERNAL_EVENT_KEY, Message, Role, TokenUsage, ToolResult
 
 # ---------- Token estimation ----------
 
@@ -144,6 +144,8 @@ class SessionState:
         """
         with self._lock:
             snapshot = list(self.messages)
+            # Drop UI-only messages that should never reach the LLM provider.
+            snapshot = [m for m in snapshot if not m.metadata.get(INTERNAL_EVENT_KEY)]
             sanitized = self._sanitize(snapshot)
             sanitized = self._sanitize_assistant_output(sanitized)
             if not preserve_context:
