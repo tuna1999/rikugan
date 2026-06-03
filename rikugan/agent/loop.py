@@ -706,8 +706,6 @@ class AgentLoop:
         stream = self.provider.chat_stream(
             messages=provider_messages,
             tools=tools_schema if tools_schema else None,
-            temperature=self.config.provider.temperature,
-            max_tokens=self.config.provider.max_tokens,
             system=system_prompt,
         )
 

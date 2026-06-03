@@ -198,8 +198,6 @@ class OpenAIProvider(LLMProvider):
         self,
         messages: list[Message],
         tools: list[dict[str, Any]] | None,
-        temperature: float,
-        max_tokens: int,
         system: str,
     ) -> dict[str, Any]:
         """Build kwargs dict for chat.completions.create."""
@@ -211,8 +209,6 @@ class OpenAIProvider(LLMProvider):
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": msgs,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
         }
         if tools:
             kwargs["tools"] = tools

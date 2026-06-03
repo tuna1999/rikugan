@@ -170,15 +170,34 @@ class AnthropicProvider(LLMProvider):
 
     @property
     def capabilities(self) -> ProviderCapabilities:
+        ctx, max_output = self._model_limits(self.model)
         return ProviderCapabilities(
             streaming=True,
             tool_use=True,
             vision=True,
-            max_context_window=200000,
-            max_output_tokens=16384,
+            max_context_window=ctx,
+            max_output_tokens=max_output,
             supports_system_prompt=True,
             supports_cache_control=True,
         )
+
+    @staticmethod
+    def _model_limits(model_id: str) -> tuple[int, int]:
+        """Return conservative provider-owned context/output limits."""
+        model = model_id.lower()
+        if "sonnet-4" in model or "3-7-sonnet" in model:
+            return 200000, 64000
+        if "opus-4" in model:
+            return 200000, 32000
+        if "haiku-3" in model:
+            return 200000, 8192
+        return 200000, 8192
+
+    def context_window(self) -> int:
+        return self._model_limits(self.model)[0]
+
+    def _default_max_tokens(self) -> int:
+        return self._model_limits(self.model)[1]
 
     def _fetch_models_live(self) -> list[ModelInfo]:
         """Fetch models from the Anthropic API."""
@@ -387,8 +406,6 @@ class AnthropicProvider(LLMProvider):
         self,
         messages: list[Message],
         tools: list[dict[str, Any]] | None,
-        temperature: float,
-        max_tokens: int,
         system: str,
     ) -> dict[str, Any]:
         """Build kwargs dict for messages.create/stream."""
@@ -397,8 +414,7 @@ class AnthropicProvider(LLMProvider):
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": formatted_messages,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
+            "max_tokens": self._default_max_tokens(),
         }
 
         # System prompt with cache_control for prompt caching

@@ -1,4 +1,4 @@
-"""Settings dialog for provider, model, API key, and temperature configuration."""
+"""Settings dialog for provider, model, API key, and behavior configuration."""
 
 from __future__ import annotations
 
@@ -19,7 +19,6 @@ from .qt_compat import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
-    QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -380,19 +379,6 @@ class SettingsDialog(QDialog):
         gen_group = QGroupBox("Generation")
         gen_form = QFormLayout(gen_group)
 
-        self._temp_spin = QDoubleSpinBox()
-        self._temp_spin.setRange(0.0, 2.0)
-        self._temp_spin.setSingleStep(0.05)
-        self._temp_spin.setDecimals(2)
-        self._temp_spin.setValue(self._config.provider.temperature)
-        gen_form.addRow("Temperature:", self._temp_spin)
-
-        self._max_tokens_spin = QSpinBox()
-        self._max_tokens_spin.setRange(256, 65536)
-        self._max_tokens_spin.setSingleStep(1024)
-        self._max_tokens_spin.setValue(self._config.provider.max_tokens)
-        gen_form.addRow("Max Output Tokens:", self._max_tokens_spin)
-
         self._context_spin = QSpinBox()
         self._context_spin.setRange(4096, 2000000)
         self._context_spin.setSingleStep(10000)
@@ -541,8 +527,6 @@ class SettingsDialog(QDialog):
         self._api_key_edit.setText(self._config.provider.api_key)
         self._api_base_edit.setText(self._config.provider.api_base)
         self._model_combo.setCurrentText(self._config.provider.model)
-        self._temp_spin.setValue(self._config.provider.temperature)
-        self._max_tokens_spin.setValue(self._config.provider.max_tokens)
         self._context_spin.setValue(self._config.provider.context_window)
         self._model_restore_hint = self._config.provider.model.strip()
 
@@ -723,7 +707,6 @@ class SettingsDialog(QDialog):
                 # — don't overwrite it with the model's default.
                 if model_id != self._config.provider.model:
                     self._context_spin.setValue(m.context_window)
-                self._max_tokens_spin.setValue(min(m.max_output_tokens, 16384))
                 break
 
     def _get_selected_model_id(self) -> str:
@@ -784,8 +767,6 @@ class SettingsDialog(QDialog):
         self._config.provider.model = self._get_selected_model_id()
         self._config.provider.api_key = self._api_key_edit.text().strip()
         self._config.provider.api_base = self._api_base_edit.text().strip()
-        self._config.provider.temperature = self._temp_spin.value()
-        self._config.provider.max_tokens = self._max_tokens_spin.value()
         self._config.provider.context_window = self._context_spin.value()
 
     # --- Accept ---
@@ -858,8 +839,6 @@ class SettingsDialog(QDialog):
         # ONLY save what the user explicitly typed — never save auto-resolved OAuth tokens
         self._config.provider.api_key = self._api_key_edit.text().strip()
         self._config.provider.api_base = self._api_base_edit.text().strip()
-        self._config.provider.temperature = self._temp_spin.value()
-        self._config.provider.max_tokens = self._max_tokens_spin.value()
         self._config.provider.context_window = self._context_spin.value()
         self._config.auto_context = self._auto_context_cb.isChecked()
         self._config.checkpoint_auto_save = self._auto_save_cb.isChecked()
