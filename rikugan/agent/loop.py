@@ -1047,7 +1047,12 @@ class AgentLoop:
     def _handle_ask_user_tool(self, tc: ToolCall) -> Generator[TurnEvent, None, ToolResult]:
         """Handle the ask_user pseudo-tool."""
         question = tc.arguments.get("question", "")
-        options = tc.arguments.get("options", [])
+        raw_options = tc.arguments.get("options", [])
+        # Normalize: LLM may send dicts ({"label": ...}) or strings
+        options = [
+            o if isinstance(o, str) else str(o.get("label", o))
+            for o in raw_options
+        ]
         yield TurnEvent.user_question(question, options, tc.id)
         answer = self._wait_for_queue(self._user_answer_queue)
         content = f"User answered: {answer}"

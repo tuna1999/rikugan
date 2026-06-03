@@ -605,7 +605,8 @@ class UserQuestionWidget(QFrame):
             btn_layout.setContentsMargins(0, 4, 0, 0)
             btn_layout.setSpacing(8)
             for opt in options:
-                btn = QPushButton(opt)
+                label = opt if isinstance(opt, str) else str(opt.get("label", opt))
+                btn = QPushButton(label)
                 button_css = (
                     "QPushButton { background: #2d4a6e; color: #9cdcfe; border: 1px solid #4a7ab5; "
                     "border-radius: 4px; padding: 4px 14px; font-size: 12px; }"
@@ -614,7 +615,7 @@ class UserQuestionWidget(QFrame):
                     "QPushButton:disabled { color: #808080; background: #1e2a3a; border-color: #444; }"
                 )
                 btn.setStyleSheet(host_stylesheet(button_css, button_css))
-                btn.clicked.connect(lambda checked, o=opt: self._on_option(o))
+                btn.clicked.connect(lambda checked, o=label: self._on_option(o))
                 btn_layout.addWidget(btn)
             btn_layout.addStretch()
             layout.addLayout(btn_layout)
