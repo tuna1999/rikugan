@@ -148,7 +148,7 @@ def build_theme_stylesheet(source=None) -> str:
 
 def build_small_button_stylesheet(source=None, danger: bool = False) -> str:
     """Return a palette-aware small button stylesheet for host UIs."""
-    if use_native_host_theme():
+    if use_native_host_theme() and not danger:
         return ""
     colors = get_host_palette_colors(source)
     bg = colors["button"]
