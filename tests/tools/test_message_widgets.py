@@ -82,24 +82,27 @@ class TestSplitThinking(unittest.TestCase):
 
 
 class TestAssistantMessageContentVisibility(unittest.TestCase):
-    """Verify _content is hidden when no visible text is present."""
+    """Verify _content receives correct HTML text."""
 
     def _make(self) -> AssistantMessageWidget:
         return AssistantMessageWidget()
 
-    def test_content_hidden_initially(self):
+    def test_content_has_empty_text_initially(self):
         w = self._make()
-        self.assertFalse(w._content.isVisible())
+        # _HeightCachedLabel always sets text (never hides), so it starts empty.
+        self.assertEqual(w._content.text(), "")
 
-    def test_content_hidden_on_plain_empty(self):
+    def test_content_empty_on_plain_empty(self):
         w = self._make()
         w.set_text("")
-        self.assertFalse(w._content.isVisible())
+        # After rendering empty text, the label content is empty.
+        self.assertEqual(w._content.text(), "")
 
-    def test_content_shown_with_plain_text(self):
+    def test_content_has_text_after_set(self):
         w = self._make()
         w.set_text("Hello world")
-        self.assertTrue(w._content.isVisible())
+        # The label should contain the rendered HTML for "Hello world".
+        self.assertIn("Hello world", w._content.text())
 
 if __name__ == "__main__":
     unittest.main()

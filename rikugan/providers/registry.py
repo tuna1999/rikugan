@@ -19,6 +19,7 @@ class _ProviderSpec:
 
 _BUILTIN_PROVIDERS: dict[str, _ProviderSpec] = {
     "anthropic": _ProviderSpec(".anthropic_provider", "AnthropicProvider"),
+    "codex": _ProviderSpec(".codex_provider", "CodexProvider"),
     "openai": _ProviderSpec(".openai_provider", "OpenAIProvider"),
     "openai_compat": _ProviderSpec(".openai_compat", "OpenAICompatProvider"),
     "gemini": _ProviderSpec(".gemini_provider", "GeminiProvider"),

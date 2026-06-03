@@ -59,7 +59,7 @@ def _qt_class(name: str) -> type:
         "setCheckable": _noop,
         "setChecked": _noop,
         "setChecked": _noop,
-        "setText": _noop,
+        "setText": _text_setter,
         "addLayout": _noop,
         "addWidget": _noop,
         "addSpacing": _noop,
@@ -76,6 +76,9 @@ def _qt_class(name: str) -> type:
         "setLayout": _noop,
         "resize": _noop,
         "sizeHint": lambda self: None,
+        # Geometry helpers for _HeightCachedLabel
+        "width": lambda self: 0,
+        "heightForWidth": lambda self, w: 0,
         # Visibility with tracking
         "hide": lambda self: setattr(self, "_visible", False),
         "show": lambda self: setattr(self, "_visible", True),
