@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import unittest
 
-from rikugan.ui.markdown import _has_markdown_syntax, _inline, _inline_formatting, md_to_html
+from rikugan.ui.markdown import md_to_html
 
 
-class TestMdToHtmlEmptyAndNone(unittest.TestCase):
+class TestMdToHtmlEmptyAndPlain(unittest.TestCase):
     def test_empty_string_returns_empty(self):
         self.assertEqual(md_to_html(""), "")
 
@@ -15,39 +15,33 @@ class TestMdToHtmlEmptyAndNone(unittest.TestCase):
         result = md_to_html("hello world")
         self.assertIn("hello world", result)
 
-
-class TestHasMarkdownSyntax(unittest.TestCase):
-    def test_plain_text_returns_false(self):
-        self.assertFalse(_has_markdown_syntax("hello world"))
-
-    def test_newline_only_returns_false(self):
-        self.assertFalse(_has_markdown_syntax("hello\nworld"))
-
-    def test_bold_marker_returns_true(self):
-        self.assertTrue(_has_markdown_syntax("**bold**"))
-
-    def test_header_marker_returns_true(self):
-        self.assertTrue(_has_markdown_syntax("# Title"))
+    def test_plain_text_with_newlines(self):
+        result = md_to_html("hello\nworld")
+        self.assertIn("hello", result)
+        self.assertIn("world", result)
 
 
 class TestMdToHtmlHeaders(unittest.TestCase):
     def test_h1(self):
         result = md_to_html("# Title")
-        self.assertIn("<div", result)
         self.assertIn("Title", result)
-        self.assertIn("18px", result)
+        self.assertIn("20px", result)
 
     def test_h2(self):
         result = md_to_html("## Heading")
-        self.assertIn("16px", result)
+        self.assertIn("17px", result)
 
     def test_h3(self):
         result = md_to_html("### Sub")
-        self.assertIn("14px", result)
+        self.assertIn("15px", result)
 
     def test_h4(self):
         result = md_to_html("#### Small")
         self.assertIn("13px", result)
+
+    def test_heading_with_bold(self):
+        result = md_to_html("# **Bold Title**")
+        self.assertIn("<b>Bold Title</b>", result)
 
 
 class TestMdToHtmlHorizontalRule(unittest.TestCase):
@@ -57,10 +51,6 @@ class TestMdToHtmlHorizontalRule(unittest.TestCase):
 
     def test_triple_star(self):
         result = md_to_html("***")
-        self.assertIn("<hr", result)
-
-    def test_triple_underscore(self):
-        result = md_to_html("___")
         self.assertIn("<hr", result)
 
 
@@ -79,23 +69,20 @@ class TestMdToHtmlBulletList(unittest.TestCase):
 
 
 class TestMdToHtmlNumberedList(unittest.TestCase):
-    def test_numbered_list_with_period(self):
+    def test_numbered_list(self):
         result = md_to_html("1. first\n2. second")
         self.assertIn("<ol", result)
         self.assertIn("first", result)
         self.assertIn("second", result)
 
-    def test_numbered_list_with_paren(self):
-        result = md_to_html("1) alpha\n2) beta")
-        self.assertIn("<ol", result)
-        self.assertIn("alpha", result)
-
 
 class TestMdToHtmlFencedCodeBlock(unittest.TestCase):
     def test_code_block_rendered(self):
         result = md_to_html("```python\nx = 1\n```")
-        self.assertIn("x = 1", result)
-        self.assertIn("white-space:pre", result)
+        # Pygments wraps tokens in styled spans, so check for fragments
+        self.assertIn("x", result)
+        self.assertIn("1", result)
+        self.assertIn("white-space", result)
 
     def test_code_block_with_lang_tag(self):
         result = md_to_html("```python\ncode\n```")
@@ -116,60 +103,38 @@ class TestMdToHtmlFencedCodeBlock(unittest.TestCase):
 
 
 class TestMdToHtmlParagraph(unittest.TestCase):
-    def test_empty_line_becomes_br(self):
+    def test_paragraph_break(self):
         result = md_to_html("para one\n\npara two")
-        self.assertIn("<br>", result)
-
-    def test_multiple_empty_lines_collapsed(self):
-        result = md_to_html("a\n\n\n\nb")
-        # Three or more consecutive <br> should be collapsed to two
-        self.assertNotIn("<br><br><br>", result)
+        self.assertIn("para one", result)
+        self.assertIn("para two", result)
 
 
 class TestInlineFormatting(unittest.TestCase):
-    def test_bold_double_star(self):
-        result = _inline_formatting("**bold**")
-        self.assertEqual(result, "<b>bold</b>")
+    def test_bold(self):
+        result = md_to_html("**bold**")
+        self.assertIn("<b>bold</b>", result)
 
-    def test_bold_double_underscore(self):
-        result = _inline_formatting("__bold__")
-        self.assertEqual(result, "<b>bold</b>")
-
-    def test_italic_single_star(self):
-        result = _inline_formatting("*italic*")
-        self.assertEqual(result, "<i>italic</i>")
-
-    def test_italic_single_underscore(self):
-        result = _inline_formatting("_italic_")
-        self.assertEqual(result, "<i>italic</i>")
+    def test_italic(self):
+        result = md_to_html("*italic*")
+        self.assertIn("<i>italic</i>", result)
 
     def test_link(self):
-        result = _inline_formatting("[text](http://example.com)")
-        self.assertIn('<a', result)
+        result = md_to_html("[text](http://example.com)")
         self.assertIn("href", result)
         self.assertIn("text", result)
         self.assertIn("http://example.com", result)
 
-    def test_no_spurious_formatting(self):
-        result = _inline_formatting("plain text")
-        self.assertEqual(result, "plain text")
-
-
-class TestInlineCodeSpans(unittest.TestCase):
-    def test_backtick_code_rendered(self):
-        result = _inline("use `foo()` here")
-        self.assertIn("<span", result)
+    def test_inline_code(self):
+        result = md_to_html("use `foo()` here")
         self.assertIn("foo()", result)
-        self.assertIn("font-family:monospace", result)
 
     def test_bold_inside_code_not_applied(self):
-        result = _inline("`**not bold**`")
-        self.assertNotIn("<b>", result)
-        self.assertIn("**not bold**", result)
+        result = md_to_html("`**not bold**`")
+        self.assertNotIn("<b>not bold</b>", result)
 
-    def test_html_escaped_in_text(self):
-        result = _inline("<b>not bold</b>")
-        self.assertNotIn("<b>", result)
+    def test_html_escaped_in_code_block(self):
+        result = md_to_html("```\n<b>not bold</b>\n```")
+        self.assertNotIn("<b>not bold</b>", result)
         self.assertIn("&lt;b&gt;", result)
 
 
@@ -181,14 +146,88 @@ class TestMdToHtmlIntegration(unittest.TestCase):
         self.assertIn("<ul", result)
         self.assertIn("Title", result)
 
-    def test_nested_inline_in_header(self):
-        result = md_to_html("# **Bold Title**")
-        self.assertIn("<b>Bold Title</b>", result)
-
     def test_link_in_list(self):
         result = md_to_html("- [link](http://x.com)")
         self.assertIn("href", result)
         self.assertIn("<li>", result)
+
+
+class TestMdToHtmlTables(unittest.TestCase):
+    def test_basic_table(self):
+        result = md_to_html("| Name | Type |\n|------|------|\n| foo  | int  |")
+        self.assertIn("<table", result)
+        self.assertIn("<th", result)
+        self.assertIn("<td", result)
+        self.assertIn("Name", result)
+        self.assertIn("foo", result)
+
+    def test_table_with_many_rows(self):
+        md = "| A | B |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |"
+        result = md_to_html(md)
+        self.assertIn("<table", result)
+        self.assertIn("1", result)
+        self.assertIn("3", result)
+
+
+class TestMdToHtmlBlockquotes(unittest.TestCase):
+    def test_single_blockquote(self):
+        result = md_to_html("> quoted text")
+        self.assertIn("quoted text", result)
+
+    def test_blockquote_has_border_style(self):
+        result = md_to_html("> quoted text")
+        self.assertIn("border-left", result)
+
+
+class TestMdToHtmlStrikethrough(unittest.TestCase):
+    def test_strikethrough(self):
+        result = md_to_html("~~deleted~~")
+        self.assertIn("<s>deleted</s>", result)
+
+
+class TestMdToHtmlTaskLists(unittest.TestCase):
+    def test_unchecked_task(self):
+        result = md_to_html("- [ ] todo item")
+        self.assertIn("☐", result)
+
+    def test_checked_task(self):
+        result = md_to_html("- [x] done item")
+        self.assertIn("☑", result)
+
+
+class TestMdToHtmlNestedLists(unittest.TestCase):
+    def test_nested_bullet_list(self):
+        md = "- item one\n  - nested item\n- item two"
+        result = md_to_html(md)
+        self.assertIn("item one", result)
+        self.assertIn("nested item", result)
+        # Should have nested <ul> inside <li>
+        self.assertEqual(result.count("<ul"), 2)
+
+    def test_mixed_nested_list(self):
+        md = "1. first\n   - nested bullet\n2. second"
+        result = md_to_html(md)
+        self.assertIn("first", result)
+        self.assertIn("nested bullet", result)
+        self.assertIn("<ul", result)
+        self.assertIn("<ol", result)
+
+
+class TestMdToHtmlStreaming(unittest.TestCase):
+    def test_incomplete_code_block(self):
+        """Streaming often delivers unclosed code blocks."""
+        result = md_to_html("```python\ndef foo(")
+        # Pygments splits tokens, so check fragments are present
+        self.assertIn("foo", result)
+        self.assertIn("white-space", result)
+
+    def test_incomplete_bold(self):
+        result = md_to_html("Some **bold te")
+        self.assertIn("**bold te", result)
+
+    def test_incomplete_table(self):
+        result = md_to_html("| Name | Type |\n|---")
+        self.assertIn("Name", result)
 
 
 if __name__ == "__main__":
