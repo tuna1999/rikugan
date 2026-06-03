@@ -57,6 +57,49 @@ class TestCheckAst(unittest.TestCase):
     def test_allows_os_path(self):
         assert _check_ast("os.path.join('a', 'b')") is None
 
+    # ── Reflective / getattr bypass coverage ─────────────────────────────────
+    # These tests guard against AST-level bypasses where an attacker wraps a
+    # blocked module attribute behind getattr() to evade the syntactic checks
+    # for `os.system()` / `os.popen()` / `__import__()` / etc.  Each of these
+    # previously passed _check_ast() — see audit report P0 finding H1.
+
+    def test_blocks_getattr_os_system(self):
+        assert _check_ast("getattr(os, 'system')('cmd')") is not None
+
+    def test_blocks_getattr_os_popen(self):
+        assert _check_ast("getattr(os, 'popen')('cmd')") is not None
+
+    def test_blocks_getattr_os_exec(self):
+        assert _check_ast("getattr(os, 'execv')('/bin/sh', [])") is not None
+
+    def test_blocks_getattr_os_spawn(self):
+        assert _check_ast("getattr(os, 'spawnl')(0, '/bin/sh')") is not None
+
+    def test_blocks_getattr_subprocess_module(self):
+        # getattr is suspicious when used on the subprocess module name itself
+        assert _check_ast("getattr(subprocess, 'Popen')(['ls'])"  # noqa: F821
+                          ) is not None
+
+    def test_blocks_getattr_sys_modules(self):
+        # getattr on sys reaches every loaded module including os/subprocess
+        assert _check_ast("getattr(sys, 'modules')['os']"  # noqa: F821
+                          ) is not None
+
+    def test_blocks_nested_getattr(self):
+        # getattr(getattr(os, 'popen'), '__call__')('cmd')
+        code = "getattr(getattr(os, 'popen'), '__call__')('cmd')"  # noqa: F821
+        assert _check_ast(code) is not None
+
+    def test_allows_getattr_on_safe_objects(self):
+        # getattr on a benign value (a list attribute) must NOT be blocked
+        assert _check_ast("x = [1, 2, 3]; y = getattr(x, 'append')"  # noqa: F841
+                          ) is None
+
+    def test_allows_getattr_with_string_literal_arg(self):
+        # getattr(obj, 'attr') where obj is a Name not in the blocklist
+        assert _check_ast("getattr(some_obj, 'some_attr')"  # noqa: F821
+                          ) is None
+
 
 class TestRunGuardedScript(unittest.TestCase):
     def test_blocked_subprocess(self):

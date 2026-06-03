@@ -60,6 +60,97 @@ def safe_builtins() -> dict[str, Any]:
     return safe
 
 
+# Modules whose presence as a getattr() first argument is suspicious enough to
+# block, even before the attribute name is known.  getattr(os, anything) is
+# never legitimate for user-supplied scripts inside the guarded environment.
+_GETATTR_BLOCKED_MODULES = frozenset(
+    {
+        "os",
+        "sys",
+        "subprocess",
+        "shlex",
+        "pty",
+        "commands",
+    }
+)
+
+# Attribute names that, if retrieved from any object via getattr, would expose
+# a shell-execution primitive or break out of the sandbox.  Catches the inner
+# half of nested getattr chains such as getattr(getattr(os, "popen"),
+# "__call__").
+_GETATTR_BLOCKED_ATTRS = frozenset(
+    {
+        "__import__",
+        "__loader__",
+        "__spec__",
+        "__builtins__",
+        "__call__",
+        "system",
+        "popen",
+        "execv",
+        "execve",
+        "execvp",
+        "execvpe",
+        "execl",
+        "execle",
+        "execlp",
+        "execlpe",
+        "spawnl",
+        "spawnle",
+        "spawnlp",
+        "spawnlpe",
+        "spawnv",
+        "spawnve",
+        "spawnvp",
+        "spawnvpe",
+    }
+)
+
+
+def _check_getattr_bypass(node: ast.Call) -> str | None:
+    """Return an error message if *node* is a getattr() reflective bypass.
+
+    Recognises three patterns:
+
+    1. ``getattr(os, 'system')(...)`` — direct call of a blocked module.
+    2. ``getattr(os, 'popen')`` — used as a value (e.g. assigned, subscripted,
+       or passed as an argument) so the call site can invoke it later.
+    3. ``getattr(getattr(os, 'popen'), '__call__')(...)`` — nested chains
+       where the outer getattr is a Name("getattr") and the first argument
+       is itself a Call to ``getattr`` on a blocked module/attr.
+    """
+    if not isinstance(node, ast.Call):
+        return None
+    if not (isinstance(node.func, ast.Name) and node.func.id == "getattr"):
+        return None
+    if not node.args:
+        return None
+
+    first, second = node.args[0], (node.args[1] if len(node.args) > 1 else None)
+
+    # Pattern 1 / 2: getattr(<module>, <attr>)
+    if isinstance(first, ast.Name) and first.id in _GETATTR_BLOCKED_MODULES:
+        return f"Blocked — reflective getattr on '{first.id}'"
+
+    # Pattern 3: getattr(getattr(os, '<attr>'), '<attr>') or deeper nesting
+    if isinstance(first, ast.Call) and len(first.args) >= 2:
+        inner_first = first.args[0]
+        if isinstance(inner_first, ast.Name) and inner_first.id in _GETATTR_BLOCKED_MODULES:
+            return f"Blocked — nested reflective getattr on '{inner_first.id}'"
+        if isinstance(inner_first, ast.Call) and len(inner_first.args) >= 2:
+            deep_first = inner_first.args[0]
+            if (isinstance(deep_first, ast.Name)
+                    and deep_first.id in _GETATTR_BLOCKED_MODULES):
+                return f"Blocked — deep nested reflective getattr on '{deep_first.id}'"
+
+    # getattr(<anything>, '__import__' | 'system' | '__call__' | …)
+    if isinstance(second, ast.Constant) and isinstance(second.value, str):
+        if second.value in _GETATTR_BLOCKED_ATTRS:
+            return f"Blocked — getattr access to dangerous attribute '{second.value}'"
+
+    return None
+
+
 def _check_ast(code: str) -> str | None:
     """Parse code and walk the AST for blocked constructs.
 
@@ -99,15 +190,17 @@ def _check_ast(code: str) -> str | None:
                 if func.value.id == "os" and (func.attr.startswith("exec") or func.attr.startswith("spawn")):
                     return f"Blocked — call to disallowed 'os.{func.attr}()'"
 
+            # Block: reflective getattr() bypass — getattr(os, 'system'),
+            # getattr(subprocess, 'Popen'), getattr(sys, 'modules')['os'],
+            # and nested chains like getattr(getattr(os, 'popen'), '__call__').
+            getattr_block = _check_getattr_bypass(node)
+            if getattr_block is not None:
+                return getattr_block
+
         # Block: subscript access to __builtins__ (e.g. __builtins__['__import__'])
         elif isinstance(node, ast.Subscript):
             if isinstance(node.value, ast.Name) and node.value.id == "__builtins__":
                 return "Blocked — direct subscript access to __builtins__"
-
-        # Block: getattr used to access blocked names reflectively
-        elif isinstance(node, ast.Call):
-            # Already handled above, but also catch getattr(os, 'system') patterns
-            pass
 
     return None
 

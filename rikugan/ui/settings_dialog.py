@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import queue
 import threading
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from ..core.config import RikuganConfig
 from ..core.logging import log_debug, log_error
@@ -589,7 +590,6 @@ class SettingsDialog(QDialog):
         """
         if self._provider_change_pending is None:
             return
-        provider = self._provider_change_pending
         self._provider_change_pending = None
         # Only apply if dialog was accepted (not cancelled)
         if not accepted:
