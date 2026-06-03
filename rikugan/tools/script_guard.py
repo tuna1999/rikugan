@@ -12,8 +12,26 @@ from typing import Any
 # Modules that must never be imported (directly or via __import__).
 _BLOCKED_MODULES = frozenset({"subprocess", "shlex", "pty", "commands"})
 
+# Preserve the real __import__ before it gets removed from builtins.
+_real_import = __import__
+
+
+def _guarded_import(name: str, *args: Any, **kwargs: Any) -> Any:
+    """Replacement ``__import__`` that blocks modules in ``_BLOCKED_MODULES``.
+
+    All other imports pass through to the real ``__import__`` untouched.
+    This lets ``import os``, ``from Crypto.Cipher import AES``, etc. work
+    normally inside ``exec()`` while still preventing ``import subprocess``.
+    """
+    root = name.split(".")[0]
+    if root in _BLOCKED_MODULES:
+        raise ImportError(f"import of disallowed module '{name}' is blocked")
+    return _real_import(name, *args, **kwargs)
+
 # Built-in calls that must never appear.
-_BLOCKED_CALLS = frozenset({"exec", "eval", "compile", "__import__"})
+# NOTE: ``__import__()`` is no longer blocked here — it is handled at
+# runtime by ``_guarded_import`` which validates the target module.
+_BLOCKED_CALLS = frozenset({"exec", "eval", "compile"})
 
 # Attribute calls that must never appear (module.func patterns).
 _BLOCKED_ATTRS = frozenset(
@@ -41,9 +59,11 @@ _BLOCKED_ATTRS = frozenset(
 
 # Builtins that must be removed from the execution namespace to prevent
 # reflective bypasses (e.g. __builtins__['__import__'], eval("os.system")).
+# NOTE: ``__import__`` is NOT removed here — it is replaced with
+# ``_guarded_import`` in ``safe_builtins()`` so that ``import`` statements
+# still work inside ``exec()`` while blocked modules are caught at runtime.
 _REMOVED_BUILTINS = frozenset(
     {
-        "__import__",
         "exec",
         "eval",
         "compile",
@@ -55,8 +75,15 @@ _REMOVED_BUILTINS = frozenset(
 
 
 def safe_builtins() -> dict[str, Any]:
-    """Return a restricted __builtins__ dict with dangerous names removed."""
+    """Return a restricted ``__builtins__`` dict.
+
+    Dangerous builtins (``exec``, ``eval``, ``compile``, …) are removed.
+    ``__import__`` is *replaced* with ``_guarded_import`` so that regular
+    ``import`` / ``from … import`` statements work inside ``exec()`` while
+    blocked modules are still caught at runtime.
+    """
     safe = {k: v for k, v in vars(builtins).items() if k not in _REMOVED_BUILTINS}
+    safe["__import__"] = _guarded_import
     return safe
 
 
@@ -222,6 +249,12 @@ def run_guarded_script(code: str, namespace_factory: Callable[[], dict[str, Any]
     elif isinstance(ns_builtins, dict):
         for name in _REMOVED_BUILTINS:
             ns_builtins.pop(name, None)
+        # Also replace __import__ with guarded version in pre-existing dicts
+        ns_builtins["__import__"] = _guarded_import
+    else:
+        # Namespace has no __builtins__ at all (e.g. factory returned {}).
+        # Inject safe_builtins() so import statements and __import__() work.
+        namespace["__builtins__"] = safe_builtins()
 
     with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
         try:

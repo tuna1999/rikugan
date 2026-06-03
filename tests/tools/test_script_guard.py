@@ -28,7 +28,9 @@ class TestCheckAst(unittest.TestCase):
         assert _check_ast("os.popen('ls')") is not None
 
     def test_blocks_import_subprocess_via_dunder(self):
-        assert _check_ast("__import__('subprocess')") is not None
+        # __import__() is no longer blocked at AST level — it is now handled
+        # at runtime by _guarded_import.  Verify AST allows it through.
+        assert _check_ast("__import__('subprocess')") is None
 
     def test_blocks_os_exec(self):
         assert _check_ast("os.execv('/bin/sh', [])") is not None
@@ -156,6 +158,43 @@ class TestRunGuardedScript(unittest.TestCase):
         run_guarded_script("x = 1", factory)
         run_guarded_script("y = 2", factory)
         assert len(calls) == 2
+
+    # ── Import inside exec() — guarded_import allows safe modules ──────────
+
+    def test_import_os_works(self):
+        """``import os`` should succeed inside the guarded exec environment."""
+        result = run_guarded_script("import os; print(os.name)", _empty_ns)
+        assert "Error" not in result
+        assert "stdout" in result
+
+    def test_import_from_works(self):
+        """``from os.path import join`` should succeed inside guarded exec."""
+        result = run_guarded_script("from os.path import join; print(join('a', 'b'))", _empty_ns)
+        assert "Error" not in result
+        assert "a" in result
+        assert "b" in result
+
+    def test_dunder_import_blocked_subprocess_runtime(self):
+        """``__import__('subprocess')`` passes AST but is caught by _guarded_import."""
+        result = run_guarded_script("__import__('subprocess')", _empty_ns)
+        assert "blocked" in result.lower() or "disallowed" in result.lower()
+
+    def test_import_subprocess_blocked_runtime(self):
+        """``import subprocess`` is still caught by AST check (first layer)."""
+        result = run_guarded_script("import subprocess", _empty_ns)
+        assert "Error" in result
+        assert "subprocess" in result
+
+    def test_dunder_import_blocked_shlex_runtime(self):
+        """``__import__('shlex')`` is caught by _guarded_import at runtime."""
+        result = run_guarded_script("__import__('shlex')", _empty_ns)
+        assert "blocked" in result.lower() or "disallowed" in result.lower()
+
+    def test_dunder_import_allows_safe_module(self):
+        """``__import__('os')`` should succeed — 'os' is not in _BLOCKED_MODULES."""
+        result = run_guarded_script("m = __import__('os'); print(m.name)", _empty_ns)
+        assert "Error" not in result
+        assert "stdout" in result
 
 
 if __name__ == "__main__":
