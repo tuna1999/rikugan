@@ -113,7 +113,11 @@ def _has_markdown_syntax(text: str) -> bool:
 
 
 def _legacy_md_to_html(text: str, source=None) -> str:
-    """Legacy regex-based converter. Kept as fallback."""
+    """Legacy regex-based converter.
+
+    Kept as fallback when markdown-it-py is not installed.
+    Do not use directly — call ``md_to_html()`` instead.
+    """
     if not text:
         return ""
     theme = _legacy_theme_styles(source)
