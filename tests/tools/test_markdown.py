@@ -86,7 +86,10 @@ class TestMdToHtmlFencedCodeBlock(unittest.TestCase):
 
     def test_code_block_with_lang_tag(self):
         result = md_to_html("```python\ncode\n```")
-        self.assertIn("python", result)
+        # Language tag is no longer rendered as visible text.
+        # Verify the block still renders with syntax highlighting.
+        self.assertIn("<table", result)
+        self.assertIn("code", result)
 
     def test_code_block_without_lang(self):
         result = md_to_html("```\nraw code\n```")

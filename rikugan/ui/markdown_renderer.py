@@ -273,12 +273,16 @@ class QtRenderer(RendererHTML):
         else:
             highlighted = escapeHtml(code)
 
-        lang_tag = ""
-        if lang:
-            lang_tag = f'<div style="{s.get("lang_tag", "")}">{escapeHtml(lang)}</div>'
-
         block_style = s.get("code_block", "")
-        return f'<div style="{block_style}">{lang_tag}{highlighted}</div>'
+        # Use a single-cell table so Qt renders background-color reliably.
+        # Qt QLabel supports <td> background but often ignores <div> background.
+        table_style = "border-collapse:collapse; width:100%; margin:4px 0;"
+        cell_style = block_style
+        return (
+            f'<table style="{table_style}">'
+            f'<tr><td style="{cell_style}">{highlighted}</td></tr>'
+            f'</table>'
+        )
 
     def code_block(
         self, tokens: Sequence[Token], idx: int, options: OptionsDict, env: EnvType
@@ -288,7 +292,12 @@ class QtRenderer(RendererHTML):
         token = tokens[idx]
         code = escapeHtml(token.content)
         block_style = s.get("code_block", "")
-        return f'<div style="{block_style}">{code}</div>'
+        table_style = "border-collapse:collapse; width:100%; margin:4px 0;"
+        return (
+            f'<table style="{table_style}">'
+            f'<tr><td style="{block_style}">{code}</td></tr>'
+            f'</table>'
+        )
 
     # ---- Inline code --------------------------------------------------
 
