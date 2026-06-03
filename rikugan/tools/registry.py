@@ -122,7 +122,19 @@ class ToolRegistry:
         return True
 
     def get(self, name: str) -> ToolDefinition | None:
-        return self._tools.get(name)
+        result = self._tools.get(name)
+        if result is not None:
+            return result
+        # Fuzzy fallback: some LLMs (e.g. GLM) transform MCP tool names by
+        # converting single underscores to double underscores.  Try the
+        # collapsed variant (e.g. "mcp__minimax__web_search" → "mcp_minimax_web_search").
+        collapsed = name.replace("__", "_")
+        if collapsed != name:
+            result = self._tools.get(collapsed)
+            if result is not None:
+                log_debug(f"Tool name fuzzy match: {name!r} → {collapsed!r}")
+                return result
+        return None
 
     def list_tools(self) -> list[ToolDefinition]:
         return list(self._tools.values())
@@ -136,7 +148,7 @@ class ToolRegistry:
         return self._schema_cache
 
     def execute(self, name: str, arguments: dict[str, Any]) -> str:
-        defn = self._tools.get(name)
+        defn = self.get(name)
         if defn is None:
             raise ToolNotFoundError(f"Unknown tool: {name}", tool_name=name)
         if defn.handler is None:
