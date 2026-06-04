@@ -16,9 +16,6 @@ class Role(str, Enum):
     TOOL = "tool"
 
 
-# Metadata key for UI-only messages that should never be sent to the LLM provider.
-INTERNAL_EVENT_KEY = "internal"
-
 
 @dataclass
 class ToolCall:

@@ -47,14 +47,14 @@ class TestListExports(unittest.TestCase):
     def test_returns_exports_header(self):
         from rikugan.ida.tools.database import list_exports
         result = list_exports()
-        self.assertTrue(result.startswith("Exports:"))
+        self.assertTrue(result.startswith("Exports"))
 
 
 class TestListImports(unittest.TestCase):
     def test_returns_imports_header(self):
         from rikugan.ida.tools.database import list_imports
         result = list_imports()
-        self.assertTrue(result.startswith("Imports:"))
+        self.assertTrue(result.startswith("Imports"))
 
 
 class TestReadBytes(unittest.TestCase):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 from abc import ABC, abstractmethod
 from collections.abc import Generator
+from contextlib import contextmanager
 from typing import Any, NoReturn
 
 from ..core.logging import log_debug
@@ -39,9 +40,8 @@ class LLMProvider(ABC):
         self.api_base = api_base
         self.model = model
         self._client: Any = None
-        # Stream abort: protected by _request_lock.
-        self._request_lock = threading.Lock()
-        self._active_stream: Any = None
+        self._active_request_handles: list[Any] = []
+        self._request_lock = threading.RLock()
 
     # -- Abstract interface ----------------------------------------------------
 
@@ -147,33 +147,7 @@ class LLMProvider(ABC):
         """
         client = self._get_client()
         kwargs = self._build_request_kwargs(messages, tools, system)
-        # Register stream handle for abort, then clear on completion.
-        with self._request_lock:
-            self._active_stream = None
-        gen = self._stream_chunks(client, kwargs)
-        try:
-            with self._request_lock:
-                self._active_stream = gen
-            yield from gen
-        finally:
-            with self._request_lock:
-                self._active_stream = None
-
-    def cancel_current_request(self) -> None:
-        """Abort the in-flight streaming request, if any.
-
-        Safe to call from any thread (typically the UI thread on cancel).
-        """
-        with self._request_lock:
-            stream = self._active_stream
-            self._active_stream = None
-        if stream is not None:
-            close = getattr(stream, "close", None)
-            if callable(close):
-                try:
-                    close()
-                except Exception:
-                    pass
+        yield from self._stream_chunks(client, kwargs)
 
     # -- Concrete shared implementations ---------------------------------------
 
@@ -215,6 +189,10 @@ class LLMProvider(ABC):
             return "API Key", "ok"
         return "", "none"
 
+    def context_window(self) -> int:
+        """Return the provider/model context window used for trimming."""
+        return self.capabilities.max_context_window
+
     def validate_key(self) -> bool:
         """Probe whether current credentials can reach the API.
 
@@ -228,3 +206,47 @@ class LLMProvider(ABC):
         except Exception as e:
             log_debug(f"validate_key failed for {self.name}: {e}")
             return False
+
+    @contextmanager
+    def _track_request_handle(self, handle: Any) -> Generator[Any, None, None]:
+        """Register an in-flight request object that can be closed on cancel."""
+        if handle is None:
+            yield handle
+            return
+        with self._request_lock:
+            self._active_request_handles.append(handle)
+        try:
+            yield handle
+        finally:
+            with self._request_lock:
+                try:
+                    self._active_request_handles.remove(handle)
+                except ValueError:
+                    pass
+
+    def cancel_current_request(self) -> None:
+        """Best-effort abort for an in-flight provider request.
+
+        Cooperative cancellation only runs between chunks. Closing the active
+        stream/client here lets the UI Stop button interrupt SDK or HTTP reads
+        that are blocked waiting for the server.
+        """
+        with self._request_lock:
+            handles = list(self._active_request_handles)
+            client = self._client
+            self._client = None
+
+        for handle in handles:
+            self._close_request_handle(handle)
+        self._close_request_handle(client)
+
+    def _close_request_handle(self, handle: Any) -> None:
+        if handle is None:
+            return
+        close = getattr(handle, "close", None)
+        if not callable(close):
+            return
+        try:
+            close()
+        except Exception as exc:
+            log_debug(f"{self.name} request abort via close failed: {exc}")

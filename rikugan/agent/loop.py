@@ -26,10 +26,10 @@ from ..core.sanitize import (
     strip_injection_markers,
     strip_iocs,
 )
-from ..core.types import INTERNAL_EVENT_KEY, Message, Role, TokenUsage, ToolCall, ToolResult
+from ..core.types import Message, Role, TokenUsage, ToolCall, ToolResult
 from ..providers.base import LLMProvider
 from ..skills.registry import SkillRegistry
-from ..state.session import SessionState
+from ..state.session import INTERNAL_EVENT_CANCELLED, INTERNAL_EVENT_KEY, SessionState
 from ..tools.registry import ToolRegistry
 from .context_window import ContextWindowManager
 from .exploration_mode import (
@@ -223,10 +223,12 @@ class AgentLoop:
     def cancel(self) -> None:
         """Cancel the current run."""
         self._cancelled.set()
-        # Abort the in-flight HTTP stream so the blocked generator
-        # unblocks immediately instead of waiting for the next chunk.
-        if self.provider is not None:
-            self.provider.cancel_current_request()
+        cancel_request = getattr(self.provider, "cancel_current_request", None)
+        if callable(cancel_request):
+            try:
+                cancel_request()
+            except Exception as e:
+                log_debug(f"Provider request abort failed: {e}")
 
     def _drain_queue(self, q: queue.Queue[str]) -> None:
         """Remove any stale item from a maxsize=1 queue (non-blocking)."""
@@ -249,6 +251,19 @@ class AgentLoop:
     def _check_cancelled(self) -> None:
         if self._cancelled.is_set():
             raise CancellationError("Agent run cancelled")
+
+    def _record_cancelled_message(self) -> None:
+        """Persist a UI-only cancellation marker for restored chat history."""
+        last = self.session.messages[-1] if self.session.messages else None
+        if last and last.metadata.get(INTERNAL_EVENT_KEY) == INTERNAL_EVENT_CANCELLED:
+            return
+        self.session.add_message(
+            Message(
+                role=Role.ASSISTANT,
+                content="Cancelled by user",
+                metadata={INTERNAL_EVENT_KEY: INTERNAL_EVENT_CANCELLED},
+            )
+        )
 
     def _wait_for_queue(self, q: queue.Queue[str]) -> str:
         """Block until a value arrives on `q`, checking for cancellation."""
@@ -454,7 +469,7 @@ class AgentLoop:
             issues.append("No skill registry — skills won't be available")
 
         # Check context window
-        ctx = self.config.provider.context_window
+        ctx = self.provider.context_window()
         if ctx >= _MIN_CONTEXT_WINDOW_TOKENS:
             ok.append(f"Context window: {ctx:,} tokens")
         else:
@@ -501,10 +516,10 @@ class AgentLoop:
         system_prompt: str,
         tools_schema: list | None,
         max_retries: int = 0,
-    ) -> Generator[TurnEvent, None, tuple[str, list[ToolCall], TokenUsage | None, Any]]:
+    ) -> Generator[TurnEvent, None, tuple[str, list[ToolCall], TokenUsage | None, Any, str | None]]:
         """Stream one LLM call, yielding events. Retries on transient errors.
 
-        Returns ``(text, tool_calls, usage, raw_parts)`` where *raw_parts* is
+        Returns ``(text, tool_calls, usage, raw_parts, finish_reason)`` where *raw_parts* is
         provider-specific opaque data (e.g. Gemini parts with thought_signatures)
         that should be stored on the :class:`Message` for faithful history replay.
 
@@ -591,7 +606,7 @@ class AgentLoop:
         # Use dynamic context_window from config (not cached _context_manager.max_tokens)
         # to correctly handle provider switches.
         fast_estimate = self.session.token_estimate
-        ctx_window = self.config.provider.context_window
+        ctx_window = self.provider.context_window()
         if fast_estimate > 0 and fast_estimate < int(ctx_window * 0.5):
             # Well below threshold — skip full estimation for compaction
             pass
@@ -615,7 +630,7 @@ class AgentLoop:
                     self.session.messages,
                 )
 
-        ctx_window = self.config.provider.context_window
+        ctx_window = self.provider.context_window()
         provider_messages = minify_messages(
             self.session.get_messages_for_provider(
                 context_window=ctx_window,
@@ -694,13 +709,15 @@ class AgentLoop:
         self,
         system_prompt: str,
         tools_schema: list | None,
-    ) -> Generator[TurnEvent, None, tuple[str, list[ToolCall], TokenUsage | None, Any]]:
+    ) -> Generator[TurnEvent, None, tuple[str, list[ToolCall], TokenUsage | None, Any, str | None]]:
         """Stream one LLM call, yielding events (no retry logic)."""
         assistant_text_parts: list[str] = []
         tool_calls: list[ToolCall] = []
         current_tool_arg_parts: dict[str, list[str]] = {}
         current_tool_names: dict[str, str] = {}
         last_usage: TokenUsage | None = None
+        raw_parts: Any = None
+        finish_reason: str | None = None
         raw_parts: Any = None
 
         provider_messages, estimated_prompt_tokens, estimated_usage = self._prepare_provider_messages(system_prompt)
@@ -756,6 +773,9 @@ class AgentLoop:
             if chunk.raw_parts is not None:
                 raw_parts = chunk.raw_parts
 
+            if chunk.finish_reason is not None:
+                finish_reason = chunk.finish_reason
+
         last_usage, need_usage_update = self._finalize_stream_usage(
             last_usage, estimated_usage, estimated_prompt_tokens
         )
@@ -766,7 +786,7 @@ class AgentLoop:
 
         assistant_text = "".join(assistant_text_parts)
         log_debug(f"Stream done: {chunk_count} chunks, {len(assistant_text)} chars, {len(tool_calls)} tool calls")
-        return (assistant_text, tool_calls, last_usage, raw_parts)
+        return (assistant_text, tool_calls, last_usage, raw_parts, finish_reason)
 
     @staticmethod
     def _estimate_prompt_tokens(provider_messages: list[Message], system_prompt: str) -> int:
@@ -1359,7 +1379,7 @@ class AgentLoop:
             self.session.add_message(Message(
                 role=Role.ASSISTANT,
                 content="*[Cancelled by user]*",
-                metadata={INTERNAL_EVENT_KEY: True},
+                metadata={INTERNAL_EVENT_KEY: INTERNAL_EVENT_CANCELLED},
             ))
             yield TurnEvent.cancelled_event()
         except Exception as e:

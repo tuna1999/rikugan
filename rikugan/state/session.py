@@ -10,7 +10,13 @@ from dataclasses import dataclass, field, replace
 
 from ..core.logging import log_debug
 from ..core.sanitize import strip_injection_markers
-from ..core.types import INTERNAL_EVENT_KEY, Message, Role, TokenUsage, ToolResult
+from ..core.types import Message, Role, TokenUsage, ToolResult
+
+# ---------- Internal event markers ----------
+
+# Metadata key for UI-only messages that should never be sent to the LLM provider.
+INTERNAL_EVENT_KEY = "rikugan_event"
+INTERNAL_EVENT_CANCELLED = "cancelled"
 
 # ---------- Token estimation ----------
 
@@ -24,6 +30,9 @@ _RECENT_RESULT_MAX_CHARS = 8000
 
 def _estimate_tokens(msg: Message) -> int:
     """Rough token count estimate from message text content."""
+    # Internal/UI-only events are free — they never reach the provider.
+    if msg.metadata.get(INTERNAL_EVENT_KEY):
+        return 0
     chars = len(msg.content or "")
     for tc in msg.tool_calls:
         chars += len(tc.name) + 50
