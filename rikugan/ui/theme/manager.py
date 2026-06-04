@@ -3,7 +3,7 @@
 The manager owns the current ThemeMode and exposes:
 - mode: the user-selected mode (read/write)
 - tokens(): the resolved ThemeTokens for the current mode
-- themeChanged: signal emitted on mode change
+- themeChanged: signal emitted on mode change (carries the new ThemeTokens)
 - set_mode(mode): change mode (triggers debounced QSS rebuild in Task 7)
 
 Helpers (private/public):
@@ -11,6 +11,8 @@ Helpers (private/public):
 - blend_tokens(a, b, t): linear interpolation between two token sets
 - format_template(s, mapping): str.format with {placeholders}
 - is_dark_tokens(tokens): True when tokens.window is dark (lum < 0.5)
+    (re-exported from .tokens; lives there to keep the type module's
+    predicates self-contained)
 """
 
 from __future__ import annotations
@@ -19,8 +21,15 @@ import re
 from collections.abc import Mapping
 
 from PySide6.QtCore import QObject, Signal
+from PySide6.QtWidgets import QApplication  # type: ignore[import-not-found]
 
-from .tokens import ThemeMode, ThemeTokens
+from .palette_dark import DARK_TOKENS
+from .palette_light import LIGHT_TOKENS
+from .tokens import ThemeMode, ThemeTokens, is_dark_tokens  # noqa: F401 — re-exported for tests
+
+# Note: palette_ida is imported lazily inside _compute_tokens to break the
+# manager <-> palette_ida cycle (palette_ida imports _blend_hex / _hex_luminance
+# from manager at module load).
 
 # Match only well-formed placeholders: {identifier} where identifier is
 # a Python identifier (letters, digits, underscores; not starting with digit).
@@ -29,11 +38,6 @@ _PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
 # === Helpers (public) ===
-
-def is_dark_tokens(tokens: ThemeTokens) -> bool:
-    """Return True if tokens.window is a dark color (luminance < 0.5)."""
-    return _hex_luminance(tokens.window) < 0.5
-
 
 def _hex_luminance(hex_color: str) -> float:
     """sRGB-linearized luminance for a #rrggbb color.
@@ -143,20 +147,22 @@ class ThemeManager(QObject):
 
     Lifecycle:
     - Use ThemeManager.instance() to get the singleton
-    - set_mode(mode) updates the mode and emits themeChanged
+    - set_mode(mode) updates the mode and emits themeChanged (with tokens)
     - tokens() returns the resolved ThemeTokens for the current mode
     - reset() (class method) clears the singleton (testability)
     """
 
-    themeChanged = Signal(object)  # emits ThemeMode
+    themeChanged = Signal(object)  # emits ThemeTokens (was ThemeMode before Task 6)
 
     _instance: ThemeManager | None = None
 
     def __init__(self) -> None:
         super().__init__()
         self._mode: ThemeMode = ThemeMode.AUTO
-        # _compute_tokens and QSS rebuild are wired in Tasks 6-7.
-        # For now, the skeleton just stores mode and emits a signal.
+        self._tokens_cache: ThemeTokens | None = None
+        # Compute initial tokens immediately so the first themeChanged
+        # listener can render correctly (Task 14 tests this).
+        self._tokens_cache = self._compute_tokens()
 
     @classmethod
     def instance(cls) -> ThemeManager:
@@ -174,26 +180,71 @@ class ThemeManager(QObject):
         return self._mode
 
     def set_mode(self, mode: ThemeMode) -> None:
-        """Update the active mode. Emits themeChanged on change."""
-        if self._mode == mode:
+        """Set the theme mode. No-op if same value. Emits themeChanged on change.
+
+        themeChanged now emits the new ThemeTokens (not the mode). QSS rebuild
+        is wired in Task 7; this task only handles the data path.
+        """
+        if mode == self._mode:
             return
         self._mode = mode
-        self.themeChanged.emit(mode)
+        self._tokens_cache = None  # force recompute
+        tokens = self._compute_tokens()
+        self._tokens_cache = tokens
+        self.themeChanged.emit(tokens)
 
     def tokens(self) -> ThemeTokens:
-        """Return ThemeTokens for the current mode.
+        """Return ThemeTokens for the current mode (cached)."""
+        if self._tokens_cache is None:
+            self._tokens_cache = self._compute_tokens()
+        return self._tokens_cache
 
-        Note: For Task 4, this returns the palette for the current mode
-        with no overrides. Tasks 5-6 add IDA_NATIVE derivation and
-        AUTO mode resolution.
+    def _compute_tokens(self) -> ThemeTokens:
+        """Compute tokens for the current mode.
+
+        AUTO: IDA → derive_ida_tokens; Binja/standalone → DARK_TOKENS.
+        DARK: DARK_TOKENS.
+        LIGHT: LIGHT_TOKENS.
+        IDA_NATIVE: derive_ida_tokens (Binja → DARK_TOKENS + warning log).
         """
-        from .palette_dark import DARK_TOKENS
-        from .palette_light import LIGHT_TOKENS
+        from ...core.host import is_ida
+        from ...core.logging import log_warning
 
-        # Simple mapping for now; full resolution lands in Task 6
-        if self._mode == ThemeMode.LIGHT:
-            return LIGHT_TOKENS
         if self._mode == ThemeMode.DARK:
             return DARK_TOKENS
-        # AUTO and IDA_NATIVE: in Task 4, both fall back to DARK
-        return DARK_TOKENS
+        if self._mode == ThemeMode.LIGHT:
+            return LIGHT_TOKENS
+        if self._mode == ThemeMode.AUTO:
+            if is_ida():
+                try:
+                    # Lazy import: palette_ida imports _blend_hex from
+                    # this module at load time, so a module-level import
+                    # would create a cycle. Falling through to DARK_TOKENS
+                    # if the import or palette lookup fails keeps the
+                    # manager usable when Qt is unavailable (e.g. in
+                    # tests that don't load the real PySide6).
+                    from .palette_ida import derive_ida_tokens
+
+                    app = QApplication.instance()
+                    if app is not None:
+                        return derive_ida_tokens(app)
+                except Exception:
+                    pass
+            return DARK_TOKENS
+        if self._mode == ThemeMode.IDA_NATIVE:
+            if not is_ida():
+                log_warning(
+                    "IDA Native theme requested on non-IDA host; "
+                    "falling back to Dark"
+                )
+                return DARK_TOKENS
+            try:
+                from .palette_ida import derive_ida_tokens
+
+                app = QApplication.instance()
+                if app is not None:
+                    return derive_ida_tokens(app)
+            except Exception:
+                pass
+            return DARK_TOKENS
+        return DARK_TOKENS  # unreachable; defensive
