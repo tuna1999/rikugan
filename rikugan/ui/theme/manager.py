@@ -295,6 +295,22 @@ class ThemeManager(QObject):
             self._tokens_cache = self._compute_tokens()
         return self._tokens_cache
 
+    def refresh_from_host(self) -> None:
+        """Re-derive tokens from the current QApplication palette.
+
+        Called by ``IDAThemeWatcher`` when ``QPalette`` changes. Invalidates
+        the token cache and re-applies (QSS + signal emit), bypassing the
+        debounce — the watcher tick is already rate-limited at 500ms
+        intervals, so additional coalescing is unnecessary and would
+        only delay the user's switch by 50ms.
+        """
+        self._tokens_cache = None
+        # Bypass debounce — watcher tick is already rate-limited.
+        if self._pending_apply is not None:
+            self._pending_apply.stop()
+            self._pending_apply = None
+        self._apply_now()
+
     def _apply_now(self) -> None:
         """Compute current tokens, apply QSS, emit themeChanged."""
         tokens = self.tokens()
