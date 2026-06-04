@@ -644,7 +644,7 @@ tests/tools/
 ### Unit Test Examples
 
 ```python
-# tests/ui/theme/test_tokens.py
+# tests/tools/test_theme_tokens.py
 def test_tokens_required_keys():
     expected_keys = {
         "window", "window_text", "base", "alt_base", "text",
@@ -662,7 +662,7 @@ def test_tokens_are_hex_colors():
             assert re.fullmatch(r"#[0-9a-fA-F]{6}", val), \
                 f"{key}={val} is not #rrggbb"
 
-# tests/ui/theme/test_palettes.py
+# tests/tools/test_theme_palettes.py
 def test_light_palette_is_actually_light():
     lum = _hex_luminance(LIGHT_TOKENS.window)
     assert lum > 0.5, f"Light theme window should be bright, got {lum}"
@@ -671,7 +671,7 @@ def test_dark_palette_is_actually_dark():
     lum = _hex_luminance(DARK_TOKENS.window)
     assert lum < 0.5, f"Dark theme window should be dark, got {lum}"
 
-# tests/ui/theme/test_manager.py
+# tests/tools/test_theme_manager.py
 def test_singleton_returns_same_instance():
     ThemeManager._instance = None
     assert ThemeManager.instance() is ThemeManager.instance()
@@ -698,7 +698,7 @@ def test_set_mode_same_value_is_noop():
 
     assert captured == []
 
-# tests/ui/theme/test_migration.py
+# tests/tools/test_theme_migration.py
 def test_v1_theme_dark_maps_to_dark():
     data = {"theme": "dark", "other_field": "x"}
     migrated = _migrate_v1_to_v2(data)
@@ -721,7 +721,7 @@ def test_invalid_mode_falls_back_to_auto():
 ### Integration Test Example
 
 ```python
-# tests/ui/theme/test_integration.py
+# tests/tools/test_theme_integration.py
 def test_chat_view_re_renders_on_theme_change(qapp):
     chat = ChatView()
     chat.append_assistant_message("**hello** world")
