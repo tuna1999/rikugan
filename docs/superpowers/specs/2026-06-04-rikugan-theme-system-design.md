@@ -109,29 +109,80 @@ rikugan/ui/theme/
 ├── tokens.py         # ThemeTokens dataclass
 ├── palette_dark.py   # DARK_TOKENS
 ├── palette_light.py  # LIGHT_TOKENS (VS Code Light+)
-├── palette_ida.py    # IDA_NATIVE_TOKENS (dynamic from QPalette)
+├── palette_ida.py    # IDA_NATIVE_TOKENS (dynamic from QPalette) + 5-token derivation
 └── watcher.py        # IDAThemeWatcher
-tests/ui/theme/
-├── __init__.py
-├── test_tokens.py
-├── test_palettes.py
-├── test_manager.py
-├── test_watcher.py
-├── test_migration.py
-├── test_integration.py
-└── test_pygments.py
+tests/tools/
+├── test_theme_tokens.py
+├── test_theme_palettes.py
+├── test_theme_manager.py
+├── test_theme_watcher.py
+├── test_theme_migration.py
+├── test_theme_integration.py
+├── test_theme_pygments.py
+└── conftest.py       # qapp fixture (NEW)
 docs/superpowers/specs/
 └── 2026-06-04-rikugan-theme-system-design.md  # this file
 ```
 
 **Refactored files** (existing):
-- `rikugan/ui/styles.py` — keeps public API (`blend_theme_color`,
-  `use_native_host_theme`, etc.), delegates to `theme/manager.py`
+- `rikugan/ui/styles.py` — becomes thin wrapper; delegates 8 public
+  functions to `theme/manager.py` (see "Backward Compatibility" section)
 - `rikugan/ui/markdown_renderer.py` — uses `ThemeManager.tokens()` for
-  inline-style HTML generation
-- `rikugan/ui/highlight.py` — uses `_THEME_PYGMENTS_MAP` keyed on mode
+  inline-style HTML generation; replaces `_native_theme_styles()` and
+  `_dark_theme_styles()` with single `build_styles(tokens)`
+- `rikugan/ui/highlight.py` — uses `_THEME_PYGMENTS_MAP` keyed on
+  `tokens().is_dark` (luminance), clears `_formatter_cache` on
+  `themeChanged` signal
 - 11 other UI files — replace hardcoded hex strings with QSS templates
   that read from `ThemeManager.tokens()`
+
+### IDA_NATIVE Token Derivation (5 new tokens)
+
+> **Note**: IDA's QPalette exposes only neutral QPalette roles
+> (`Window/WindowText/Base/Highlight/Mid/Light/Dark`). It has no
+> semantic `success/warning/error/code_text/code_bg` colors. The
+> `palette_ida.py` module must derive these from neutral QPalette
+> values using luminance-based hue blending.
+
+```python
+# rikugan/ui/theme/palette_ida.py  (NEW, partial)
+
+# Hue base colors — fixed reference hues, blended with IDA text
+# luminance to match the active IDA theme's brightness.
+_SUCCESS_BASE = "#4ec9b0"   # VS Code-style teal-green
+_WARNING_BASE = "#dcdcaa"   # VS Code-style pale yellow
+_ERROR_BASE   = "#f48771"   # VS Code-style soft red
+
+def _derive_semantic_tokens(qpalette_colors: dict[str, str]) -> dict[str, str]:
+    """Derive success/warning/error/code_text/code_bg from QPalette."""
+    text = qpalette_colors["text"]
+    window = qpalette_colors["window"]
+    alt_base = qpalette_colors["alt_base"]
+    is_dark = _hex_luminance(window) < 0.5
+
+    # Saturate/lighten base hues toward text luminance for legibility
+    success = blend_theme_color(_SUCCESS_BASE, text, 0.15 if is_dark else 0.35)
+    warning = blend_theme_color(_WARNING_BASE, text, 0.15 if is_dark else 0.35)
+    error   = blend_theme_color(_ERROR_BASE,   text, 0.15 if is_dark else 0.35)
+
+    # Code block: same text on slightly recessed surface
+    code_text = text
+    code_bg = alt_base
+
+    return {
+        "success": success,
+        "warning": warning,
+        "error": error,
+        "code_text": code_text,
+        "code_bg": code_bg,
+    }
+
+def derive_ida_tokens(source=None) -> ThemeTokens:
+    """Build full ThemeTokens from current QPalette."""
+    qp = get_host_qpalette(source)  # 12 QPalette roles
+    derived = _derive_semantic_tokens(qp)
+    return ThemeTokens(**qp, **derived)
+```
 
 ## Section 2: Components & Data Flow
 
@@ -162,13 +213,19 @@ docs/superpowers/specs/
 
 ### Init Flow (Plugin Boot)
 
+> **Note**: `PLUGIN_ENTRY()` is a Shiboken/IDA convention; the actual
+> plugin entry is `RikuganPlugmod.run()` in `rikugan_plugin.py` (root
+> file). For Binja, the equivalent hook is `_toggle_panel()` in
+> `rikugan/binja/bootstrap.py`. `RikuganPanel.OnCreate` in
+> `rikugan/ida/ui/panel.py` runs later (when the dock form is created).
+
 ```python
-# rikugan/ida/ui/panel.py:PLUGIN_ENTRY()
-def PLUGIN_ENTRY():
+# rikugan_plugin.py:RikuganPlugmod.run()  (root entry, IDA host)
+def run(self, arg: int) -> bool:
     # 1. Load config (with v1→v2 migration)
     config = RikuganConfig.load()
 
-    # 2. Init ThemeManager singleton
+    # 2. Init ThemeManager singleton (lazy token compute on first .tokens())
     theme_mgr = ThemeManager.instance()
     theme_mgr.set_mode(ThemeMode(config.theme_mode))
 
@@ -176,11 +233,22 @@ def PLUGIN_ENTRY():
     if is_ida():
         theme_mgr.start_host_watcher(interval_ms=500)
 
-    # 4. Build PanelCore (existing flow)
-    panel = PanelCore(...)
+    # 4. Toggle panel (existing flow) — RikuganPanel.OnCreate applies QSS
+    self._toggle_panel()
 
-    # 5. Apply initial QSS
-    qApp.setStyleSheet(theme_mgr.build_stylesheet())
+# rikugan/binja/bootstrap.py:_toggle_panel()  (Binja host)
+def _toggle_panel() -> None:
+    config = RikuganConfig.load()
+    theme_mgr = ThemeManager.instance()
+    theme_mgr.set_mode(ThemeMode(config.theme_mode))
+    # NOTE: no watcher — Binja is not theme-aware; always Dark.
+    # ... (existing panel creation)
+
+# rikugan/ida/ui/panel.py:RikuganPanel.OnCreate  (per-dock, runs after init)
+def OnCreate(self, form: Any) -> None:
+    # Apply initial QSS to the new form's QApplication
+    qApp.setStyleSheet(ThemeManager.instance().build_stylesheet())
+    # ... (existing panel setup)
 ```
 
 ### Theme Switch Flow (User Choses in Settings)
@@ -323,17 +391,53 @@ def blend_tokens(tokens: ThemeTokens, base: str, toward: str, amount: float) -> 
     ...
 ```
 
-### Backward Compatibility for `use_native_host_theme()`
+### Backward Compatibility for `styles.py` Public API
 
+> **Note**: `rikugan/ui/styles.py` exposes 8 public functions that
+> existing widget code depends on. The refactor converts `styles.py`
+> into a thin wrapper that delegates to `theme/manager.py` — preserving
+> the import surface so all 14 widget files do not need import updates.
+
+**Public functions to keep (delegate to `ThemeManager`):**
+
+| Function | Current behavior | Refactored behavior |
+|----------|------------------|---------------------|
+| `blend_theme_color(a, b, amount)` | blend 2 hex | unchanged (no theme state needed) |
+| `get_host_palette_colors(source=None)` | QPalette → dict | delegate: returns `asdict(ThemeManager.instance().tokens())` filtered to 12 QPalette keys |
+| `use_native_host_theme()` | `return is_ida()` | `mode in {AUTO, IDA_NATIVE} and is_ida()` |
+| `maybe_host_stylesheet(css)` | `""` if native | unchanged signature; reads from manager |
+| `host_stylesheet(custom_css, native_css="")` | conditional | `custom_css` if non-native else `native_css` |
+| `build_theme_stylesheet(css)` | wraps CSS | delegate; adds QSS template from tokens |
+| `build_small_button_stylesheet()` | hardcoded | refactor: read tokens, build QSS |
+| `_hex_luminance`, `_normalize_ida_palette`, `_palette_role` | private | move to `theme/palette_ida.py` (delete from styles.py) |
+
+**Migration strategy for `host_stylesheet`** (Option A — minimize blast radius):
 ```python
-# styles.py keeps public API but delegates
-def use_native_host_theme() -> bool:
-    mode = ThemeManager.instance().mode()
-    if mode == ThemeMode.AUTO:
-        return is_ida()
-    if mode == ThemeMode.IDA_NATIVE:
-        return True
-    return False
+# styles.py: refactored to delegate
+def host_stylesheet(custom_css: str, native_css: str = "") -> str:
+    """Return the stylesheet for the active host theme mode.
+
+    Kept as a thin wrapper around ThemeManager.build_stylesheet() so
+    existing callers in 14 widget files do not need import changes.
+    """
+    if use_native_host_theme():
+        return native_css
+    return custom_css
+```
+
+**Migration strategy for `get_host_palette_colors`**:
+```python
+# styles.py: backward-compat shim
+def get_host_palette_colors(source=None) -> dict[str, str]:
+    """Return the 12 QPalette-role colors as a dict.
+
+    Delegates to ThemeManager for the 5 new semantic tokens
+    (success/warning/error/code_text/code_bg).
+    """
+    from .theme.manager import ThemeManager
+    tokens = asdict(ThemeManager.instance().tokens())
+    # Keep only QPalette-aligned keys for backward compat
+    return {k: tokens[k] for k in _FALLBACK_COLORS.keys() & tokens.keys()}
 ```
 
 ## Section 4: Config Persistence & Migration
@@ -385,8 +489,44 @@ def load(cls) -> RikuganConfig:
 
 ### Settings UI Binding
 
+> **Note**: `SettingsDialog._build_appearance_tab()` is a NEW method
+> (does not exist in current code). The current tabs are
+> `Provider | Skills | MCP | Profiles` (index 0–3). The new
+> `Appearance` tab is inserted at index 1 (between Provider and Skills)
+> to keep provider config first, with appearance settings close behind.
+
 ```python
-# rikugan/ui/settings_dialog.py (extend _build_appearance_tab)
+# rikugan/ui/settings_dialog.py:SettingsDialog._build_ui()
+def _build_ui(self) -> None:
+    layout = QVBoxLayout(self)
+    self._tabs = QTabWidget()
+
+    # Tab 0: Provider (existing)
+    provider_tab = QWidget()
+    playout = QVBoxLayout(provider_tab)
+    self._provider_group = self._build_provider_group()
+    playout.addWidget(self._provider_group)
+    self._generation_group = self._build_generation_group()
+    playout.addWidget(self._generation_group)
+    self._behavior_group = self._build_behavior_group()
+    playout.addWidget(self._behavior_group)
+    playout.addStretch()
+    self._tabs.addTab(provider_tab, "Provider")
+
+    # Tab 1: Appearance (NEW)
+    appearance_tab = self._build_appearance_tab()
+    self._tabs.addTab(appearance_tab, "Appearance")
+
+    # Tab 2-4: Skills, MCP, Profiles (existing, indices shift +1)
+    self._service = SettingsService(self._config, tool_registry=self._tool_registry)
+    self._skills_tab = SkillsTab(self._config, service=self._service)
+    self._tabs.addTab(self._skills_tab, "Skills")
+    self._mcp_tab = MCPTab(self._config, service=self._service)
+    self._tabs.addTab(self._mcp_tab, "MCP")
+    self._profiles_tab = ProfilesTab(self._config, service=self._service)
+    self._tabs.addTab(self._profiles_tab, "Profiles")
+
+# rikugan/ui/settings_dialog.py:SettingsDialog._build_appearance_tab()  (NEW)
 def _build_appearance_tab(self) -> QWidget:
     widget = QWidget()
     layout = QFormLayout(widget)
@@ -405,9 +545,18 @@ def _build_appearance_tab(self) -> QWidget:
 
     self._theme_combo.currentIndexChanged.connect(self._on_theme_changed)
     self._theme_preview = _ThemePreviewChip()
+    ThemeManager.instance().themeChanged.connect(self._theme_preview.refresh)
 
     layout.addRow("Theme:", self._theme_combo)
     layout.addRow("Preview:", self._theme_preview)
+
+    note = QLabel(
+        "Auto uses IDA's native theme when running in IDA Pro, and Rikugan "
+        "Dark in Binary Ninja. 'Follow IDA' updates in real time when you "
+        "switch IDA's theme via View → Theme."
+    )
+    note.setWordWrap(True)
+    layout.addRow(note)
     return widget
 
 def _on_theme_changed(self, idx: int) -> None:
@@ -464,17 +613,33 @@ class _ThemePreviewChip(QWidget):
 
 ### Test Files
 
+> **Note**: This project does NOT have a `tests/ui/` directory. All UI
+> tests live under `tests/tools/` (existing pattern: `test_chat_view.py`,
+> `test_settings_dialog.py`, `test_input_area.py`, `test_message_widgets.py`,
+> `test_tool_widget_logic.py`, `test_markdown.py`, `test_plan_view.py`,
+> `test_mutation_log_view.py`, `test_context_bar.py`, `test_panel_core.py`).
+> New theme tests follow the same convention.
+
 ```
-tests/ui/theme/
-├── __init__.py
-├── test_tokens.py        # dataclass invariants
-├── test_palettes.py      # DARK, LIGHT, IDA_NATIVE values
-├── test_manager.py       # singleton, set_mode, signals
-├── test_watcher.py       # palette change detection
-├── test_migration.py     # config v1 → v2
-├── test_integration.py   # widget subscription round-trip
-└── test_pygments.py      # theme → pygments style mapping
+tests/tools/
+├── test_theme_tokens.py        # dataclass invariants
+├── test_theme_palettes.py      # DARK, LIGHT, IDA_NATIVE values
+├── test_theme_manager.py       # singleton, set_mode, signals, debounce
+├── test_theme_watcher.py       # palette change detection
+├── test_theme_migration.py     # config v1 → v2
+├── test_theme_integration.py   # widget subscription round-trip
+└── test_theme_pygments.py      # theme → pygments style mapping
 ```
+
+**Test infrastructure notes**:
+- `tests/mocks/ida_mock.py` already exists — reuse for `is_ida()` patches.
+- No `pytest-qt` is currently used. Add `tests/tools/conftest.py` with
+  a `qapp` fixture that creates a single `QApplication` per session
+  and skips tests with `@pytest.mark.skipif(not QApplication, ...)` if
+  the environment has no Qt (e.g., headless CI).
+- `ThemeManager._instance = None` for test isolation — add a
+  `ThemeManager.reset_for_testing()` classmethod so tests poke a
+  public API instead of the private attribute.
 
 ### Unit Test Examples
 
