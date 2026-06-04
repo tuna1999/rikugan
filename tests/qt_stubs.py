@@ -125,6 +125,25 @@ def _make_qtimer_stub() -> type:
     return _QTimer
 
 
+def _make_qcoreapplication_stub() -> type:
+    """Build a minimal QCoreApplication stub for tests.
+
+    The full PySide6 classmethod contract (instance(), quit(),
+    sendPostedEvents(), etc.) is not needed by Rikugan tests. Only
+    ``processEvents()`` is exercised (and only as a no-op flush). The
+    QTimer stub already fires synchronously on start(), so
+    ``processEvents`` does not need to dispatch anything for the
+    ThemeManager debounce path.
+    """
+
+    class _QCoreApplication:
+        @staticmethod
+        def processEvents() -> None:
+            return None
+
+    return _QCoreApplication
+
+
 class _Signal:
     """Minimal Signal stub that acts as a descriptor.
 
@@ -259,6 +278,13 @@ def ensure_pyside6_stubs() -> None:
             Qt=_sentinel,
             QObject=_qt_class("QObject"),
             QTimer=_make_qtimer_stub(),
+            # Minimal QCoreApplication stub — real tests that need a
+            # real event loop should drop these stubs and re-import
+            # PySide6 (see test_theme_watcher.py / test_theme_manager.py).
+            # ``processEvents`` is a no-op here; the QTimer stub fires
+            # synchronously on start() so the debounce in ThemeManager
+            # does not need a real event loop to dispatch.
+            QCoreApplication=_make_qcoreapplication_stub(),
         ),
     )
 
