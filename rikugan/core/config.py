@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -24,6 +25,46 @@ from .logging import log_error
 
 def _default_config_dir() -> str:
     return os.path.join(get_user_config_base_dir(), CONFIG_DIR_NAME)
+
+
+_VALID_THEME_MODES = {"auto", "dark", "light", "ida"}
+
+
+def _migrate_v1_to_v2(data: dict[str, Any]) -> dict[str, Any]:
+    """Migrate v1 schema (theme: "dark"/"ida_native"/"light") to v2
+    (theme_mode: "auto"/"dark"/"light"/"ida").
+
+    If both `theme` and `theme_mode` exist (corrupt config),
+    `theme_mode` wins. The legacy `theme` key is removed in all cases.
+    """
+    if "theme" in data and "theme_mode" not in data:
+        old = data.pop("theme")
+        mapping = {
+            "dark": "dark",
+            "ida_native": "ida",
+            "light": "light",
+        }
+        data["theme_mode"] = mapping.get(old, "auto")
+    elif "theme" in data and "theme_mode" in data:
+        # Both present — drop the legacy key, keep theme_mode.
+        data.pop("theme")
+    return data
+
+
+def _validate_theme_mode(data: dict[str, Any]) -> dict[str, Any]:
+    """Ensure `theme_mode` is a valid mode, falling back to 'auto' if not.
+
+    Also adds a default if the key is missing entirely.
+    """
+    mode = data.get("theme_mode")
+    if mode is None:
+        data["theme_mode"] = "auto"
+    elif mode not in _VALID_THEME_MODES:
+        logging.warning(
+            f"Invalid theme_mode {mode!r} in config, falling back to 'auto'"
+        )
+        data["theme_mode"] = "auto"
+    return data
 
 
 @dataclass
@@ -48,7 +89,7 @@ class RikuganConfig:
     exploration_turn_limit: int = 100  # max turns in exploration phase before forcing transition
     max_retries: int = 3  # max retries on rate-limit / transient API errors
     silent_retry_mode: bool = False  # show loading indicator instead of error messages on retry
-    theme: str = "dark"
+    theme_mode: str = "auto"
 
     # Skills & MCP external integration
     disabled_skills: list[str] = field(default_factory=list)
@@ -153,6 +194,9 @@ class RikuganConfig:
             return
         with open(self.config_path) as f:
             data = json.load(f)
+        # Schema migration: v1 (theme: "dark") → v2 (theme_mode: "auto"/...)
+        data = _migrate_v1_to_v2(data)
+        data = _validate_theme_mode(data)
         # Schema version check (for future migrations)
         _stored_version = data.pop("schema_version", 0)
 
@@ -177,7 +221,7 @@ class RikuganConfig:
             "exploration_turn_limit",
             "max_retries",
             "silent_retry_mode",
-            "theme",
+            "theme_mode",
             "disabled_skills",
             "enabled_external_skills",
             "enabled_external_mcp",
