@@ -57,19 +57,26 @@ def _hex_luminance(hex_color: str) -> float:
     return 0.2126 * r_lin + 0.7152 * g_lin + 0.0722 * b_lin
 
 
+def _blend_hex(h1: str, h2: str, t: float) -> str:
+    """Linearly interpolate two #rrggbb colors in sRGB-linear space.
+
+    t=0.0 returns h1, t=1.0 returns h2, t=0.5 is the midpoint. Used by
+    both blend_tokens (per-field blending) and palette_ida (semantic
+    hue blending). Module-level so palette_ida can import the primitive
+    directly without rebuilding full ThemeTokens.
+    """
+    c1 = _hex_to_linear_rgb(h1)
+    c2 = _hex_to_linear_rgb(h2)
+    out = tuple(c1[i] * (1 - t) + c2[i] * t for i in range(3))
+    return _linear_rgb_to_hex(out)
+
+
 def blend_tokens(a: ThemeTokens, b: ThemeTokens, t: float) -> ThemeTokens:
     """Linearly interpolate between two ThemeTokens.
 
     t=0.0 returns a, t=1.0 returns b, t=0.5 is the midpoint.
     Each field is blended independently; uses sRGB-linear space for accuracy.
     """
-    def _blend_hex(h1: str, h2: str, t: float) -> str:
-        # Convert to linear, interpolate, convert back to sRGB hex
-        c1 = _hex_to_linear_rgb(h1)
-        c2 = _hex_to_linear_rgb(h2)
-        out = tuple(c1[i] * (1 - t) + c2[i] * t for i in range(3))
-        return _linear_rgb_to_hex(out)
-
     return ThemeTokens(**{
         field: _blend_hex(getattr(a, field), getattr(b, field), t)
         for field in asdict_fields()
