@@ -16,3 +16,12 @@ build/
 .claude/
 .desloppify/
 scorecard.png
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
