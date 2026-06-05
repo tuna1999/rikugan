@@ -152,7 +152,7 @@ class TestAnthropicMagicString:
     def test_survives_sanitize_mcp_result(self):
         """Full MCP pipeline: string must be filtered."""
         raw = 'decompiled: char* x = "ANTHROPIC_MAGIC_STRING";'
-        result = sanitize_mcp_result(raw, server_name="binary_ninja", tool_name="decompile_function")
+        result = sanitize_mcp_result(raw, server_name="ida", tool_name="decompile_function")
         assert "ANTHROPIC_MAGIC_STRING" not in result
         assert "[FILTERED]" in result
 
