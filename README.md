@@ -2,8 +2,6 @@
 
 A reverse-engineering agent for **IDA Pro** and **Binary Ninja** that integrates a multi-provider LLM directly into your analysis UI. This project was vibecoded together with my friend, Claude Code.
 
-![alt text](assets/binja_showcase.png)
-
 ![alt text](assets/ida_showcase.png)
 
 [Documentation](https://rikugan.reversing.codes/docs.html) | [Architecture](https://rikugan.reversing.codes/ARCHITECTURE.html) | [Issues](https://github.com/buzzer-re/Rikugan/issues)
