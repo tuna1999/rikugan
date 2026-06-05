@@ -1,10 +1,10 @@
-"""Shared prompt-generating action handlers for IDA and Binary Ninja.
+"""Shared prompt-generating action handlers for IDA Pro.
 
 Each handler takes a context dict with keys: ea, func_ea, func_name, selected_text.
 Returns the prompt text to place in the input area.
 
-Host-specific actions (IDA's microcode optimizer, BN's smart-patch) live in
-their respective ``<host>/ui/actions.py`` modules.
+Host-specific actions (IDA's microcode optimizer) live in the
+``rikugan/ida/ui/actions.py`` module.
 """
 
 from __future__ import annotations

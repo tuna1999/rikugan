@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 from ..core.logging import log_debug
 from ..core.profile import IOC_FILTER_CATEGORIES
 from ..core.sanitize import sanitize_binary_context, sanitize_memory
-from .prompts.binja import BINJA_BASE_PROMPT
 from .prompts.ida import IDA_BASE_PROMPT
 
 _PERSISTENT_MEMORY_CACHE: dict[str, tuple[tuple[int | None, int | None], str | None]] = {}
@@ -16,7 +15,7 @@ _PERSISTENT_MEMORY_CACHE: dict[str, tuple[tuple[int | None, int | None], str | N
 if TYPE_CHECKING:
     from ..core.profile import AnalysisProfile
 
-_HOST_PROMPTS = {"IDA Pro": IDA_BASE_PROMPT, "Binary Ninja": BINJA_BASE_PROMPT}
+_HOST_PROMPTS = {"IDA Pro": IDA_BASE_PROMPT}
 _BASE_PROMPT = IDA_BASE_PROMPT  # backward compat alias
 
 # Maximum number of lines to load from RIKUGAN.md
