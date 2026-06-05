@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from ..core.logging import log_debug
 from ..core.profile import IOC_FILTER_CATEGORIES
-from ..core.sanitize import sanitize_binary_context, sanitize_memory
+from ..core.sanitize import quote_untrusted, sanitize_binary_context, sanitize_memory
 from .prompts.ida import IDA_BASE_PROMPT
 
 _BASE_PROMPT = IDA_BASE_PROMPT  # backward compat alias
@@ -56,6 +56,7 @@ def build_system_prompt(
     current_function: str | None = None,
     current_address: str | None = None,
     extra_context: str | None = None,
+    active_goal: str | None = None,
     tool_names: list[str] | None = None,
     skill_summary: str | None = None,
     idb_dir: str | None = None,
@@ -70,6 +71,13 @@ def build_system_prompt(
     memory = _load_persistent_memory(idb_dir or "")
     if memory:
         parts.append(f"\n## Persistent Memory (RIKUGAN.md)\n{sanitize_memory(memory)}")
+
+    if active_goal:
+        parts.append(
+            "\n## Active Goal\n"
+            "Use this as the standing analysis objective for the current session.\n"
+            + quote_untrusted(active_goal, "active_goal", max_length=1000)
+        )
 
     # Binary context is untrusted — function names, strings, and metadata
     # originate from the analyzed binary and could contain adversarial content.

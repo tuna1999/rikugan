@@ -22,6 +22,7 @@ from ..core.types import (
     StreamChunk,
     TokenUsage,
     ToolCall,
+    coerce_token_count,
 )
 from .base import LLMProvider
 
@@ -161,9 +162,9 @@ class OpenAIProvider(LLMProvider):
         usage = TokenUsage()
         if response.usage:
             usage = TokenUsage(
-                prompt_tokens=response.usage.prompt_tokens,
-                completion_tokens=response.usage.completion_tokens,
-                total_tokens=response.usage.total_tokens,
+                prompt_tokens=getattr(response.usage, "prompt_tokens", 0),
+                completion_tokens=getattr(response.usage, "completion_tokens", 0),
+                total_tokens=getattr(response.usage, "total_tokens", 0),
             )
 
         # OpenAI o-series reasoning_content
@@ -238,6 +239,24 @@ class OpenAIProvider(LLMProvider):
             _in_reasoning = False
 
             for chunk in stream:
+                # The official OpenAI final usage-only chunk has
+                # ``choices == []`` and a populated ``usage`` field. Some
+                # OpenAI-compatible endpoints also surface usage on a
+                # normal chunk. Read usage FIRST, then skip when there is
+                # genuinely no content to emit.
+                usage_obj = getattr(chunk, "usage", None)
+                if usage_obj is not None:
+                    pt = coerce_token_count(getattr(usage_obj, "prompt_tokens", 0))
+                    ct = coerce_token_count(getattr(usage_obj, "completion_tokens", 0))
+                    tt = coerce_token_count(getattr(usage_obj, "total_tokens", 0))
+                    yield StreamChunk(
+                        usage=TokenUsage(
+                            prompt_tokens=pt,
+                            completion_tokens=ct,
+                            total_tokens=tt,
+                        )
+                    )
+
                 if not chunk.choices:
                     continue
                 delta = chunk.choices[0].delta
@@ -291,15 +310,6 @@ class OpenAIProvider(LLMProvider):
                             is_tool_call_end=True,
                         )
                     yield StreamChunk(finish_reason=chunk.choices[0].finish_reason)
-
-                if chunk.usage:
-                    yield StreamChunk(
-                        usage=TokenUsage(
-                            prompt_tokens=chunk.usage.prompt_tokens,
-                            completion_tokens=chunk.usage.completion_tokens,
-                            total_tokens=chunk.usage.total_tokens,
-                        )
-                    )
 
         except Exception as e:
             self._handle_api_error(e)

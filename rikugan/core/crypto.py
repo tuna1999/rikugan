@@ -4,35 +4,53 @@ The ``cryptography`` package is a transitive dependency of ``anthropic``,
 ``openai``, and ``mcp`` (via ``httpx``).  If it is not available in the
 host Python environment the feature degrades gracefully — ``is_available()``
 returns False and the settings checkbox is disabled.
+
+The initial import of this module is intentionally cheap: it does NOT
+import the ``cryptography`` package.  ``is_available()`` is a fast check
+that uses :mod:`importlib.util.find_spec` so the settings dialog can
+paint before any heavy crypto dependency is loaded.  The crypto module
+is only imported on the first call to :func:`encrypt_keys` or
+:func:`decrypt_keys`.
 """
 
 from __future__ import annotations
 
 import base64
+import importlib.util
 import json
 import os
 
 _VERIFY_SENTINEL = "rikugan-encryption-v1"
 _PBKDF2_ITERATIONS = 600_000
 
-try:
+
+def is_available() -> bool:
+    """Return True if the ``cryptography`` library is importable.
+
+    Uses :func:`importlib.util.find_spec` so this check is O(1) and does
+    not import the (heavy) ``cryptography`` package itself.
+    """
+    return importlib.util.find_spec("cryptography") is not None
+
+
+def _load_crypto_primitives():
+    """Import the heavy crypto primitives on first use.
+
+    Returns the tuple ``(AESGCM, SHA256, PBKDF2HMAC, InvalidTag)`` so
+    callers can use them locally without relying on module-global names.
+    Raises ``ImportError`` if the package is not available.
+    """
     from cryptography.exceptions import InvalidTag
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     from cryptography.hazmat.primitives.hashes import SHA256
     from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
-    _HAS_CRYPTO = True
-except ImportError:
-    _HAS_CRYPTO = False
-
-
-def is_available() -> bool:
-    """Return True if the ``cryptography`` library is importable."""
-    return _HAS_CRYPTO
+    return AESGCM, SHA256, PBKDF2HMAC, InvalidTag
 
 
 def _derive_key(password: str, salt: bytes) -> bytes:
     """Derive a 32-byte AES key from *password* + *salt*."""
+    _AESGCM, SHA256, PBKDF2HMAC, _InvalidTag = _load_crypto_primitives()
     kdf = PBKDF2HMAC(
         algorithm=SHA256(),
         length=32,
@@ -48,6 +66,7 @@ def encrypt_keys(password: str, key_data: dict) -> dict:
     Returns ``{"salt": ..., "nonce": ..., "ciphertext": ...}`` where each
     value is a Base-64 encoded string.
     """
+    AESGCM, _SHA256, _PBKDF2HMAC, _InvalidTag = _load_crypto_primitives()
     salt = os.urandom(16)
     nonce = os.urandom(12)
     key = _derive_key(password, salt)
@@ -67,6 +86,7 @@ def decrypt_keys(password: str, enc_block: dict) -> dict:
 
     Raises ``ValueError`` on wrong password or corrupted data.
     """
+    AESGCM, _SHA256, _PBKDF2HMAC, InvalidTag = _load_crypto_primitives()
     try:
         salt = base64.b64decode(enc_block["salt"])
         nonce = base64.b64decode(enc_block["nonce"])

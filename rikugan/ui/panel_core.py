@@ -47,6 +47,7 @@ from .styles import (
     get_small_btn_style,
     get_splitter_handle_style,
     get_tab_widget_style,
+    set_current_theme,
 )
 from .tool_widgets import _SharedSpinnerTimer
 from .tools_panel import ToolsPanel
@@ -424,6 +425,12 @@ class RikuganPanelCore(QWidget):
         self._try_restore_session()
         end("session_restore.sync_total", t_restore)
 
+        # Ensure the inline-styled widgets (buttons, mode bar, tab widget,
+        # splitters) use the right helper palette for the current theme.
+        # ``_apply_theme`` runs first, so the global theme state is correct
+        # by the time we re-issue the widget-local stylesheets.
+        self._refresh_inline_styles()
+
     def _build_tab_widget(self) -> None:
         """Create the tab widget with custom tab bar."""
         self._tab_widget = QTabWidget()
@@ -787,25 +794,41 @@ class RikuganPanelCore(QWidget):
         else:
             self._input_area.setFocus()
 
-    def _apply_theme(self, theme: str) -> None:
-        """Apply the theme stylesheet. Internal helper for _build_ui."""
+    def _apply_theme(self, theme: str, effective_theme: str | None = None) -> None:
+        """Apply the theme stylesheet. Internal helper for _build_ui.
+
+        ``effective_theme`` controls the helper palette used for inline-styled
+        widgets (Send / New / Export / Settings / Tools / cancel / mode bar /
+        tab widget / splitters). When omitted, it is inferred from *theme*.
+        """
+        # Always update the global theme state FIRST so subsequent
+        # ``get_small_btn_style()`` etc. calls return the right palette
+        # for inline-styled widgets.
+        set_current_theme(theme, effective_theme=effective_theme)
         if theme == "dark":
             self.setStyleSheet(DARK_THEME)
         elif theme == "light":
             self.setStyleSheet(LIGHT_THEME)
-        # 'ida' means "inherit host's Qt theme" — do nothing
+        # 'ida' means "inherit host's Qt theme" — the IDA wrapper applies a
+        # minimal targeted stylesheet on top, but we still need inline
+        # widgets to use the right helper palette (effective_theme).
 
-    def set_theme(self, theme: str) -> None:
+    def set_theme(self, theme: str, effective_theme: str | None = None) -> None:
         """Set the UI theme.
 
         Args:
             theme: One of 'ida', 'dark', or 'light'.
                'ida' means inherit the host's Qt theme — no custom stylesheet is applied.
                'dark' and 'light' apply the predefined Rikugan stylesheets.
+            effective_theme: Optional helper palette for inline-styled widgets
+                when *theme* is ``"ida"``. Pass ``"dark"`` or ``"light"`` based
+                on the host color scheme detection performed by the IDA
+                wrapper.
         """
         from .markdown import clear_code_block_theme, set_markdown_theme_colors
 
         self._current_theme = theme
+        set_current_theme(theme, effective_theme=effective_theme)
         if theme == "dark":
             self.setStyleSheet(DARK_THEME)
             set_markdown_theme_colors(True)
@@ -818,6 +841,59 @@ class RikuganPanelCore(QWidget):
             # 'ida': inherit host Qt theme, no custom stylesheet,
             # disable explicit colors in markdown so text inherits from host.
             set_markdown_theme_colors(False)
+        # Re-apply the inline-styled widget palette so any widgets created
+        # earlier (during _build_ui) get restyled, and so future widgets
+        # created via the existing getters see the updated palette.
+        self._refresh_inline_styles()
+
+    def _refresh_inline_styles(self) -> None:
+        """Re-apply the theme-aware inline styles to already-constructed widgets.
+
+        Qt's stylesheet cascade is per-widget. Widgets that were assigned
+        widget-local stylesheets at construction time do NOT auto-refresh
+        when the parent theme changes, so we re-issue the same style sheets
+        here. This is safe to call at any time after the widgets exist.
+        """
+        for btn in (
+            getattr(self, "_send_btn", None),
+            getattr(self, "_new_btn", None),
+            getattr(self, "_export_btn", None),
+            getattr(self, "_settings_btn", None),
+            getattr(self, "_mutations_btn", None),
+            getattr(self, "_tools_btn", None),
+        ):
+            if btn is not None:
+                try:
+                    btn.setStyleSheet(get_small_btn_style())
+                except RuntimeError:
+                    pass  # widget deleted
+        cancel_btn = getattr(self, "_cancel_btn", None)
+        if cancel_btn is not None:
+            try:
+                cancel_btn.setStyleSheet(get_cancel_btn_style())
+            except RuntimeError:
+                pass
+        mode_bar = getattr(self, "_mode_bar", None)
+        if mode_bar is not None:
+            try:
+                mode_bar.setStyleSheet(get_mode_bar_style())
+            except RuntimeError:
+                pass
+        tab_widget = getattr(self, "_tab_widget", None)
+        if tab_widget is not None:
+            try:
+                tab_widget.setStyleSheet(get_tab_widget_style())
+            except RuntimeError:
+                pass
+        for splitter in (
+            getattr(self, "_main_splitter", None),
+            getattr(self, "_chat_input_splitter", None),
+        ):
+            if splitter is not None:
+                try:
+                    splitter.setStyleSheet(get_splitter_handle_style())
+                except RuntimeError:
+                    pass
 
     def shutdown(self) -> None:
         if self._is_shutdown:

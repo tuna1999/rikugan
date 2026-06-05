@@ -21,39 +21,54 @@ idaapi = importlib.import_module("idaapi")
 ida_kernwin = importlib.import_module("ida_kernwin")
 
 
-def _get_ida_theme_colors() -> dict[str, tuple[int, int, int]]:
+def _get_ida_theme_colors() -> dict[str, tuple[int, int, int] | bool]:
     """Extract current IDA Pro theme colors.
 
     Returns a dictionary of color names to RGB tuples based on IDA's
     current color scheme. This allows Rikugan to blend in with IDA's UI.
+    The key ``"is_dark"`` is always set to a bool indicating whether the
+    detected background is dark — callers should use this to choose the
+    helper palette for inline-styled widgets.
     """
-    colors = {}
+    colors: dict[str, tuple[int, int, int] | bool] = {}
+    is_dark: bool = False
 
-    # Try to get colors from IDA's kernel window API
+    # Try to get colors from IDA's kernel window API.
     # Note: ida_kernwin.get_widget_color() returns IDA's internal widget colors,
     # NOT the custom Qt CSS theme colors the user has configured.
     # When it returns near-black values like (30,30,30) it's IDA's built-in fallback
-    # for custom themes. We detect this and use Monokai-inspired light fallbacks.
+    # for custom themes. Previously this case was forced to the Monokai Light
+    # palette, which produced light widgets in a dark IDA installation. We now
+    # keep the dark background and only fall back to a light palette when the
+    # API is completely unavailable.
     try:
         bg_raw = _ida_color_to_rgb(ida_kernwin.get_widget_color(ida_kernwin.BCKCOLOR))
         bg_brightness = (bg_raw[0] * 299 + bg_raw[1] * 587 + bg_raw[2] * 114) / 1000
-        # If API returned IDA's internal dark fallback (brightness < 20), treat as "unknown"
         if bg_brightness < 20:
-            colors["background"] = (245, 240, 232)  # Monokai Light paper
-            colors["text"] = (44, 44, 44)
+            # API returned IDA's internal dark fallback. Keep dark colors
+            # and only use Monokai Light for the text color contrast hint.
+            colors["background"] = (30, 30, 30)
+            colors["text"] = (220, 220, 220)
+            is_dark = True
         else:
             colors["background"] = bg_raw
             try:
                 colors["text"] = _ida_color_to_rgb(ida_kernwin.get_widget_color(ida_kernwin.FGCOLOR))
             except Exception:
                 colors["text"] = (44, 44, 44)
+            is_dark = bg_brightness < 128
     except Exception:
-        # API completely unavailable — use Monokai Light fallbacks
-        colors["background"] = (245, 240, 232)  # Monokai Light paper
-        colors["text"] = (44, 44, 44)
+        # API completely unavailable — default to a neutral dark palette
+        # so the panel does not look broken in custom IDA setups. The
+        # caller still gets the correct ``is_dark`` flag and can override.
+        colors["background"] = (30, 30, 30)
+        colors["text"] = (220, 220, 220)
+        is_dark = True
 
     # Calculate derived colors based on background brightness
     bg = colors["background"]
+    if not isinstance(bg, tuple):
+        bg = (30, 30, 30)
     bg_brightness = (bg[0] * 299 + bg[1] * 587 + bg[2] * 114) / 1000
     is_dark = bg_brightness < 128
 
@@ -92,6 +107,7 @@ def _get_ida_theme_colors() -> dict[str, tuple[int, int, int]]:
         colors["code_block_border"] = _darken_color(bg, 20)
         colors["code_text"] = colors["text"]
 
+    colors["is_dark"] = is_dark
     return colors
 
 
@@ -223,12 +239,13 @@ class RikuganPanel(idaapi.PluginForm):
             return
 
         # config_theme == "ida" or invalid — apply minimal targeted overrides.
-        # We call set_theme("ida") to disable dark markdown colors, and set
-        # explicit code block colors so code blocks have distinct backgrounds.
-        # We also apply a minimal stylesheet for Rikugan's custom widgets that
-        # need visual distinction (thinking block, queued messages, etc.)
-        self._core.set_theme("ida")
         c = _get_ida_theme_colors()
+        is_dark = bool(c.get("is_dark", False))
+        # Tell the core which helper palette inline-styled widgets should
+        # use. Without this, theme-aware style getters fall back to light
+        # and the action buttons (Send / New / Export / Settings / Tools)
+        # appear with light backgrounds in a dark IDA.
+        self._core.set_theme("ida", effective_theme="dark" if is_dark else "light")
         set_code_block_theme(
             bg=_rgb_to_hex(c["code_block_bg"]),
             border=_rgb_to_hex(c["code_block_border"]),
@@ -240,7 +257,32 @@ class RikuganPanel(idaapi.PluginForm):
         surface = _rgb_to_hex(c["surface"])
         surface_variant = _rgb_to_hex(c["surface_variant"])
         border = _rgb_to_hex(c["border"])
+        text_color = _rgb_to_hex(c["text"])
+        text_secondary = _rgb_to_hex(c["text_secondary"])
         accent = _rgb_to_hex(c["accent"])
+        accent_hover = _rgb_to_hex(c["accent_hover"])
+        error_color = _rgb_to_hex(c["error"])
+
+        # Input / send button need explicit colors so they do not inherit
+        # the light-default Qt palette when IDA's host theme is dark.
+        if is_dark:
+            input_bg = _rgb_to_hex(c["surface_variant"])
+            input_text = text_color
+            send_bg = accent
+            send_hover = accent_hover
+            btn_bg = surface
+            btn_text = text_color
+            btn_border = border
+            btn_hover = surface_variant
+        else:
+            input_bg = _rgb_to_hex(c["background"])
+            input_text = text_color
+            send_bg = accent
+            send_hover = accent_hover
+            btn_bg = surface
+            btn_text = text_color
+            btn_border = border
+            btn_hover = surface_variant
 
         minimal_style = f"""
         QFrame#thinking_block {{
@@ -260,6 +302,62 @@ class RikuganPanel(idaapi.PluginForm):
             border: 1px solid {accent};
             border-radius: 6px;
             background-color: {surface_variant};
+        }}
+        QFrame#message_thinking {{
+            background-color: {surface};
+            border-radius: 6px;
+            padding: 4px 8px;
+            margin: 2px 8px;
+        }}
+        QLabel#thinking_header {{
+            color: {text_secondary};
+            font-style: italic;
+        }}
+        QLabel#thinking_content {{
+            color: {text_color};
+        }}
+        QLabel#star_label {{
+            color: {accent};
+        }}
+        QLabel#phrase_label {{
+            color: {text_secondary};
+            font-style: italic;
+        }}
+        QToolButton#collapse_button {{
+            color: {text_secondary};
+            background: transparent;
+            border: none;
+        }}
+        QToolButton#collapse_button:hover {{
+            color: {text_color};
+        }}
+        QPlainTextEdit#input_area {{
+            background-color: {input_bg};
+            color: {input_text};
+            border: 1px solid {border};
+            border-radius: 8px;
+            padding: 8px;
+        }}
+        QPushButton {{
+            background-color: {btn_bg};
+            color: {btn_text};
+            border: 1px solid {btn_border};
+            border-radius: 6px;
+            padding: 4px;
+        }}
+        QPushButton:hover {{
+            background-color: {btn_hover};
+        }}
+        QPushButton#send_button {{
+            background-color: {send_bg};
+            color: white;
+            border: none;
+        }}
+        QPushButton#send_button:hover {{
+            background-color: {send_hover};
+        }}
+        QPushButton#cancel_button {{
+            color: {error_color};
         }}
         """
         self._core.setStyleSheet(minimal_style)

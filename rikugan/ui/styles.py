@@ -7,17 +7,38 @@ Dark theme based on VS Code Dark+.
 from __future__ import annotations
 
 _current_theme: str = "light"
+# ``_effective_theme`` is the helper palette ('dark' or 'light') that
+# inline-styled widgets should look up. For 'ida' the effective theme is
+# supplied by the caller (panel core / IDA wrapper) based on the host's
+# detected color brightness.
+_effective_theme: str = "light"
 
 
-def set_current_theme(theme: str) -> None:
-    """Set the current theme for theme-aware style getters."""
-    global _current_theme
+def set_current_theme(theme: str, effective_theme: str | None = None) -> None:
+    """Set the current theme for theme-aware style getters.
+
+    Args:
+        theme: The user-configured theme name (``"light"``, ``"dark"``,
+            ``"ida"``). ``"ida"`` is treated as "inherit the host".
+        effective_theme: Optional helper palette to use when *theme* is
+            ``"ida"`` (or any non-``"dark"``/``"light"`` value). Must be
+            ``"dark"`` or ``"light"``. When omitted, the previous
+            effective theme is preserved (defaulting to ``"light"`` for
+            the very first call).
+    """
+    global _current_theme, _effective_theme
     _current_theme = theme
+    if effective_theme in ("dark", "light"):
+        _effective_theme = effective_theme
+    elif theme in ("dark", "light"):
+        _effective_theme = theme
+    # If theme is 'ida' and no effective theme was supplied, leave the
+    # previous effective theme alone (defaults to "light").
 
 
 def is_dark_theme() -> bool:
-    """Check if the current theme is dark."""
-    return _current_theme == "dark"
+    """Check whether inline-styled widgets should use the dark palette."""
+    return _effective_theme == "dark"
 
 
 # =============================================================================
@@ -2122,11 +2143,11 @@ SETTINGS_BTN_STYLE = {
 
 # Helper functions to get themed styles
 
+
 def _theme_get(name: str) -> str | dict[str, str]:
     """Look up a theme-aware dict by name for the active theme."""
     d = globals()[name]
     return d["dark" if is_dark_theme() else "light"]
-
 
 
 def get_small_btn_style() -> str:

@@ -25,6 +25,7 @@ from ..core.types import (
     StreamChunk,
     TokenUsage,
     ToolCall,
+    coerce_token_count,
 )
 from .base import LLMProvider
 
@@ -126,9 +127,7 @@ class AnthropicProvider(LLMProvider):
                     provider="anthropic",
                 ) from exc
             if not self.api_key:
-                raise AuthenticationError(
-                    "No Anthropic credential found"
-                )  # guidance auto-appended from _AUTH_GUIDANCE
+                raise AuthenticationError("No Anthropic credential found")  # guidance auto-appended from _AUTH_GUIDANCE
             # OAuth tokens use Bearer auth + beta header;
             # API keys use x-api-key header.
             kwargs: dict[str, Any] = {}
@@ -328,13 +327,19 @@ class AnthropicProvider(LLMProvider):
                     )
                 )
 
-        usage = TokenUsage(
-            prompt_tokens=response.usage.input_tokens,
-            completion_tokens=response.usage.output_tokens,
-            total_tokens=response.usage.input_tokens + response.usage.output_tokens,
-            cache_read_tokens=getattr(response.usage, "cache_read_input_tokens", 0) or 0,
-            cache_creation_tokens=getattr(response.usage, "cache_creation_input_tokens", 0) or 0,
-        )
+        usage_obj = getattr(response, "usage", None)
+        if usage_obj is None:
+            usage = TokenUsage()
+        else:
+            prompt = coerce_token_count(getattr(usage_obj, "input_tokens", 0))
+            completion = coerce_token_count(getattr(usage_obj, "output_tokens", 0))
+            usage = TokenUsage(
+                prompt_tokens=prompt,
+                completion_tokens=completion,
+                total_tokens=prompt + completion,
+                cache_read_tokens=coerce_token_count(getattr(usage_obj, "cache_read_input_tokens", 0)),
+                cache_creation_tokens=coerce_token_count(getattr(usage_obj, "cache_creation_input_tokens", 0)),
+            )
 
         return Message(
             role=Role.ASSISTANT,
@@ -368,6 +373,39 @@ class AnthropicProvider(LLMProvider):
             if "context" in msg.lower() or "token" in msg.lower():
                 raise ContextLengthError(str(e), provider="anthropic") from e
             raise ProviderError(str(e), provider="anthropic") from e
+
+        # Connection errors — RETRYABLE
+        if isinstance(e, anthropic.APIConnectionError):
+            raise ProviderError(
+                f"Connection error: {e}",
+                provider="anthropic",
+                retryable=True,
+            ) from e
+
+        # Timeout errors — RETRYABLE
+        if isinstance(e, anthropic.APITimeoutError):
+            raise ProviderError(
+                f"Request timed out: {e}",
+                provider="anthropic",
+                retryable=True,
+            ) from e
+
+        # Server errors (500+) — RETRYABLE
+        if isinstance(e, anthropic.APIStatusError):
+            status = getattr(e, "status_code", 0)
+            if status >= 500:
+                raise ProviderError(
+                    f"Server error ({status}): {e}",
+                    provider="anthropic",
+                    status_code=status,
+                    retryable=True,
+                ) from e
+            raise ProviderError(
+                f"API error ({status}): {e}",
+                provider="anthropic",
+                status_code=status,
+            ) from e
+
         raise ProviderError(str(e), provider="anthropic") from e
 
     def _build_request_kwargs(
@@ -520,13 +558,18 @@ class AnthropicProvider(LLMProvider):
 
                     elif etype == "message_start":
                         msg = event.message
-                        if hasattr(msg, "usage"):
+                        msg_usage = getattr(msg, "usage", None)
+                        if msg_usage is not None:
                             yield StreamChunk(
                                 usage=TokenUsage(
-                                    prompt_tokens=msg.usage.input_tokens,
+                                    prompt_tokens=getattr(msg_usage, "input_tokens", 0),
                                     completion_tokens=0,
-                                    cache_read_tokens=getattr(msg.usage, "cache_read_input_tokens", 0) or 0,
-                                    cache_creation_tokens=getattr(msg.usage, "cache_creation_input_tokens", 0) or 0,
+                                    cache_read_tokens=coerce_token_count(
+                                        getattr(msg_usage, "cache_read_input_tokens", 0)
+                                    ),
+                                    cache_creation_tokens=coerce_token_count(
+                                        getattr(msg_usage, "cache_creation_input_tokens", 0)
+                                    ),
                                 )
                             )
 

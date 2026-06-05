@@ -27,7 +27,7 @@ from ..core.sanitize import (
     strip_injection_markers,
     strip_iocs,
 )
-from ..core.types import Message, Role, TokenUsage, ToolCall, ToolResult
+from ..core.types import Message, Role, TokenUsage, ToolCall, ToolResult, coerce_token_count
 from ..providers.base import LLMProvider
 from ..skills.registry import SkillRegistry
 from ..state.session import SessionState
@@ -61,6 +61,9 @@ _MEMORY_HEADER = (
     "This file persists across sessions. "
     "The agent reads the first 200 lines into its system prompt.\n\n"
 )
+
+_GOAL_METADATA_KEY = "active_goal"
+_MAX_GOAL_CHARS = 1000
 
 # High-confidence mutating tools for which post-state verification runs.
 _VERIFY_MUTATION_TOOLS: frozenset[str] = frozenset(
@@ -130,14 +133,14 @@ class _ParsedCommand:
     explore_only: bool = False
     use_research_mode: bool = False
     use_orchestra_mode: bool = False
-    direct_command: str = ""  # e.g. "/memory", "/undo", "/mcp", "/doctor"
+    direct_command: str = ""
     direct_arg: str = ""  # remainder after the direct command token
 
 
 def _parse_user_command(user_message: str) -> _ParsedCommand:
     """Strip slash-command prefixes and return a _ParsedCommand descriptor.
 
-    Direct commands (/memory, /undo, /mcp, /doctor) set `direct_command`.
+    Direct commands (/goal, /memory, /undo, /mcp, /doctor) set `direct_command`.
     Mode prefixes (/plan, /modify, /explore) set the corresponding flag and
     strip the prefix from `message`.  Plain messages are returned unchanged.
     """
@@ -155,6 +158,12 @@ def _parse_user_command(user_message: str) -> _ParsedCommand:
         )
     if lower.startswith("/research "):
         return _ParsedCommand(message=stripped[10:].strip(), use_research_mode=True)
+    if lower == "/goal" or lower.startswith("/goal "):
+        return _ParsedCommand(
+            message=stripped,
+            direct_command="/goal",
+            direct_arg=stripped[5:].strip(),
+        )
     if lower == "/memory":
         return _ParsedCommand(message=stripped, direct_command="/memory")
     if lower.startswith("/undo"):
@@ -575,6 +584,7 @@ class AgentLoop:
             binary_info=binary_info,
             current_function=current_function,
             current_address=current_address,
+            active_goal=self.session.metadata.get(_GOAL_METADATA_KEY, ""),
             tool_names=self.tools.list_names(),
             skill_summary=skill_summary,
             idb_dir=idb_dir,
@@ -644,6 +654,27 @@ class AgentLoop:
                 yield TurnEvent.text_done(f"**Persistent Memory** (`{md_path}`):\n\n{content}")
         except OSError as e:
             yield TurnEvent.error_event(f"Failed to read RIKUGAN.md: {e}")
+
+    def _handle_goal_command(self, raw_goal: str) -> Generator[TurnEvent, None, None]:
+        goal = strip_injection_markers(raw_goal.strip())
+        if not goal:
+            current = self.session.metadata.get(_GOAL_METADATA_KEY, "").strip()
+            if current:
+                yield TurnEvent.text_done(f"**Active Goal**\n\n{current}")
+            else:
+                yield TurnEvent.text_done("No active goal set. Use `/goal <objective>` to set one.")
+            return
+
+        if goal.lower() in {"clear", "reset", "unset"}:
+            self.session.metadata.pop(_GOAL_METADATA_KEY, None)
+            yield TurnEvent.text_done("Active goal cleared.")
+            return
+
+        if len(goal) > _MAX_GOAL_CHARS:
+            goal = goal[:_MAX_GOAL_CHARS].rstrip() + "..."
+
+        self.session.metadata[_GOAL_METADATA_KEY] = goal
+        yield TurnEvent.text_done(f"Active goal set:\n\n{goal}")
 
     def _handle_undo_command(self, raw_cmd: str) -> Generator[TurnEvent, None, None]:
         """Undo the last N mutations."""
@@ -918,26 +949,48 @@ class AgentLoop:
         return provider_messages, estimated_prompt_tokens, estimated_usage
 
     def _accumulate_chunk_usage(self, last: TokenUsage | None, chunk: TokenUsage) -> TokenUsage:
-        """Merge a streaming chunk's usage into the accumulated total."""
-        prompt_tokens = chunk.prompt_tokens or 0
-        completion_tokens = chunk.completion_tokens or 0
-        if last is None:
-            total_tokens = chunk.total_tokens if chunk.total_tokens is not None else (prompt_tokens + completion_tokens)
+        """Merge a streaming chunk's usage into the accumulated total.
 
+        All numeric fields are coerced through ``coerce_token_count`` so that
+        provider SDKs returning ``None`` (or non-numeric values) can never
+        raise ``TypeError`` on the addition below.
+        """
+        prompt = coerce_token_count(chunk.prompt_tokens)
+        completion = coerce_token_count(chunk.completion_tokens)
+        cache_read = coerce_token_count(chunk.cache_read_tokens)
+        cache_creation = coerce_token_count(chunk.cache_creation_tokens)
+        chunk_total = coerce_token_count(chunk.total_tokens)
+
+        if last is None:
+            # First chunk: build a fresh TokenUsage with coerced values.
+            derived_total = chunk_total if chunk_total > 0 else (prompt + completion)
             return TokenUsage(
-                prompt_tokens=chunk.prompt_tokens,
-                completion_tokens=chunk.completion_tokens,
-                total_tokens=total_tokens,
-                cache_read_tokens=chunk.cache_read_tokens,
-                cache_creation_tokens=chunk.cache_creation_tokens,
+                prompt_tokens=prompt,
+                completion_tokens=completion,
+                total_tokens=derived_total,
+                cache_read_tokens=cache_read,
+                cache_creation_tokens=cache_creation,
             )
-        # Accumulate: message_start sends prompt_tokens, message_delta sends completion_tokens.
+
+        # Later chunks: add the chunk deltas to the (already normalized) accumulator.
+        last_prompt = coerce_token_count(last.prompt_tokens)
+        last_completion = coerce_token_count(last.completion_tokens)
+        last_cache_read = coerce_token_count(last.cache_read_tokens)
+        last_cache_creation = coerce_token_count(last.cache_creation_tokens)
+        last_total = coerce_token_count(last.total_tokens)
+
+        new_prompt = last_prompt + prompt
+        new_completion = last_completion + completion
+        computed_total = new_prompt + new_completion
+        # If the provider reported a higher total than what we derived
+        # from prompt+completion, preserve the larger value.
+        new_total = max(computed_total, last_total, chunk_total)
         return TokenUsage(
-            prompt_tokens=last.prompt_tokens + prompt_tokens,
-            completion_tokens=last.completion_tokens + completion_tokens,
-            total_tokens=(last.prompt_tokens + prompt_tokens + last.completion_tokens + completion_tokens),
-            cache_read_tokens=last.cache_read_tokens + chunk.cache_read_tokens,
-            cache_creation_tokens=last.cache_creation_tokens + chunk.cache_creation_tokens,
+            prompt_tokens=new_prompt,
+            completion_tokens=new_completion,
+            total_tokens=new_total,
+            cache_read_tokens=last_cache_read + cache_read,
+            cache_creation_tokens=last_cache_creation + cache_creation,
         )
 
     def _finalize_stream_usage(
@@ -950,21 +1003,30 @@ class AgentLoop:
 
         Falls back to the local estimate when the provider omitted usage entirely,
         or patches in prompt_tokens when the provider only emitted completion tokens.
+
+        All numeric fields are coerced via ``coerce_token_count`` so a nullable
+        SDK payload can never raise ``TypeError`` here.
         """
         if last_usage is None:
             return estimated_usage, False
-        if estimated_prompt_tokens > 0 and last_usage.prompt_tokens <= 0:
-            merged_total = (
-                last_usage.total_tokens
-                if last_usage.total_tokens > 0
-                else estimated_prompt_tokens + last_usage.completion_tokens
-            )
+        last_prompt = coerce_token_count(last_usage.prompt_tokens)
+        last_completion = coerce_token_count(last_usage.completion_tokens)
+        last_total = coerce_token_count(last_usage.total_tokens)
+        last_cache_read = coerce_token_count(last_usage.cache_read_tokens)
+        last_cache_creation = coerce_token_count(last_usage.cache_creation_tokens)
+        est_prompt = coerce_token_count(estimated_prompt_tokens)
+
+        if est_prompt > 0 and last_prompt <= 0:
+            # Re-derive the total from the new prompt + completion. If the
+            # provider reported a higher total, preserve it.
+            derived = est_prompt + last_completion
+            merged_total = max(last_total, derived) if last_total > 0 else derived
             patched = TokenUsage(
-                prompt_tokens=estimated_prompt_tokens,
-                completion_tokens=last_usage.completion_tokens,
+                prompt_tokens=est_prompt,
+                completion_tokens=last_completion,
                 total_tokens=merged_total,
-                cache_read_tokens=last_usage.cache_read_tokens,
-                cache_creation_tokens=last_usage.cache_creation_tokens,
+                cache_read_tokens=last_cache_read,
+                cache_creation_tokens=last_cache_creation,
             )
             return patched, True
         return last_usage, False
@@ -1030,10 +1092,8 @@ class AgentLoop:
                 yield TurnEvent.tool_call_done(tc_id, tc_name, raw_args)
 
             if chunk.usage:
-                pass
-                # disable for now, we don't need to update because the minimax always throw out error
-                # last_usage = self._accumulate_chunk_usage(last_usage, chunk.usage)
-                # self._context_manager.update_usage(last_usage)
+                last_usage = self._accumulate_chunk_usage(last_usage, chunk.usage)
+                self._context_manager.update_usage(last_usage)
                 # Do not yield per-chunk updates — emit one final update after the stream
 
             if chunk.raw_parts is not None:
@@ -1682,6 +1742,9 @@ class AgentLoop:
 
         try:
             cmd = _parse_user_command(user_message)
+            if cmd.direct_command == "/goal":
+                yield from self._handle_goal_command(cmd.direct_arg)
+                return
             if cmd.direct_command == "/memory":
                 yield from self._handle_memory_command()
                 return

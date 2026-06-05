@@ -127,10 +127,10 @@ class InputArea(QPlainTextEdit):
     def set_skill_slugs(self, slugs: list[str]) -> None:
         """Set the list of available skill slugs for autocomplete.
 
-        Automatically includes /plan, /modify, /explore, and /research as built-in commands.
+        Automatically includes /goal, /plan, /modify, /explore, and /research as built-in commands.
         """
         combined = set(slugs)
-        combined.update(("plan", "modify", "explore", "research"))
+        combined.update(("goal", "plan", "modify", "explore", "research"))
         self._skill_slugs = sorted(combined)
 
     def keyPressEvent(self, event) -> None:

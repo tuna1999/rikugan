@@ -78,25 +78,49 @@ class _ModelFetcher:
             except queue.Empty:
                 break
 
-    def fetch(self, provider_name: str, api_key: str, api_base: str) -> None:
-        # Create the provider and pre-import its SDK on the MAIN thread.
-        # Python 3.14 crashes when heavy C-extension packages are first
-        # imported from a background thread.
-        try:
-            provider = self._registry.new_instance(
-                provider_name,
-                api_key=api_key,
-                api_base=api_base,
-            )
-            provider.ensure_ready()
-        except Exception as e:
-            if self._alive:
-                self._queue.put(("error", provider_name, str(e)))
-            return
+    def fetch(self, provider_name: str, api_key: str, api_base: str, ensure_ready: bool = True) -> None:
+        """Fetch models for the given provider configuration.
+
+        If ``ensure_ready`` is False, the provider is created lazily on the
+        background thread (which avoids pre-importing heavy C-extension
+        SDKs on the UI thread).  Use this for the automatic on-open
+        refresh; pass True only when the user explicitly clicks Refresh
+        and we know we have time to import the SDK.
+        """
+        if ensure_ready:
+            # Create the provider and pre-import its SDK on the MAIN thread.
+            # Python 3.14 crashes when heavy C-extension packages are first
+            # imported from a background thread.
+            try:
+                provider = self._registry.new_instance(
+                    provider_name,
+                    api_key=api_key,
+                    api_base=api_base,
+                )
+                provider.ensure_ready()
+            except Exception as e:
+                if self._alive:
+                    self._queue.put(("error", provider_name, str(e)))
+                return
 
         def _run():
             try:
-                models = provider.list_models()
+                if ensure_ready:
+                    # Reuse the provider object created on the main thread
+                    # by re-instantiating it on the worker thread (the
+                    # heavy SDK modules are now imported so this is cheap).
+                    p = self._registry.new_instance(
+                        provider_name,
+                        api_key=api_key,
+                        api_base=api_base,
+                    )
+                else:
+                    p = self._registry.new_instance(
+                        provider_name,
+                        api_key=api_key,
+                        api_base=api_base,
+                    )
+                models = p.list_models()
                 if self._alive:
                     self._queue.put(("models", provider_name, models))
             except Exception as e:
@@ -220,10 +244,15 @@ class SettingsDialog(QDialog):
         self._poll_timer.timeout.connect(self._poll_fetcher)
         self._poll_timer.start(150)
 
-        # Deferred init timer — parented to self, safe if dialog closes instantly
+        # Deferred init timer — parented to self, safe if dialog closes instantly.
+        # We use a *non-zero* interval (200 ms) so the dialog can paint
+        # before any heavy work (auth resolution, provider construction,
+        # SDK imports) starts.  A zero-interval timer can fire on the
+        # same event-loop tick that paints the dialog, defeating the
+        # point of deferring.
         self._init_timer = QTimer(self)
         self._init_timer.setSingleShot(True)
-        self._init_timer.setInterval(0)
+        self._init_timer.setInterval(200)
         self._init_timer.timeout.connect(self._deferred_init)
 
     def _build_ui(self) -> None:
@@ -250,19 +279,29 @@ class SettingsDialog(QDialog):
         appearance_layout.addStretch()
         self._tabs.addTab(appearance_tab, "Appearance")
 
-        # Tab 1-3: Skills, MCP, Profiles — all use a shared SettingsService
-        from .settings_service import SettingsService
-        from .tabs.mcp_tab import MCPTab
-        from .tabs.profiles_tab import ProfilesTab
-        from .tabs.skills_tab import SkillsTab
-
-        self._service = SettingsService(self._config, tool_registry=self._tool_registry)
-        self._skills_tab = SkillsTab(self._config, service=self._service)
-        self._tabs.addTab(self._skills_tab, "Skills")
-        self._mcp_tab = MCPTab(self._config, service=self._service)
-        self._tabs.addTab(self._mcp_tab, "MCP")
-        self._profiles_tab = ProfilesTab(self._config, service=self._service)
-        self._tabs.addTab(self._profiles_tab, "Profiles")
+        # Tab 1-3: Skills, MCP, Profiles — LAZILY constructed on first tab
+        # switch. The SettingsService (which scans Rikugan / external
+        # skills and MCP configs) is heavy and previously ran synchronously
+        # in __init__, blocking first paint.  We add lightweight
+        # placeholders and build the real tabs on demand.
+        self._service: Any = None
+        self._skills_tab = None
+        self._mcp_tab = None
+        self._profiles_tab = None
+        for tab_title, _attr_name in (
+            ("Skills", "_skills_tab"),
+            ("MCP", "_mcp_tab"),
+            ("Profiles", "_profiles_tab"),
+        ):
+            placeholder = QWidget()
+            ph_layout = QVBoxLayout(placeholder)
+            ph_label = QLabel(f"{tab_title} not loaded.\nClick to load.")
+            ph_label.setStyleSheet(get_hint_status_style())
+            ph_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            ph_layout.addWidget(ph_label)
+            self._tabs.addTab(placeholder, tab_title)
+        # Connect tab change handler to lazy-load on first selection.
+        self._tabs.currentChanged.connect(self._on_tab_changed_lazy)
 
         layout.addWidget(self._tabs)
 
@@ -274,6 +313,82 @@ class SettingsDialog(QDialog):
         # Connect provider/key change signals AFTER everything is built
         self._provider_combo.currentTextChanged.connect(self._on_provider_changed)
         self._api_key_edit.editingFinished.connect(self._on_key_edited)
+
+    def _on_tab_changed_lazy(self, index: int) -> None:
+        """Lazy-construct Skills / MCP / Profiles tabs on first selection."""
+        if index < 0 or index >= self._tabs.count():
+            return
+        title = self._tabs.tabText(index)
+        widget = self._tabs.widget(index)
+        if widget is None:
+            return
+        # If the widget at this index has been replaced with a real tab,
+        # ``objectName`` will have been set on the real tab.  In that
+        # case there is nothing to do.
+        if widget.objectName() in {"skills_tab", "mcp_tab", "profiles_tab"}:
+            return
+        if title == "Skills":
+            self._load_skills_tab()
+        elif title == "MCP":
+            self._load_mcp_tab()
+        elif title == "Profiles":
+            self._load_profiles_tab()
+
+    def _ensure_service(self) -> Any:
+        """Build the SettingsService on first use."""
+        if self._service is None:
+            from .settings_service import SettingsService
+
+            self._service = SettingsService(self._config, tool_registry=self._tool_registry)
+        return self._service
+
+    def _load_skills_tab(self) -> None:
+        if self._skills_tab is not None:
+            return
+        from .tabs.skills_tab import SkillsTab
+
+        idx = self._index_of_tab("Skills")
+        if idx < 0:
+            return
+        self._skills_tab = SkillsTab(self._config, service=self._ensure_service())
+        self._skills_tab.setObjectName("skills_tab")
+        self._tabs.removeTab(idx)
+        self._tabs.insertTab(idx, self._skills_tab, "Skills")
+        self._tabs.setCurrentIndex(idx)
+
+    def _load_mcp_tab(self) -> None:
+        if self._mcp_tab is not None:
+            return
+        from .tabs.mcp_tab import MCPTab
+
+        idx = self._index_of_tab("MCP")
+        if idx < 0:
+            return
+        self._mcp_tab = MCPTab(self._config, service=self._ensure_service())
+        self._mcp_tab.setObjectName("mcp_tab")
+        self._tabs.removeTab(idx)
+        self._tabs.insertTab(idx, self._mcp_tab, "MCP")
+        self._tabs.setCurrentIndex(idx)
+
+    def _load_profiles_tab(self) -> None:
+        if self._profiles_tab is not None:
+            return
+        from .tabs.profiles_tab import ProfilesTab
+
+        idx = self._index_of_tab("Profiles")
+        if idx < 0:
+            return
+        self._profiles_tab = ProfilesTab(self._config, service=self._ensure_service())
+        self._profiles_tab.setObjectName("profiles_tab")
+        self._tabs.removeTab(idx)
+        self._tabs.insertTab(idx, self._profiles_tab, "Profiles")
+        self._tabs.setCurrentIndex(idx)
+
+    def _index_of_tab(self, title: str) -> int:
+        for i in range(self._tabs.count()):
+            if self._tabs.tabText(i) == title:
+                return i
+        return -1
 
     def _build_provider_group(self) -> QGroupBox:
         """Build the LLM Provider settings group box."""
@@ -349,7 +464,7 @@ class SettingsDialog(QDialog):
         self._fetch_btn = QPushButton("Refresh")
         self._fetch_btn.setFixedWidth(70)
         self._fetch_btn.setStyleSheet(get_settings_btn_style())
-        self._fetch_btn.clicked.connect(self._fetch_models)
+        self._fetch_btn.clicked.connect(lambda: self._fetch_models(explicit=True))
         model_layout.addWidget(self._fetch_btn)
 
         self._model_status = QLabel()
@@ -498,15 +613,44 @@ class SettingsDialog(QDialog):
             self._init_timer.start()
 
     def _deferred_init(self) -> None:
-        """Runs after the dialog is fully painted. Safe for subprocesses/threads."""
+        """Runs after the dialog is fully painted. Safe for subprocesses/threads.
+
+        We do NOT auto-fetch live models on first open — instead we
+        populate the model combo with the provider's built-in / cached
+        model list so the dialog is immediately usable.  Live network
+        fetches are triggered only when the user clicks Refresh, switches
+        provider, or edits the API key.
+        """
         if self._closed:
             return
         try:
             self._update_auth_status()
             self._model_restore_hint = self._config.provider.model.strip()
-            self._fetch_models()
+            self._populate_builtin_models()
         except Exception as e:
             log_error(f"SettingsDialog deferred init error: {e}")
+
+    def _populate_builtin_models(self) -> None:
+        """Populate the model combo with the built-in list for the current provider.
+
+        No network call, no SDK import, no ensure_ready.  Safe to run on
+        first paint of the dialog.
+        """
+        try:
+            provider = self._registry.new_instance(
+                self._provider_combo.currentText(),
+                api_key=self._api_key_edit.text().strip(),
+                api_base=self._api_base_edit.text().strip(),
+            )
+            models = provider._builtin_models()
+        except Exception as e:
+            log_debug(f"Could not load built-in models: {e}")
+            models = []
+        if models:
+            self._on_models_ready(models)
+        else:
+            self._model_status.setText("Click Refresh to fetch live models.")
+            self._model_status.setStyleSheet(get_hint_status_style())
 
     # --- Cleanup ---
 
@@ -642,7 +786,18 @@ class SettingsDialog(QDialog):
 
     # --- Model fetching ---
 
-    def _fetch_models(self) -> None:
+    def _fetch_models(self, explicit: bool = False) -> None:
+        """Refresh the model list for the current provider.
+
+        ``explicit=True`` is used when the user clicks the Refresh button —
+        we can afford to run the heavy provider ``ensure_ready()`` on the
+        UI thread and import the SDK synchronously.
+
+        ``explicit=False`` is the default — used for automatic refreshes
+        after provider / API-key changes and for the on-open fetch. The
+        SDK is imported lazily on the background thread to avoid blocking
+        the UI / first paint.
+        """
         provider = self._provider_combo.currentText()
         key = self._api_key_edit.text().strip()
         base = self._api_base_edit.text().strip()
@@ -651,9 +806,9 @@ class SettingsDialog(QDialog):
         if not key and self._resolved_token:
             key = self._resolved_token
 
-        self._model_status.setText("Fetching...")
+        self._model_status.setText("Fetching..." if explicit else "Refreshing in background...")
         self._fetch_btn.setEnabled(False)
-        self._fetcher.fetch(provider, key, base)
+        self._fetcher.fetch(provider, key, base, ensure_ready=explicit)
 
     def _on_models_ready(self, models: list) -> None:
         self._fetch_btn.setEnabled(True)

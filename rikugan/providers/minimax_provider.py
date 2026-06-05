@@ -10,9 +10,15 @@ Auth:      plain API key (no OAuth)
 from __future__ import annotations
 
 import importlib
-from typing import Any
+from typing import Any, NoReturn
 
-from ..core.errors import AuthenticationError, ProviderError
+from ..core.errors import (
+    AuthenticationError,
+    ContextLengthError,
+    ProviderError,
+    RateLimitError,
+)
+from ..core.logging import log_debug
 from ..core.types import ModelInfo, ProviderCapabilities
 from .anthropic_provider import AnthropicProvider
 from .base import LLMProvider
@@ -70,6 +76,7 @@ class MiniMaxProvider(AnthropicProvider):
             self._client = anthropic.Anthropic(
                 api_key=self.api_key,
                 base_url=self.api_base,
+                timeout=120.0,  # 2min vs SDK default 10min
             )
         return self._client
 
@@ -176,3 +183,69 @@ class MiniMaxProvider(AnthropicProvider):
                 tool.pop("cache_control", None)
 
         return kwargs
+
+    def _handle_api_error(self, e: Exception) -> NoReturn:
+        """Translate SDK exceptions to Rikugan errors with MiniMax-aware handling."""
+        try:
+            anthropic = importlib.import_module("anthropic")
+        except ImportError:
+            raise ProviderError(str(e), provider="minimax") from e
+
+        # Authentication
+        if isinstance(e, anthropic.AuthenticationError):
+            raise AuthenticationError(provider="minimax") from e
+
+        # Rate limiting
+        if isinstance(e, anthropic.RateLimitError):
+            retry_after = 0.0
+            resp = getattr(e, "response", None)
+            if resp is not None:
+                retry_hdr = getattr(resp, "headers", {}).get("retry-after", "")
+                try:
+                    retry_after = float(retry_hdr)
+                except (ValueError, TypeError) as parse_err:
+                    log_debug(f"Could not parse retry-after header {retry_hdr!r}: {parse_err}")
+            raise RateLimitError(provider="minimax", retry_after=retry_after or 5.0) from e
+
+        # Bad request (context length, etc.) — NOT retryable
+        if isinstance(e, anthropic.BadRequestError):
+            msg = str(e)
+            if "context" in msg.lower() or "token" in msg.lower():
+                raise ContextLengthError(str(e), provider="minimax") from e
+            raise ProviderError(str(e), provider="minimax") from e
+
+        # Connection errors — RETRYABLE
+        if isinstance(e, anthropic.APIConnectionError):
+            raise ProviderError(
+                f"Connection error: {e}",
+                provider="minimax",
+                retryable=True,
+            ) from e
+
+        # Timeout errors — RETRYABLE
+        if isinstance(e, anthropic.APITimeoutError):
+            raise ProviderError(
+                f"Request timed out: {e}",
+                provider="minimax",
+                retryable=True,
+            ) from e
+
+        # Server errors (500, 502, 503, 504) — RETRYABLE
+        if isinstance(e, anthropic.APIStatusError):
+            status = getattr(e, "status_code", 0)
+            if status >= 500:
+                raise ProviderError(
+                    f"Server error ({status}): {e}",
+                    provider="minimax",
+                    status_code=status,
+                    retryable=True,
+                ) from e
+            # Non-retryable status errors
+            raise ProviderError(
+                f"API error ({status}): {e}",
+                provider="minimax",
+                status_code=status,
+            ) from e
+
+        # Fallback: any other error is NOT retryable
+        raise ProviderError(str(e), provider="minimax") from e

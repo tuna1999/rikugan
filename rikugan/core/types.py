@@ -35,6 +35,25 @@ class ToolResult:
     is_error: bool = False
 
 
+def coerce_token_count(value: Any) -> int:
+    """Coerce an arbitrary value into a non-negative integer token count.
+
+    Provider SDKs and JSON round-trips may surface ``None`` or non-numeric
+    values for token fields. This helper centralizes the coercion so that
+    arithmetic and comparisons in agent/state code never have to guard
+    against ``None`` or unexpected types.
+    """
+    if value is None:
+        return 0
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return 0
+    if n < 0:
+        return 0
+    return n
+
+
 @dataclass
 class TokenUsage:
     prompt_tokens: int = 0
@@ -43,13 +62,25 @@ class TokenUsage:
     cache_read_tokens: int = 0
     cache_creation_tokens: int = 0
 
+    def __post_init__(self) -> None:
+        # Every internal token count is a non-negative int. Providers and
+        # persisted JSON can supply None / floats / strings; this is the
+        # single point of normalization.
+        raw_total = self.total_tokens
+        self.prompt_tokens = coerce_token_count(self.prompt_tokens)
+        self.completion_tokens = coerce_token_count(self.completion_tokens)
+        self.cache_read_tokens = coerce_token_count(self.cache_read_tokens)
+        self.cache_creation_tokens = coerce_token_count(self.cache_creation_tokens)
+        self.total_tokens = coerce_token_count(raw_total)
+        # If the provider omitted total_tokens, derive it from prompt+completion.
+        computed_total = self.prompt_tokens + self.completion_tokens
+        if self.total_tokens <= 0 and computed_total > 0:
+            self.total_tokens = computed_total
+
     @property
     def context_tokens(self) -> int:
         """Total tokens occupying the context window (including cache hits/writes)."""
-        prompt_token = self.prompt_tokens or 0
-        cache_read = self.cache_read_tokens or 0
-        cache_creation_tokens = self.cache_creation_tokens or 0
-        return (prompt_token) + (cache_read) + (cache_creation_tokens)
+        return self.prompt_tokens + self.cache_read_tokens + self.cache_creation_tokens
 
 
 @dataclass
@@ -117,13 +148,15 @@ class Message:
         ]
         usage = None
         if "token_usage" in d:
-            u = d["token_usage"]
+            u = d["token_usage"] or {}
             usage = TokenUsage(
-                prompt_tokens=u.get("prompt_tokens", 0),
-                completion_tokens=u.get("completion_tokens", 0),
-                total_tokens=u.get("total_tokens", 0),
-                cache_read_tokens=u.get("cache_read_tokens", 0),
-                cache_creation_tokens=u.get("cache_creation_tokens", 0),
+                # Pass raw values through TokenUsage.__post_init__ which
+                # normalizes None/strings/floats to non-negative ints.
+                prompt_tokens=u.get("prompt_tokens") or 0,
+                completion_tokens=u.get("completion_tokens") or 0,
+                total_tokens=u.get("total_tokens") or 0,
+                cache_read_tokens=u.get("cache_read_tokens") or 0,
+                cache_creation_tokens=u.get("cache_creation_tokens") or 0,
             )
         return cls(
             role=Role(d["role"]),
