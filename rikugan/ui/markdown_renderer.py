@@ -18,7 +18,6 @@ from markdown_it.token import Token
 from markdown_it.utils import EnvType, OptionsDict
 
 from .highlight import highlight_code
-from .styles import _hex_luminance, get_host_palette_colors
 
 # ---------------------------------------------------------------------------
 # Theme style generation
@@ -28,65 +27,60 @@ from .styles import _hex_luminance, get_host_palette_colors
 def _build_theme_styles(source: Any = None) -> dict[str, str]:
     """Build a complete style dict for the renderer.
 
-    This expands the old ``_theme_markdown_styles`` with entries for
-    tables, blockquotes, and improved spacing.
+    Uses ThemeManager.tokens() for all 17 colors. No more use_native_host_theme()
+    branching — the manager already accounts for AUTO/IDA_NATIVE mode.
+
+    The ``source`` parameter is kept for backward compat but unused
+    (tokens come from the manager).
     """
-    from .styles import blend_theme_color, use_native_host_theme
+    from .theme.manager import ThemeManager, _blend_hex
+    from .theme.tokens import is_dark_tokens
 
-    if use_native_host_theme():
-        return _native_theme_styles()
+    tokens = ThemeManager.instance().tokens()
 
-    colors = get_host_palette_colors(source)
-    base = colors["base"]
-    window = colors["window"]
-    text = colors["text"]
-    highlight = colors["highlight"]
-    mid = colors["mid"]
-    border = blend_theme_color(mid, window, 0.35)
-    heading_color = blend_theme_color(highlight, text, 0.15)
-    # Code background: recessed (darker than window) for visual distinction.
-    # Blend window toward base at 50% → slightly darker than window, lighter
-    # than pure window.  Combined with the blue border-left this creates a
-    # clear "code panel" feel without clashing with the chat background.
-    code_bg = blend_theme_color(window, base, 0.50)
-    inline_code_bg = blend_theme_color(window, base, 0.30)
-    inline_fg = blend_theme_color(highlight, text, 0.3)
-    muted = blend_theme_color(text, window, 0.45)
-    accent_border = blend_theme_color(highlight, window, 0.30)
-    is_dark = _hex_luminance(window) < 0.5
+    base = tokens.base
+    window = tokens.window
+    text = tokens.text
+    highlight = tokens.highlight
+    mid = tokens.mid
+    code_bg = tokens.code_bg
+    code_text = tokens.code_text
+
+    # Recessed border for code blocks: blend mid toward window at 35%
+    border = _blend_hex(mid, window, 0.35)
+    # Heading color: blend highlight toward text at 15%
+    heading_color = _blend_hex(highlight, text, 0.15)
+    # Inline code: blend code_bg toward base at 50% for a soft tint
+    inline_code_bg = _blend_hex(code_bg, base, 0.5)
+    inline_fg = text
+    # Muted text: blend text toward mid at 50%
+    muted = _blend_hex(text, mid, 0.5)
+    # Accent border: use highlight
+    accent_border = highlight
 
     return {
-        # Inline code
+        "is_dark": is_dark_tokens(tokens),
         "inline_code": (
             f"background-color:{inline_code_bg}; color:{inline_fg}; "
             "padding:1px 4px; border-radius:3px; font-family:monospace; font-size:12px;"
         ),
-        # Fenced code block container
         "code_block": (
-            f"background-color:{code_bg}; color:{text}; "
+            f"background-color:{code_bg}; color:{code_text}; "
             f"border-left:3px solid {accent_border}; border-radius:6px; "
             "padding:8px; font-family:monospace; font-size:12px; "
             "white-space:pre-wrap; word-break:break-all;"
         ),
-        # Language tag label
         "lang_tag": f"color:{muted}; font-size:10px;",
-        # Links
         "link": f"color:{highlight};",
-        # Headings
         "heading": f"color:{heading_color}; font-weight:bold;",
-        # h1/h2 bottom border
         "heading_border": f"border-bottom:1px solid {border};",
-        # Horizontal rule
         "hr": f"border:1px solid {border};",
-        # Paragraph
         "paragraph": "margin:0 0 4px 0;",
-        # Blockquote
         "blockquote": (
             f"border-left:3px solid {accent_border}; "
             f"color:{muted}; font-style:italic; "
             "padding:4px 12px; margin:4px 0;"
         ),
-        # Table
         "table": "border-collapse:collapse; width:100%;",
         "table_cell": (
             f"border:1px solid {border}; padding:4px 8px; "
@@ -94,43 +88,12 @@ def _build_theme_styles(source: Any = None) -> dict[str, str]:
         ),
         "table_header": (
             f"border:1px solid {border}; padding:4px 8px; "
-            f"font-weight:bold; background-color:{blend_theme_color(base, window, 0.08)};"
+            f"font-weight:bold; background-color:{_blend_hex(base, window, 0.1)};"
         ),
-        "table_row_even": f"background-color:{blend_theme_color(base, window, 0.05)};",
-        # List
+        "table_row_even": f"background-color:{_blend_hex(base, window, 0.05)};",
         "list_item": "margin:1px 0;",
-        # Task list
         "task_unchecked": "☐",
         "task_checked": "☑",
-        # Is dark theme (for Pygments style selection)
-        "is_dark": is_dark,
-    }
-
-
-def _native_theme_styles() -> dict[str, str]:
-    """Minimal styles for IDA native theme — let host handle colors."""
-    return {
-        "inline_code": "font-family:monospace; font-size:12px; background-color:#1a1a1a; padding:1px 4px;",
-        "code_block": (
-            "font-family:monospace; white-space:pre-wrap; "
-            "border-left:3px solid #569cd6; padding:8px; "
-            "background-color:#151515;"
-        ),
-        "lang_tag": "font-size:10px;",
-        "link": "text-decoration:underline;",
-        "heading": "font-weight:bold;",
-        "heading_border": "",
-        "hr": "",
-        "paragraph": "",
-        "blockquote": "font-style:italic; padding:4px 12px; border-left:3px solid gray;",
-        "table": "border-collapse:collapse; width:100%;",
-        "table_cell": "border:1px solid gray; padding:4px 8px;",
-        "table_header": "border:1px solid gray; padding:4px 8px; font-weight:bold;",
-        "table_row_even": "",
-        "list_item": "",
-        "task_unchecked": "☐",
-        "task_checked": "☑",
-        "is_dark": True,
     }
 
 
