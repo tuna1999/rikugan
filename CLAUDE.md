@@ -4,11 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Rikugan is a reverse-engineering agent plugin for **IDA Pro** and **Binary Ninja** that integrates a multi-provider LLM directly into the disassembler UI. It has its own generator-based agent loop, in-process tool orchestration, streaming UI, multi-tab chat, session persistence, MCP client support, and host-native tool sets.
+Rikugan is a reverse-engineering agent plugin for **IDA Pro** that integrates a multi-provider LLM directly into the disassembler UI. It has its own generator-based agent loop, in-process tool orchestration, streaming UI, multi-tab chat, session persistence, MCP client support, and host-native tool sets.
 
-Entry points:
+Entry point:
 - `rikugan_plugin.py` — IDA Pro plugin (`PLUGIN_ENTRY()`)
-- `rikugan_binaryninja.py` — Binary Ninja plugin (registers at import)
 
 ## Development Commands
 
@@ -37,17 +36,16 @@ Use `python` (not `python3`) on Windows for all commands above.
 
 ## Architecture
 
-### Dual-Host Structure
+### Single-Host Structure
 
-The codebase is organized around two host packages that implement the same interfaces:
+The codebase is organized around a single host package, `rikugan/ida/`, which implements the host-specific glue (plugin registration, UI, session controller). All other packages are host-agnostic:
 
 ```
 rikugan/ida/     — IDA Pro tools + UI
-rikugan/binja/   — Binary Ninja tools + UI
 rikugan/         — Shared: agent/, core/, providers/, tools/, ui/, state/, mcp/, skills/
 ```
 
-Tools are implemented once in `rikugan/tools/` (shared) or `rikugan/<host>/tools/` (host-specific). Host-specific tools import from `rikugan.tools.base` (the `@tool` decorator) and are registered in the host's `registry.py`.
+Tools are implemented in `rikugan/tools/` and import from `rikugan.tools.base` (the `@tool` decorator). The host's `registry.py` collects the registered tools.
 
 ### Generator-Based Agent Loop
 
@@ -69,17 +67,16 @@ Tools use the `@tool` decorator from `rikugan/tools/base.py`:
 - Wraps with `@idasync` for thread-safe IDA API access
 - Registers as `func._tool_definition`
 
-Add new tools: create function with `@tool(category="...")`, register in `rikugan/<host>/tools/registry.py`.
+Add new tools: create function with `@tool(category="...")`, register in `rikugan/ida/tools/registry.py`.
 
 ### Session / Multi-Tab Model
 
-Each tab is an independent `SessionState` managed by `SessionControllerBase`. Sessions auto-save per file (IDB/BNDB path) and are restored on reopen.
+Each tab is an independent `SessionState` managed by `SessionControllerBase`. Sessions auto-save per file (IDB path) and are restored on reopen.
 
 ### Threading Model
 
 - **Agent runs in `threading.Thread`** (BackgroundAgentRunner)
 - **IDA API calls must be on main thread** — `@idasync` decorator handles this
-- **Binary Ninja API is thread-safe** — no marshalling needed
 - **UI polling**: `QTimer` polls `queue.Queue` every 50ms
 - **Cancellation**: `threading.Event` checked at every yield point, sleep iteration, and tool dispatch boundary
 
@@ -87,7 +84,7 @@ Each tab is an independent `SessionState` managed by `SessionControllerBase`. Se
 
 Prompts are assembled in `rikugan/agent/system_prompt.py`:
 ```
-base prompt (ida.py or binja.py)
+base prompt (ida.py)
   + binary context
   + cursor position
   + tool list
@@ -131,7 +128,7 @@ Data enters prompts wrapped in delimiters (`<tool_result>`, `<binary_info>`, etc
 
 ### Script Execution Safety
 
-The `execute_python` tool (`rikugan/ida/tools/scripting.py`, `rikugan/binja/tools/scripting.py`) is the highest-risk surface:
+The `execute_python` tool (`rikugan/ida/tools/scripting.py`) is the highest-risk surface:
 - `rikugan/tools/script_guard.py` AST-checks code before user approval
 - Blocked: `subprocess`, `os.system`, `os.popen`, `os.exec*`, `os.spawn*`, `__import__`
 - Runs in sandboxed `exec()` with redirected stdout/stderr
@@ -165,7 +162,7 @@ Tools with `mutating=True` in `@tool` have pre-state captured for undo. Mutation
 | `rikugan/agent/turn.py` | TurnEvent / TurnEventType definitions |
 | `rikugan/tools/base.py` | `@tool` decorator, `ToolDefinition` |
 | `rikugan/tools/registry.py` | `ToolRegistry` — registration, dispatch |
-| `rikugan/core/host.py` | Host context singleton (BinaryView, address, navigate callback) |
+| `rikugan/core/host.py` | Host context singleton (cfunc_t, address, navigate callback) |
 | `rikugan/core/thread_safety.py` | `@idasync` decorator for IDA main-thread marshalling |
 | `rikugan/core/sanitize.py` | All sanitization functions |
 | `rikugan/providers/base.py` | `LLMProvider` ABC |

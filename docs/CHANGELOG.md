@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **Binary Ninja support removed.** Rikugan is now an IDA Pro plugin only.
+  The following have been deleted:
+  - `rikugan/binja/` package (24 files, ~4,100 LOC)
+  - `rikugan_binaryninja.py`, `install_binaryninja.{sh,bat}`, `plugin.json`
+  - `rikugan/skills/builtins/binja-scripting/`, `smart-patch-binja/`
+  - `rikugan/skills/builtins/deobfuscation/references/binja/`
+  - 5 BN-specific test files + `tests/core/test_host_matrix.py`
+  - BN-specific config from `pyproject.toml`, CI, and docs
+  - 2 docs (`/binja-scripting`, `/smart-patch-binja`)
+
+  Migrating BN users should keep using their last pre-removal release
+  (v1.3.1). The IDA Pro plugin is unaffected.
+
 ### Added
 
 - **Theme system**: User-selectable themes (Auto, Dark, Light, IDA Native) via

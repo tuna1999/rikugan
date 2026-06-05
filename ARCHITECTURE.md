@@ -33,7 +33,7 @@ This document describes the internal architecture of the Rikugan agent in full t
 
 ## High-Level Overview
 
-Rikugan is a **generator-based agentic loop** embedded inside IDA Pro and Binary Ninja. The agent runs in a background thread and communicates with the Qt UI via a stream of `TurnEvent` objects. All host API calls (IDA/BN) are marshalled to the main thread via `@idasync`.
+Rikugan is a **generator-based agentic loop** embedded inside IDA Pro. The agent runs in a background thread and communicates with the Qt UI via a stream of `TurnEvent` objects. All IDA API calls are marshalled to the main thread via `@idasync`.
 
 ```
 User Input
@@ -274,9 +274,7 @@ Each host provides ~56 tools organized by category:
 | Types | `create_struct`, `modify_struct`, `set_function_prototype` |
 | Scripting | `execute_python` (requires approval) |
 | Microcode (IDA) | `get_microcode`, `nop_microcode` |
-| IL (BN) | `get_il`, `get_il_block`, `nop_instructions`, `redecompile_function` |
-| IL Analysis (BN) | `get_cfg`, `track_variable_ssa` |
-| IL Transform (BN) | `il_replace_expr`, `il_set_condition`, `il_nop_expr`, `il_remove_block`, `patch_branch`, `write_bytes`, `install_il_workflow` |
+| Microcode | `get_microcode`, `nop_microcode` |
 
 ---
 
@@ -308,7 +306,7 @@ Requests a phase change in exploration mode. Validates via `ExplorationState.can
 
 ### `save_memory`
 
-Persists a fact to `RIKUGAN.md` in the IDB/BNDB directory:
+Persists a fact to `RIKUGAN.md` in the IDB directory:
 ```json
 {"fact": "sub_401230 is the snake initializer", "category": "function_purpose"}
 ```
@@ -358,7 +356,7 @@ Task: Analyze this binary as potential malware.
 
 `SkillRegistry.discover()` scans:
 1. Built-in skills: `rikugan/skills/builtins/*/SKILL.md`
-2. User skills: `~/.idapro/rikugan/skills/*/SKILL.md` (IDA) or `~/.binaryninja/rikugan/skills/*/SKILL.md` (BN)
+2. User skills: `~/.idapro/rikugan/skills/*/SKILL.md`
 
 Reference files in `references/*.md` subdirectories are automatically appended to the skill body.
 
@@ -382,10 +380,8 @@ When a user types `/<slug>`, `_resolve_skill()` in `loop.py`:
 | `/ctf` | CTF challenge solving |
 | `/generic-re` | General reverse engineering |
 | `/ida-scripting` | IDAPython API reference |
-| `/binja-scripting` | Binary Ninja Python API reference |
 | `/modify` | Exploration mode: autonomous binary modification |
-| `/smart-patch-ida` | IDA-specific binary patching |
-| `/smart-patch-binja` | Binary Ninja-specific binary patching |
+| `/smart-patch-ida` | Binary patching workflow |
 
 ---
 
@@ -440,9 +436,8 @@ The agent applies patches in-memory for each planned change.
 
 - Iterates over `ModificationPlan.changes`
 - Each step uses `EXECUTE_STEP_PROMPT` with the change description
-- Activates the platform-specific patching skill:
+- Activates the IDA Pro patching skill:
   - IDA Pro → `smart-patch-ida`
-  - Binary Ninja → `smart-patch-binja`
 - After each patch, the agent calls `exploration_report(category="patch_result")` with `original_hex`/`new_hex`
 - This creates a `PatchRecord` in `state.patches_applied`
 - Turn limit: 20 turns (`max_execute_turns`)
@@ -659,7 +654,7 @@ if self._context_manager.should_compact():
 
 ### RIKUGAN.md
 
-A per-binary Markdown file stored alongside the IDB/BNDB. It acts as cross-session memory.
+A per-binary Markdown file stored alongside the IDB. It acts as cross-session memory.
 
 - **Location**: `<idb_directory>/RIKUGAN.md`
 - **Loading**: First 200 lines loaded into the system prompt at the start of every session
@@ -737,7 +732,7 @@ class SessionControllerBase:
 `SessionHistory` handles save/restore:
 - Sessions are JSON-serialized to `<config_dir>/rikugan/sessions/`
 - Auto-saved after each agent turn (if `checkpoint_auto_save` is enabled)
-- Restored per-file when the same IDB/BNDB is reopened
+- Restored per-file when the same IDB is reopened
 - Full round-trip: messages, token usage, tool calls, tool results all preserved
 
 ---
@@ -823,7 +818,7 @@ In `_stream_llm_turn()`:
 
 ```
 ┌─────────────────────────────┐
-│  Host-specific base prompt  │ ← ida.py or binja.py
+│  Host-specific base prompt  │ ← ida.py
 │  (tool usage guidelines,    │
 │   discipline, safety)       │
 ├─────────────────────────────┤
@@ -924,7 +919,7 @@ IDA Pro requires all API calls on the main thread. The `@idasync` decorator in `
 - If already on main thread: execute directly
 - If on background thread: schedule via `ida_kernwin.execute_sync()` and wait
 
-Binary Ninja tools run directly — BN's API is thread-safe.
+All IDA API calls are marshalled to the main thread via `@idasync`.
 
 ### User Answer/Approval Queues
 
