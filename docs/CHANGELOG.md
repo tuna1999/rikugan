@@ -83,6 +83,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   alone, which mis-classified mid-luminance bgs and could produce
   white-on-light-blue text. Now it computes the actual contrast ratio
   for each candidate and takes the max.
+- **Light-mode text contrast (3 follow-up bugs F/G/H)**: After the
+  WCAG-aware picker landed, three more text-invisible-on-light-bg
+  cases were reported from interactive testing. (F) `CollapsibleSection`'s
+  `▶/▼` `QToolButton` and the thinking-block toggle button had no
+  explicit QSS, so the host palette rendered the glyph in a color
+  that matched the light background; both now subscribe to
+  `themeChanged` and apply an explicit `color: tokens.text` rule on
+  the button. (G) The selected inner chat-tab rule in
+  `panel_core._tab_widget_style` was using `tokens.highlight_text`
+  (which is white in light mode) on `tokens.base` (near-white in
+  light mode) — invisible; swapped to `tokens.text`. (H) The
+  user-message bubble QSS in `message_widgets.py` had hardcoded
+  `color: #ffffff` for the foreground; replaced with
+  `_pick_contrasting_text(_user_bubble_bg(tokens), tokens.text,
+  tokens.highlight_text)` so the text always contrasts with its
+  bubble background in every theme.
 
 ### Security
 

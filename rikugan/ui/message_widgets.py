@@ -253,7 +253,13 @@ class CollapsibleSection(QFrame):
     def __init__(self, title: str, parent: QWidget = None):
         super().__init__(parent)
         self._expanded = False
-        ThemeManager.instance().themeChanged.connect(self.update)
+        # Re-apply on theme change. ``update()`` alone is not enough
+        # because the toggle button needs an explicit QSS — Qt's default
+        # QToolButton palette in light mode is dark text, but IDA's
+        # host overrides it with a light-on-light style that becomes
+        # white text on a white background. Same applies to the title
+        # label which inherits from the QFrame default.
+        ThemeManager.instance().themeChanged.connect(self._apply_styles)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -273,6 +279,8 @@ class CollapsibleSection(QFrame):
         header.addWidget(self._title_label, 1)
         layout.addLayout(header)
 
+        self._apply_styles()
+
         # Content area
         self._content = QWidget()
         self._content_layout = QVBoxLayout(self._content)
@@ -289,6 +297,27 @@ class CollapsibleSection(QFrame):
         self._expanded = expanded
         self._content.setVisible(expanded)
         self._toggle_btn.setText("▼" if expanded else "▶")
+
+    def _apply_styles(self, _tokens: object = None) -> None:
+        # The toggle button has no parent QSS that can theme it
+        # reliably across IDA/Binja host palettes, so we set the
+        # foreground explicitly. ``t.text`` contrasts well against
+        # both dark and light backgrounds.
+        tokens = ThemeManager.instance().tokens()
+        self._toggle_btn.setStyleSheet(
+            host_stylesheet(
+                f"QToolButton {{ color: {tokens.text}; background: transparent; "
+                f"border: none; padding: 0; }}",
+                f"QToolButton {{ color: {tokens.text}; background: transparent; "
+                f"border: none; padding: 0; {_native_text_style(size=10)}; }}",
+            )
+        )
+        self._title_label.setStyleSheet(
+            host_stylesheet(
+                f"color: {tokens.text}; font-size: 11px;",
+                f"color: {tokens.text}; {_native_text_style(size=11)};",
+            )
+        )
 
     def content_layout(self) -> QVBoxLayout:
         return self._content_layout
@@ -340,11 +369,14 @@ class UserMessageWidget(QFrame):
         )
         self._content.setStyleSheet(
             host_stylesheet(
-                f"background-color: {_user_bubble_bg(tokens)}; color: #ffffff; "
+                f"background-color: {_user_bubble_bg(tokens)}; "
+                f"color: {_pick_contrasting_text(_user_bubble_bg(tokens), tokens.text, tokens.highlight_text)}; "
                 "border-radius: 10px; padding: 8px 12px; font-size: 13px;",
                 _bubble_css(
                     background=_user_bubble_bg(tokens),
-                    text_color="#ffffff",
+                    text_color=_pick_contrasting_text(
+                        _user_bubble_bg(tokens), tokens.text, tokens.highlight_text
+                    ),
                     border=_user_bubble_border(tokens),
                 ),
             )

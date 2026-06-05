@@ -232,6 +232,110 @@ class TestPickContrastingText(unittest.TestCase):
         fg = _pick_contrasting_text("#7fb0e0", dark_candidate="#000000", light_candidate="#ffffff")
         self.assertEqual(fg, "#000000")
 
+    # -- Bug F/G: text contrast on QToolButton & selected tab --
+
+    def test_chat_tab_selected_text_uses_text_not_highlight_text(self) -> None:
+        """Bug G: selected chat tab was using ``t.highlight_text`` (white)
+        on ``t.base`` (light gray in light mode) → invisible text.
+        The fix swaps to ``t.text`` which is always high-contrast.
+        """
+        from rikugan.ui.theme import tokens
+        from rikugan.ui.theme.manager import ThemeManager
+        from rikugan.ui.theme.palette_light import LIGHT_TOKENS
+
+        _reset_singleton()
+        mgr = ThemeManager.instance()
+        mgr.set_mode(tokens.ThemeMode.LIGHT)
+        mgr.themeChanged.emit(mgr.tokens())
+        t = mgr.tokens()
+        # The selected-tab rule must use ``t.text`` (not ``t.highlight_text``).
+        # ``t.text`` is #1e1e1e in light mode; ``t.highlight_text`` is #ffffff.
+        self.assertNotEqual(t.text, t.highlight_text)
+        self.assertEqual(t.text, LIGHT_TOKENS.text)
+        self.assertEqual(t.highlight_text, LIGHT_TOKENS.highlight_text)
+        # The contrast against ``t.base`` (the selected tab bg) must be
+        # acceptable for body text — pick the higher of the two.
+        from rikugan.ui.message_widgets import _pick_contrasting_text
+
+        chosen = _pick_contrasting_text(t.base, t.text, t.highlight_text)
+        self.assertEqual(
+            chosen, t.text,
+            "selected-tab text on t.base in LIGHT mode must be t.text, "
+            "not t.highlight_text (would be white on near-white).",
+        )
+
+    def test_user_bubble_text_uses_pick_contrasting_helper(self) -> None:
+        """Bug F variant: user bubble had hardcoded ``color: #ffffff`` on
+        a light-blue bg in light mode → invisible. The fix delegates
+        to ``_pick_contrasting_text`` so the foreground always contrasts.
+        """
+        from rikugan.ui.message_widgets import (
+            _pick_contrasting_text,
+            _user_bubble_bg,
+        )
+        from rikugan.ui.theme import tokens
+        from rikugan.ui.theme.manager import ThemeManager
+        from rikugan.ui.theme.palette_light import LIGHT_TOKENS
+
+        _reset_singleton()
+        mgr = ThemeManager.instance()
+        mgr.set_mode(tokens.ThemeMode.LIGHT)
+        t = mgr.tokens()
+        bg = _user_bubble_bg(t)
+        # In light mode, the bubble bg is a light blue-gray. The chosen
+        # foreground MUST NOT be white — it must contrast with the bg.
+        chosen = _pick_contrasting_text(bg, t.text, t.highlight_text)
+        self.assertNotEqual(
+            chosen, "#ffffff",
+            "user-bubble text on a light-blue bg must not be white.",
+        )
+        # Sanity: the chosen color is one of the two candidates.
+        self.assertIn(chosen, (t.text, t.highlight_text))
+
+    def test_collapsible_section_toggle_btn_has_explicit_color(self) -> None:
+        """Bug F: the ``▶/▼`` QToolButton on CollapsibleSection had no
+        explicit QSS, so the host palette (which can paint white in
+        light mode on some IDA themes) made the glyph invisible.
+        The fix gives it an explicit QSS bound to ``t.text``.
+        """
+        from rikugan.ui.theme import tokens
+        from rikugan.ui.theme.manager import ThemeManager
+        from rikugan.ui.message_widgets import CollapsibleSection
+
+        _reset_singleton()
+        mgr = ThemeManager.instance()
+        mgr.set_mode(tokens.ThemeMode.LIGHT)
+        # Capture the QSS the widget sets so we can assert the rule.
+        captured: list[str] = []
+        from PySide6.QtWidgets import QToolButton as _RealQToolButton
+        _orig_set = _RealQToolButton.setStyleSheet
+
+        def _spy_set(self, css: str) -> None:  # type: ignore[no-redef]
+            captured.append(css)
+            _orig_set(self, css)
+
+        _RealQToolButton.setStyleSheet = _spy_set  # type: ignore[assignment]
+        try:
+            w = CollapsibleSection("hello")
+            try:
+                w._apply_styles()
+            finally:
+                w.setParent(None)
+        finally:
+            _RealQToolButton.setStyleSheet = _orig_set  # type: ignore[assignment]
+
+        # Find the stylesheet set on the toggle button (last QSS
+        # containing "QToolButton").
+        toggle_css = [c for c in captured if "QToolButton" in c]
+        self.assertTrue(
+            toggle_css,
+            "CollapsibleSection._apply_styles must call setStyleSheet "
+            "on the QToolButton so the toggle glyph has a guaranteed color.",
+        )
+        # The rule must reference the theme's text color (not the
+        # highlight_text, which would be white in light mode).
+        self.assertIn(mgr.tokens().text, toggle_css[-1])
+
 
 if __name__ == "__main__":
     unittest.main()

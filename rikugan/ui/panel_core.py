@@ -454,7 +454,12 @@ class RikuganPanelCore(QWidget):
             f"QTabBar::tab {{ background: {t.alt_base}; color: {_tab_label()}; padding: 2px 8px; "
             f"border: none; border-right: 1px solid {t.mid}; "
             f"font-size: 11px; max-width: 140px; }}"
-            f"QTabBar::tab:selected {{ background: {t.base}; color: {t.highlight_text}; }}"
+            # ``t.text`` (not ``t.highlight_text``) is used here: in light
+            # mode ``t.base`` is near-white and ``highlight_text`` is
+            # also white, so the selected-tab label would be invisible.
+            # ``t.text`` is dark in light mode and light in dark mode,
+            # so it always contrasts with ``t.base``.
+            f"QTabBar::tab:selected {{ background: {t.base}; color: {t.text}; }}"
             f"QTabBar::tab:hover {{ background: {t.alt_base}; }}"
             f"QTabBar::close-button {{ image: none; border: none; padding: 1px; }}"
             f"QTabBar::close-button:hover {{ background: {t.error}; border-radius: 2px; }}"
