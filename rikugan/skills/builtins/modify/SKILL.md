@@ -61,7 +61,6 @@ Example format:
 
 The agent host determines which patching skill to use:
 - **IDA Pro**: activate `smart-patch-ida` via `activate_skill`
-- **Binary Ninja**: activate `smart-patch-binja` via `activate_skill`
 
 The host is visible in the system prompt context. Activate the correct skill at
 the start of Phase 3, then follow its workflow for each planned change.
