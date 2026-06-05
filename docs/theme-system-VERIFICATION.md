@@ -366,3 +366,28 @@ which patches `is_ida` to return `False` and asserts
 | 3i. Binja host gets Dark for non-LIGHT modes | **PASS** (code review) |
 
 **All 9 acceptance criteria met.** The theme system is ready to merge.
+
+---
+
+## Post-merge host-side fix (2026-06-05)
+
+During real-IDA load, two RuntimeWarnings surfaced in the host log that
+the test stubs did not catch:
+
+1. `RuntimeWarning: This bitwise operation relies on a PyQt5 shim feature...`
+   at `settings_dialog.py:364` — `QDialogButtonBox.StandardButton.Ok |
+   QDialogButtonBox.StandardButton.Cancel`. PySide6 enum `|` triggers
+   the shim path which warns at runtime.
+2. `AttributeError: type object 'AlignmentFlag' has no attribute 'AlignTopLeft'`
+   at `settings_dialog.py:264` — `Qt.AlignmentFlag.AlignTopLeft` is not
+   a real PySide6 enum value; the correct form is
+   `AlignTop | AlignLeft` (or use the project's `qt_flags` helper).
+
+Both fixed in commit `b8d82df` ("fix(theme): use qt_flags helper for
+compound Qt enums in settings_dialog"). The stubbed `QDialogButtonBox`
+in `tests/qt_stubs.py` permitted `__or__` on its `StandardButton`
+attributes, so the test env did not reproduce the host warning.
+
+**Lesson logged**: tests/qt_stubs.py should not promote `__or__` on
+`StandardButton` or `AlignmentFlag` — it masks real-PySide6 behavior.
+A follow-up to remove that promotion is recommended.
