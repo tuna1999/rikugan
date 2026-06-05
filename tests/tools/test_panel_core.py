@@ -48,7 +48,7 @@ _ollama_stub = sys.modules.get("rikugan.providers.ollama_provider")
 if _ollama_stub and not isinstance(getattr(_ollama_stub, "DEFAULT_OLLAMA_URL", None), str):
     _ollama_stub.DEFAULT_OLLAMA_URL = "http://localhost:11434"
 
-# Force-remove any stub that test_binja_panel/test_ida_panel may have registered
+# Force-remove any stub that test_ida_panel may have registered
 # so we always import the real module here.
 sys.modules.pop("rikugan.ui.panel_core", None)
 

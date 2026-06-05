@@ -1335,7 +1335,7 @@ class ToolApprovalWidget(QFrame):
         line_height = self._code_edit.fontMetrics().lineSpacing()
         self._code_edit.setFixedHeight(line_height * visible_lines + 16)
         # The highlighter picks dark or light rules based on the editor's
-        # own palette, so it works in IDA native, BN, and standalone hosts.
+        # own palette, so it works in IDA native and standalone hosts.
         self._highlighter = _PythonHighlighter(self._code_edit.document())
         return self._code_edit
 

@@ -4,15 +4,12 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/buzzer-re/Rikugan/main/install.sh | bash
 #   curl -fsSL https://raw.githubusercontent.com/buzzer-re/Rikugan/main/install.sh | bash -s -- --ida
-#   curl -fsSL https://raw.githubusercontent.com/buzzer-re/Rikugan/main/install.sh | bash -s -- --binja
-#   curl -fsSL https://raw.githubusercontent.com/buzzer-re/Rikugan/main/install.sh | bash -s -- --both
 #
 # Environment variables:
 #   RIKUGAN_DIR     — where to clone the repo   (default: ~/.rikugan)
 #   RIKUGAN_BRANCH  — git branch to check out   (default: main)
 #   IDADIR          — override IDA install dir  (forwarded to install_ida.sh)
 #   IDA_PYTHON      — override Python for IDA    (forwarded to install_ida.sh)
-#   BN_PYTHON       — override Python for BN     (forwarded to install_binaryninja.sh)
 # ──────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -35,7 +32,7 @@ banner() {
     ╔══════════════════════════════════════════╗
     ║            六眼  Rikugan                 ║
     ║     Reverse Engineering AI Agent         ║
-    ║        IDA Pro  ·  Binary Ninja          ║
+    ║              IDA Pro                     ║
     ╚══════════════════════════════════════════╝
 EOF
     printf "${NC}\n"
@@ -46,16 +43,12 @@ TARGET=""
 for arg in "$@"; do
     case "$arg" in
         --ida)       TARGET="ida"   ;;
-        --binja|--bn) TARGET="binja" ;;
-        --both)      TARGET="both"  ;;
         --help|-h)
             echo "Usage: curl -fsSL https://raw.githubusercontent.com/buzzer-re/Rikugan/main/install.sh | bash -s -- [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --ida       Install for IDA Pro only"
-            echo "  --binja     Install for Binary Ninja only"
-            echo "  --both      Install for both hosts"
-            echo "  (no flag)   Auto-detect installed hosts"
+            echo "  --ida       Install for IDA Pro"
+            echo "  (no flag)   Auto-detect IDA Pro installation"
             echo ""
             echo "Environment:"
             echo "  RIKUGAN_DIR=$INSTALL_DIR"
@@ -79,18 +72,6 @@ detect_ida() {
     fi
     command -v ida64 &>/dev/null && return 0
     command -v idat64 &>/dev/null && return 0
-    return 1
-}
-
-detect_binja() {
-    if [[ "$(uname)" == "Darwin" ]]; then
-        [[ -d "$HOME/Library/Application Support/Binary Ninja" ]] && return 0
-        [[ -d "$HOME/.binaryninja" ]] && return 0
-        [[ -d "/Applications/Binary Ninja.app" ]] && return 0
-        [[ -d "$HOME/Applications/Binary Ninja.app" ]] && return 0
-    else
-        [[ -d "$HOME/.binaryninja" ]] && return 0
-    fi
     return 1
 }
 
@@ -143,18 +124,6 @@ run_ida_installer() {
     bash "$script"
 }
 
-run_binja_installer() {
-    local script="$INSTALL_DIR/install_binaryninja.sh"
-    if [[ ! -f "$script" ]]; then
-        err "install_binaryninja.sh not found in $INSTALL_DIR"
-        return 1
-    fi
-    info "Running Binary Ninja installer..."
-    echo ""
-    chmod +x "$script"
-    bash "$script"
-}
-
 # ── Main ─────────────────────────────────────────────────────────────
 main() {
     banner
@@ -162,24 +131,13 @@ main() {
 
     # Auto-detect if no target specified
     if [[ -z "$TARGET" ]]; then
-        local has_ida=false has_binja=false
-        detect_ida   && has_ida=true
-        detect_binja && has_binja=true
-
-        if $has_ida && $has_binja; then
-            TARGET="both"
-            ok "Detected both IDA Pro and Binary Ninja"
-        elif $has_ida; then
+        if detect_ida; then
             TARGET="ida"
             ok "Detected IDA Pro"
-        elif $has_binja; then
-            TARGET="binja"
-            ok "Detected Binary Ninja"
         else
-            warn "No IDA Pro or Binary Ninja installation detected."
-            warn "Installing anyway — use --ida or --binja to specify the target."
-            warn "Defaulting to both."
-            TARGET="both"
+            warn "No IDA Pro installation detected."
+            warn "Installing anyway — use --ida to specify the target."
+            TARGET="ida"
         fi
     fi
 
@@ -195,14 +153,6 @@ main() {
     case "$TARGET" in
         ida)
             run_ida_installer || failed=true
-            ;;
-        binja)
-            run_binja_installer || failed=true
-            ;;
-        both)
-            run_ida_installer || { warn "IDA installation failed"; failed=true; }
-            echo ""
-            run_binja_installer || { warn "Binary Ninja installation failed"; failed=true; }
             ;;
     esac
 

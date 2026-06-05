@@ -1,6 +1,7 @@
-"""Shared tool framework: @tool decorator, ToolRegistry, and security helpers.
+"""Shared tool framework: @tool decorator, ToolRegistry, formatting helpers,
+and security helpers used by all hosts.
 
-Host-specific tool implementations live in their respective packages:
-  - rikugan.ida.tools   (IDA Pro)
-  - rikugan.binja.tools (Binary Ninja)
+IDA Pro tool implementations live in ``rikugan.ida.tools``. The shared
+modules here are host-agnostic; IDA-specific code must not be added to
+this package.
 """
