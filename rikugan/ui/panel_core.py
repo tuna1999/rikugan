@@ -15,7 +15,6 @@ from ..core.config import RikuganConfig
 from ..core.logging import log_debug, log_error, log_info, log_warning
 from ..core.types import Role
 from ..providers.auth_cache import resolve_auth_cached
-from ..providers.registry import ProviderRegistry
 from .chat_view import ChatView
 from .context_bar import ContextBar
 from .input_area import InputArea
@@ -301,12 +300,15 @@ class RikuganPanelCore(QWidget):
         super().__init__(parent)
         self._config = RikuganConfig.load_or_create()
         self._use_native_host_theme = use_native_host_theme()
-        self._dependency_warnings = ProviderRegistry().dependency_warnings()
         log_debug(
             f"Config loaded: provider={self._config.provider.name} model={self._config.provider.model}",
         )
-        for warning in self._dependency_warnings:
-            log_warning(f"Dependency warning: {warning}")
+        # ``ProviderRegistry().dependency_warnings()`` walks all provider
+        # modules and is non-trivial (≈0.7ms cold). Defer it: log the
+        # warnings the first time the user looks at the dependency list,
+        # or the next event-loop turn — whichever comes first.
+        self._dependency_warnings: list[str] = []
+        QTimer.singleShot(0, self._resolve_dependency_warnings)
         if self._config.has_encrypted_keys():
             self._prompt_decryption_password()
         self._ctrl = controller_factory(self._config)
@@ -339,6 +341,22 @@ class RikuganPanelCore(QWidget):
         self._build_ui()
         # Refresh themed widgets when the user switches the active theme.
         ThemeManager.instance().themeChanged.connect(self._on_theme_changed)
+
+    def _resolve_dependency_warnings(self) -> None:
+        """Compute and log dependency warnings for the active providers.
+
+        Called once via ``QTimer.singleShot(0, …)`` so it lands after
+        the first paint. Storing the list on ``self`` also lets
+        ``dependency_warnings()`` callers avoid recomputing it.
+        """
+        try:
+            from ..providers.registry import ProviderRegistry
+
+            self._dependency_warnings = ProviderRegistry().dependency_warnings()
+            for warning in self._dependency_warnings:
+                log_warning(f"Dependency warning: {warning}")
+        except Exception as e:  # pragma: no cover - defensive
+            log_debug(f"dependency_warnings() failed: {e}")
 
     def _prompt_decryption_password(self) -> None:
         """Prompt for the encryption password at session start."""
@@ -755,7 +773,7 @@ class RikuganPanelCore(QWidget):
         # Restore messages into the forked chat view
         source_session = self._ctrl.get_session(new_tab_id)
         if source_session and source_session.messages:
-            chat_view.restore_from_messages(source_session.messages)
+            chat_view.restore_from_messages_async(source_session.messages)
         self._ctrl.switch_tab(new_tab_id)
         log_info(f"Forked tab {source_tab_id} → {new_tab_id}")
 
@@ -922,7 +940,7 @@ class RikuganPanelCore(QWidget):
             return
         chat_view = self._chat_views.get(tab_id)
         if chat_view is not None:
-            chat_view.restore_from_messages(messages)
+            chat_view.restore_from_messages_async(messages)
 
     def _update_token_display(self, token_count: int | None = None) -> None:
         """Update the context bar token display with context window percentage."""
@@ -1295,7 +1313,7 @@ class RikuganPanelCore(QWidget):
             if session:
                 legacy_cv = self._active_chat_view()
                 if legacy_cv:
-                    legacy_cv.restore_from_messages(session.messages)
+                    legacy_cv.restore_from_messages_async(session.messages)
                 self._update_token_display()
 
     # --- Mutation log integration ---

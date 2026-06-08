@@ -38,12 +38,26 @@ def _qt_class(name: str) -> type:
     def _text_setter(self, val):
         self._text = val
 
+    def _min_h_setter(self, val):
+        self._min_h = int(val)
+
+    def _min_h_getter(self):
+        return getattr(self, "_min_h", 0)
+
+    def _max_h_setter(self, val):
+        self._max_h = int(val)
+
+    def _max_h_getter(self):
+        return getattr(self, "_max_h", 0)
+
     attrs = {
         "__init__": _noop,
         # QWidget common
         "setObjectName": _noop,
         "setStyleSheet": _noop,
         "setMinimumWidth": _noop,
+        "setMinimumHeight": _min_h_setter,
+        "minimumHeight": _min_h_getter,
         "setMinimumSize": _noop,
         "setSizePolicy": _noop,
         "setFixedSize": _noop,
@@ -58,7 +72,8 @@ def _qt_class(name: str) -> type:
         "setContentsMargins": _noop,
         "setSpacing": _noop,
         "setFixedHeight": _noop,
-        "setMaximumHeight": _noop,
+        "setMaximumHeight": _max_h_setter,
+        "maximumHeight": _max_h_getter,
         "setCheckable": _noop,
         "setChecked": _noop,
         "setText": _text_setter,
@@ -307,6 +322,37 @@ def _make_qcoreapplication_stub() -> type:
     return _QCoreApplication
 
 
+def _make_qthread_stub() -> type:
+    """Build a minimal QThread stub for tests.
+
+    The real QThread runs ``run()`` in a background thread. For
+    Rikugan tests we only need to drive ``run()`` synchronously so
+    signal emissions land in the test's own list. ``start()`` just
+    calls ``run()`` directly; ``quit()`` / ``wait()`` are no-ops.
+    Class-level ``Signal`` attributes work because the descriptor
+    protocol on ``_Signal`` does not care about the host class.
+    """
+
+    class _QThread:
+        def __init__(self, *a, **kw):
+            self._started = False
+
+        def start(self) -> None:
+            self._started = True
+            self.run()
+
+        def quit(self) -> None:
+            return None
+
+        def wait(self, *_a, **_kw) -> None:
+            return None
+
+        def isRunning(self) -> bool:
+            return self._started
+
+    return _QThread
+
+
 class _Signal:
     """Minimal Signal stub that acts as a descriptor.
 
@@ -459,6 +505,7 @@ def ensure_pyside6_stubs() -> None:
             # synchronously on start() so the debounce in ThemeManager
             # does not need a real event loop to dispatch.
             QCoreApplication=_make_qcoreapplication_stub(),
+            QThread=_make_qthread_stub(),
         ),
     )
 

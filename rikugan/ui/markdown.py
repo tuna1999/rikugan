@@ -5,62 +5,90 @@ Qt-compatible HTML.  Falls back to a lightweight regex converter when
 markdown-it-py is not installed.
 
 Public API: ``md_to_html(text, source) -> str``
+
+Performance note
+----------------
+The ``markdown_it`` package is heavy (~35ms cold import on CPython 3.13).
+We probe for it via :func:`importlib.util.find_spec` at module load (cheap,
+does not execute package code) and only import it on first use. This keeps
+the user-click path from paying for markdown rendering when the panel is
+opened but no message has been rendered yet.
 """
 
 from __future__ import annotations
 
 import html as _html
+import hashlib as _hashlib
+import importlib.util as _importlib_util
 import re as _re
 
 from .styles import blend_theme_color, get_host_palette_colors, use_native_host_theme
 
 # ---------------------------------------------------------------------------
-# markdown-it-py integration (preferred path)
+# markdown-it-py integration (preferred path) — lazy
 # ---------------------------------------------------------------------------
 
-_HAS_MARKDOWN_IT = False
-_md_instance = None
-_qt_renderer = None
+# Probed at import time: cheap (~0.05ms) and tells us if the package is on
+# sys.path without executing its top-level code.
+_HAS_MARKDOWN_IT = _importlib_util.find_spec("markdown_it") is not None
 
-try:
-    from markdown_it import MarkdownIt
-
-    from .markdown_renderer import QtRenderer, _build_theme_styles
-
-    _HAS_MARKDOWN_IT = True
-except ImportError:
-    pass
+# Resolved on first use. ``None`` means "not yet attempted".
+_md_instance: "object | None" = None
+_qt_renderer: "object | None" = None
+_markdown_it_failed = False
 
 
-def _init_markdown_it() -> tuple[MarkdownIt | None, QtRenderer | None]:
-    """Lazily initialize the MarkdownIt parser and QtRenderer."""
-    if not _HAS_MARKDOWN_IT:
-        return None, None
+def _resolve_markdown_it() -> "tuple | None":
+    """Lazily import ``markdown_it`` and the Qt renderer.
+
+    Returns ``(MarkdownIt, QtRenderer)`` on success, ``None`` if the
+    package is unavailable or has been seen to fail.  Cached after first
+    successful call.
+    """
+    global _md_instance, _qt_renderer, _markdown_it_failed
+    if _md_instance is not None:
+        return _md_instance, _qt_renderer
+    if _markdown_it_failed or not _HAS_MARKDOWN_IT:
+        return None
+    try:
+        from markdown_it import MarkdownIt  # noqa: WPS433 — intentional lazy import
+
+        from .markdown_renderer import QtRenderer
+    except ImportError:
+        _markdown_it_failed = True
+        return None
     md = (
         MarkdownIt("commonmark")
         .enable("table")
         .enable("strikethrough")
     )
     renderer = QtRenderer(md)
+    _md_instance, _qt_renderer = md, renderer
     return md, renderer
+
+
+def _init_markdown_it() -> "tuple | None":
+    """Lazily initialize the MarkdownIt parser and QtRenderer.
+
+    Kept for backward compatibility (the legacy path may still call it).
+    """
+    return _resolve_markdown_it()
 
 
 def _render_with_markdown_it(text: str, source=None) -> str | None:
     """Render using markdown-it-py. Returns None if unavailable."""
-    global _md_instance, _qt_renderer
-
-    if not _HAS_MARKDOWN_IT:
+    resolved = _resolve_markdown_it()
+    if resolved is None:
         return None
+    md, qt_renderer = resolved
 
-    if _md_instance is None:
-        _md_instance, _qt_renderer = _init_markdown_it()
-
-    if _md_instance is None:
-        return None
+    # Imported lazily — pulls in pygments via markdown_renderer only on
+    # the first markdown render, not at module load.
+    from .markdown_renderer import _build_theme_styles
 
     styles = _build_theme_styles(source)
-    tokens = _md_instance.parse(text)
-    return _qt_renderer.render_with_styles(tokens, _md_instance.options, {}, styles)
+    tokens = md.parse(text)
+    return qt_renderer.render_with_styles(tokens, md.options, {}, styles)
 
 
 # ---------------------------------------------------------------------------
@@ -244,12 +272,64 @@ def md_to_html(text: str, source=None) -> str:
 
     Uses markdown-it-py when available; falls back to the legacy
     regex converter otherwise.
+
+    Results are memoized in :data:`_HTML_CACHE` keyed by a hash of the
+    input text and the current ``ThemeManager.tokens()`` identity.
+    The cache is invalidated automatically when the theme changes
+    (see :func:`_on_theme_changed`).
     """
     if not text:
         return ""
 
-    result = _render_with_markdown_it(text, source)
-    if result is not None:
-        return result
+    key = _cache_key(text)
+    cached = _HTML_CACHE.get(key)
+    if cached is not None:
+        return cached
 
-    return _legacy_md_to_html(text, source)
+    result = _render_with_markdown_it(text, source)
+    if result is None:
+        result = _legacy_md_to_html(text, source)
+
+    # Bounded cache: cap at 256 entries to keep memory in check.
+    if len(_HTML_CACHE) >= 256:
+        # Drop the oldest half (insertion order dict).
+        for k in list(_HTML_CACHE.keys())[:128]:
+            _HTML_CACHE.pop(k, None)
+    _HTML_CACHE[key] = result
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Cache
+# ---------------------------------------------------------------------------
+
+# Bounded dict cache. Keyed by (text_hash, theme_token_id). The theme
+# token id is the id() of the live ThemeTokens object — when the theme
+# changes, ThemeManager produces a new instance, so id() differs and we
+# miss the cache. This avoids re-rendering after theme change but
+# allows the same content to be re-rendered with the same theme
+# without re-running markdown-it-py.
+_HTML_CACHE: dict[tuple[str, int], str] = {}
+
+
+def _cache_key(text: str) -> tuple[str, int]:
+    """Build a (text_hash, theme_token_id) cache key."""
+    from .theme.manager import ThemeManager
+
+    text_hash = _hashlib.sha1(text.encode("utf-8", errors="replace")).hexdigest()
+    return (text_hash, id(ThemeManager.instance().tokens()))
+
+
+def _on_theme_changed(_tokens) -> None:
+    """Invalidate the HTML cache when the active theme changes."""
+    _HTML_CACHE.clear()
+
+
+# Wire the cache invalidation exactly once. ``themeChanged`` is emitted
+# on every theme swap, so the next call to ``md_to_html`` will compute
+# fresh HTML for the new palette.
+try:
+    from .theme.manager import ThemeManager
+    ThemeManager.instance().themeChanged.connect(_on_theme_changed)
+except Exception:  # noqa: BLE001 — host may not be ready; safe to ignore.
+    pass

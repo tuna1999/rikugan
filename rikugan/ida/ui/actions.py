@@ -22,15 +22,64 @@ from ...ui.action_handlers import (
     handle_xref_analysis,
 )
 
-try:
-    ida_funcs = importlib.import_module("ida_funcs")
+# Probe the IDA SDK presence cheaply with ``find_spec`` (does not run
+# module code) and lazy-import the real modules on first use.  This
+# defers the cost of importing ``idaapi`` etc. from the panel-load
+# path to the moment the user actually invokes a context-menu action.
+# Some test mock modules (e.g. ``MagicMock``) are missing ``__spec__``
+# and would cause ``find_spec`` to raise ``ValueError``; treat that as
+# "module is present" and let the actual import attempt below decide.
+import importlib.util as _importlib_util
+
+_IDA_MODULES: tuple[str, ...] = ("ida_funcs", "ida_kernwin", "ida_name", "idaapi", "idc")
+
+
+def _probe_ida() -> bool:
+    for _m in _IDA_MODULES:
+        try:
+            spec = _importlib_util.find_spec(_m)
+        except (ValueError, ModuleNotFoundError):
+            continue
+        if spec is None:
+            return False
+    return True
+
+
+_HAS_IDA = _probe_ida()
+_ida_loaded = False
+
+
+def _ensure_ida() -> bool:
+    """Import the IDA SDK modules and bind them as module attributes.
+
+    Idempotent: subsequent calls are free. Returns ``_HAS_IDA``.
+    """
+    global _ida_loaded
+    if _ida_loaded:
+        return _HAS_IDA
+    _ida_loaded = True
+    if not _HAS_IDA:
+        return False
+    try:
+        import sys as _sys
+
+        for _m in _IDA_MODULES:
+            setattr(_sys.modules[__name__], _m, importlib.import_module(_m))
+        return True
+    except ImportError:
+        return False
+
+
+# Bind the names eagerly when IDA is present so the rest of this file
+# (class bodies, type annotations) can refer to ``idaapi`` etc. without
+# going through ``__getattr__``.  When IDA is absent, the names remain
+# unbound and the ``if _HAS_IDA:`` block below is skipped entirely.
+if _ensure_ida():
+    ida_funcs = importlib.import_module("ida_funcs")  # type: ignore[assignment]
     ida_kernwin = importlib.import_module("ida_kernwin")
     ida_name = importlib.import_module("ida_name")
     idaapi = importlib.import_module("idaapi")
     idc = importlib.import_module("idc")
-    _HAS_IDA = True
-except ImportError:
-    _HAS_IDA = False
 
 
 def _get_context() -> dict[str, Any]:

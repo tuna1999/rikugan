@@ -1,4 +1,14 @@
-"""Host-agnostic session controller orchestration."""
+"""Host-agnostic session controller orchestration.
+
+Performance note
+----------------
+The agent runtime (``AgentLoop``, ``BackgroundAgentRunner``, ``MCPManager``,
+``ProviderRegistry``, ``SkillRegistry``, ``SessionState``, ``SessionHistory``)
+is a heavy import chain (~25ms cold). It is needed to actually drive a
+chat session, but the panel is created long before the user sends a
+first message. We defer the imports into the methods that need them so
+the panel-construction path stays light.
+"""
 
 from __future__ import annotations
 
@@ -10,20 +20,23 @@ import uuid
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from ..agent.loop import AgentLoop, BackgroundAgentRunner
-from ..agent.turn import TurnEvent
 from ..core.config import RikuganConfig
 from ..core.host import get_database_instance_id, set_database_instance_id
 from ..core.logging import log_debug, log_error, log_info
-from ..mcp.manager import MCPManager
-from ..providers.registry import ProviderRegistry
-from ..skills.registry import SkillRegistry
-from ..state.history import SessionHistory
-from ..state.session import SessionState
 
 if TYPE_CHECKING:
+    from ..agent.loop import AgentLoop, BackgroundAgentRunner
+    from ..agent.turn import TurnEvent
+    from ..mcp.manager import MCPManager
+    from ..providers.registry import ProviderRegistry
+    from ..skills.registry import SkillRegistry
+    from ..state.history import SessionHistory
+    from ..state.session import SessionState
     from ..tools.registry import ToolRegistry
 else:
+    AgentLoop = BackgroundAgentRunner = TurnEvent = None  # type: ignore[assignment]
+    MCPManager = ProviderRegistry = SkillRegistry = None  # type: ignore[assignment]
+    SessionHistory = SessionState = None  # type: ignore[assignment]
     ToolRegistry = Any
 
 
@@ -46,11 +59,41 @@ class SessionControllerBase:
         database_path_getter: Callable[[], str],
         host_name: str,
     ):
+        # Lazy imports — keep heavy agent runtime off the panel-import
+        # path. Each import is performed at most once per process; we
+        # cache the imported symbols back into the module globals so
+        # subsequent calls (and any sibling code) see them immediately.
+        global AgentLoop, BackgroundAgentRunner, TurnEvent
+        global MCPManager, ProviderRegistry, SkillRegistry
+        global SessionHistory, SessionState
+        if AgentLoop is None:
+            from ..agent.loop import AgentLoop as _AgentLoop
+            from ..agent.loop import BackgroundAgentRunner as _BackgroundAgentRunner
+            from ..agent.turn import TurnEvent as _TurnEvent
+            from ..mcp.manager import MCPManager as _MCPManager
+            from ..providers.registry import ProviderRegistry as _ProviderRegistry
+            from ..skills.registry import SkillRegistry as _SkillRegistry
+            from ..state.history import SessionHistory as _SessionHistory
+            from ..state.session import SessionState as _SessionState
+            AgentLoop = _AgentLoop
+            BackgroundAgentRunner = _BackgroundAgentRunner
+            TurnEvent = _TurnEvent
+            MCPManager = _MCPManager
+            ProviderRegistry = _ProviderRegistry
+            SkillRegistry = _SkillRegistry
+            SessionHistory = _SessionHistory
+            SessionState = _SessionState
+
         self.config = config
         self.host_name = host_name
         self._provider_registry = ProviderRegistry()
         self._provider_registry.register_custom_providers(list(config.custom_providers.keys()))
-        self._tool_registry = tool_registry_factory()
+        # Defer the (potentially heavy) tool registry factory — see
+        # ``tool_registry`` property. We keep the callable around so the
+        # property can invoke it on first access, which happens off the
+        # user-click path (typically in ``_initialize_runtime``).
+        self._tool_registry_factory = tool_registry_factory
+        self._tool_registry: ToolRegistry | None = None
         self._skill_registry = SkillRegistry()
         self._mcp_manager = MCPManager()
         self._idb_path = _normalize_db_path(database_path_getter())
@@ -104,7 +147,7 @@ class SessionControllerBase:
 
             if self._runtime_shutdown.is_set():
                 return
-            self._mcp_manager.start_servers(self._tool_registry)
+            self._mcp_manager.start_servers(self.tool_registry)
         except Exception as e:
             log_error(f"Background runtime initialization failed: {e}")
         finally:
@@ -228,6 +271,11 @@ class SessionControllerBase:
 
     @property
     def tool_registry(self) -> ToolRegistry:
+        # Lazy: invoke the factory the first time a caller needs the
+        # registry.  ``_initialize_runtime`` also touches this property
+        # off the UI thread, so the cost lands there.
+        if self._tool_registry is None:
+            self._tool_registry = self._tool_registry_factory()
         return self._tool_registry
 
     @property
@@ -288,7 +336,7 @@ class SessionControllerBase:
 
         loop = AgentLoop(
             provider,
-            self._tool_registry,
+            self.tool_registry,
             self.config,
             self._sessions[self._active_tab_id],
             skill_registry=self._skill_registry,
@@ -453,7 +501,7 @@ class SessionControllerBase:
         """
         thread = threading.Thread(
             target=self._mcp_manager.reload,
-            args=(self._tool_registry,),
+            args=(self.tool_registry,),
             daemon=True,
             name="rikugan-mcp-reload",
         )

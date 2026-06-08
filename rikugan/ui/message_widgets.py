@@ -566,6 +566,7 @@ class AssistantMessageWidget(QFrame):
         self._full_text = ""
         self._pending_delta = 0
         self._last_render_time: float = 0.0
+        self._deferred_pending: bool = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 6, 8, 6)
@@ -638,6 +639,17 @@ class AssistantMessageWidget(QFrame):
         self._pending_delta = 0
         self._last_render_time = _time.monotonic()
 
+    def _render_if_pending(self) -> None:
+        """Render only if a deferred text is pending first paint.
+
+        Used by ``restore_from_messages`` to skip the markdown render
+        while the widget is being constructed (hidden) — the render
+        cost (md_to_html) is then paid lazily on the first showEvent.
+        """
+        if getattr(self, "_deferred_pending", False):
+            self._deferred_pending = False
+            self._render()
+
     def append_text(self, delta: str) -> None:
         self._full_text += delta
         self._pending_delta += len(delta)
@@ -657,6 +669,26 @@ class AssistantMessageWidget(QFrame):
     def set_text(self, text: str) -> None:
         self._full_text = text
         self._render()
+
+    def set_text_deferred(self, text: str) -> None:
+        """Set full text without rendering — the render happens on first show.
+
+        Used during message restoration (``ChatView.restore_from_messages``)
+        when widgets are constructed hidden inside an inactive tab. Skipping
+        the markdown render until the tab is activated avoids paying the
+        ``md_to_html`` cost for messages the user hasn't asked to see yet.
+        """
+        self._full_text = text
+        self._deferred_pending = True
+        # If we're already visible (e.g. restoring into the active tab),
+        # render immediately so the message is shown.
+        if self.isVisible():
+            self._render_if_pending()
+
+    def showEvent(self, event):
+        """Render deferred text on first visibility."""
+        super().showEvent(event)
+        self._render_if_pending()
 
     def full_text(self) -> str:
         return self._full_text

@@ -556,8 +556,6 @@ class ToolCallWidget(QFrame):
     def __init__(self, tool_name: str, tool_call_id: str, parent: QWidget = None):
         super().__init__(parent)
         self.setObjectName("message_tool")
-        ThemeManager.instance().themeChanged.connect(self.update)
-        ThemeManager.instance().themeChanged.connect(self._apply_styles)
         self.setStyleSheet(_tool_card_css(object_name="message_tool"))
         self._tool_name = tool_name
         self._tool_call_id = tool_call_id
@@ -575,6 +573,12 @@ class ToolCallWidget(QFrame):
         _SharedSpinnerTimer.get().register(self)
         layout.addWidget(self._build_preview())
         layout.addWidget(self._build_detail_section())
+        # Subscribe to theme changes *after* the header (and therefore
+        # ``self._toggle_btn``) is built — otherwise an early
+        # ``themeChanged`` signal would hit ``_apply_styles`` before
+        # the attribute exists and crash the widget.
+        ThemeManager.instance().themeChanged.connect(self.update)
+        ThemeManager.instance().themeChanged.connect(self._apply_styles)
         # Apply the toggle button QSS once the button is built.
         self._apply_styles()
 
@@ -583,6 +587,11 @@ class ToolCallWidget(QFrame):
         QFrame stylesheet (e.g. the toggle button needs an explicit
         ``QToolButton`` selector with a secondary-tier color so the
         ▶/▼ glyph contrasts with the title text)."""
+        # ``_toggle_btn`` is built in ``_build_header`` — if the signal
+        # fires before construction finishes (rare race during early
+        # theme changes), simply skip until the next tick.
+        if not hasattr(self, "_toggle_btn"):
+            return
         self._toggle_btn.setStyleSheet(_toggle_btn_css(ThemeManager.instance().tokens()))
 
     def _build_header(self, tool_name: str) -> QHBoxLayout:

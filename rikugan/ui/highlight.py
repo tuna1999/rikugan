@@ -2,25 +2,57 @@
 
 Gracefully degrades when Pygments is not installed.
 Output targets Qt RichText compatible HTML (inline styles only).
+
+Performance note
+----------------
+Pygments is a heavy import (~10ms cold on CPython 3.13, more on first
+highlight because lexers are lazy). We probe with
+:func:`importlib.util.find_spec` (cheap, no code execution) and only
+import the real modules on first call to :func:`highlight_code`.
 """
 
 from __future__ import annotations
 
 import html as _html
+import importlib.util as _importlib_util
 
-_HAS_PYGMENTS = False
-try:
-    from pygments import highlight as _pygments_highlight
-    from pygments.formatters import HtmlFormatter
-    from pygments.lexers import get_lexer_by_name
-    from pygments.util import ClassNotFound
+# Cheap probe: tells us pygments is on sys.path without executing its
+# top-level code (which loads the entire lexer/formatter plugin tree).
+_HAS_PYGMENTS = _importlib_util.find_spec("pygments") is not None
 
-    _HAS_PYGMENTS = True
-except ImportError:
-    pass
+# Lazy-resolved on first call to ``_get_pygments_imports()``. ``None``
+# means "not yet attempted"; the lookup caches the result.
+_pygments_modules: "tuple | None" = None
+_pygments_failed = False
+
+
+def _get_pygments_imports() -> "tuple | None":
+    """Lazily import pygments modules on first use.
+
+    Returns ``(highlight, HtmlFormatter, get_lexer_by_name, ClassNotFound)``
+    on success, ``None`` if pygments is unavailable or has been seen to
+    fail.  Cached after the first call.
+    """
+    global _pygments_modules, _pygments_failed
+    if _pygments_modules is not None:
+        return _pygments_modules
+    if _pygments_failed or not _HAS_PYGMENTS:
+        return None
+    try:
+        from pygments import highlight as _pygments_highlight  # noqa: WPS433
+        from pygments.formatters import HtmlFormatter
+        from pygments.lexers import get_lexer_by_name
+        from pygments.util import ClassNotFound
+
+        _pygments_modules = (_pygments_highlight, HtmlFormatter, get_lexer_by_name, ClassNotFound)
+        return _pygments_modules
+    except ImportError:
+        _pygments_failed = True
+        return None
+
 
 # Cached formatters per style name (lazy singletons)
-_formatter_cache: dict[str, HtmlFormatter | None] = {}
+_formatter_cache: "dict[str, object | None]" = {}
 
 
 def _pygments_style_for_tokens(tokens) -> str:
@@ -37,15 +69,17 @@ def _pygments_style_for_tokens(tokens) -> str:
     return "monokai" if is_dark_tokens(tokens) else "default"
 
 
-def _get_formatter(style_name: str) -> HtmlFormatter | None:
+def _get_formatter(style_name: str) -> "object | None":
     """Get (or create) a pygments HtmlFormatter for the given style.
 
     Cache is keyed by style name. Invalidate on theme change via
     ``clear_formatter_cache()``. Returns ``None`` when pygments is not
     installed so callers can degrade gracefully.
     """
-    if not _HAS_PYGMENTS:
+    imports = _get_pygments_imports()
+    if imports is None:
         return None
+    _, HtmlFormatter, _, _ = imports
     if style_name not in _formatter_cache:
         try:
             _formatter_cache[style_name] = HtmlFormatter(
@@ -77,8 +111,10 @@ def highlight_code(code: str, language: str, is_dark: bool | None = None) -> str
     drive the style choice (this is the recommended path; passing
     ``is_dark`` directly is kept for backward compatibility).
     """
-    if not _HAS_PYGMENTS or not language:
+    imports = _get_pygments_imports()
+    if imports is None or not language:
         return _plain_code(code)
+    _pygments_highlight, _, get_lexer_by_name, ClassNotFound = imports
 
     if is_dark is None:
         # Defer the import to avoid a hard dependency from this module

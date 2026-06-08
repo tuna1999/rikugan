@@ -22,6 +22,7 @@ for _mod_name in [
     for _attr in [
         "PlanView", "TurnEvent",
         "TurnEventType", "Message", "Role",
+        "ToolCall", "ToolResult",
     ]:
         setattr(_stub, _attr, MagicMock())
     sys.modules[_mod_name] = _stub

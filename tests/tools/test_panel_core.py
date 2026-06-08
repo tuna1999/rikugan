@@ -447,7 +447,7 @@ class TestRestoreMessagesIfNeeded(unittest.TestCase):
         panel._chat_views["t1"] = mock_view
         panel._pending_restore_messages["t1"] = ["m1", "m2"]
         panel._restore_messages_if_needed("t1")
-        mock_view.restore_from_messages.assert_called_once_with(["m1", "m2"])
+        mock_view.restore_from_messages_async.assert_called_once_with(["m1", "m2"])
         self.assertNotIn("t1", panel._pending_restore_messages)
 
 
