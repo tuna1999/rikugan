@@ -10,22 +10,56 @@ from unittest.mock import MagicMock
 from tests.qt_stubs import ensure_pyside6_stubs
 ensure_pyside6_stubs()
 
-# Stub all heavy submodules that chat_view imports
+# Stub all heavy submodules that chat_view imports.
+# Reinstall them unconditionally because other tests may have left behind
+# incomplete stubs in sys.modules.  Each stub has a ``__getattr__``
+# fallback so any missing attribute resolves to a fresh MagicMock,
+# keeping this test file resilient to new names added by the
+# production code.
+
+
+class _StubModule(types.ModuleType):
+    def __getattr__(self, name):  # noqa: D401 — module-level getattr
+        m = MagicMock()
+        object.__setattr__(self, name, m)
+        return m
+
+
 for _mod_name in [
     "rikugan.agent.turn",
     "rikugan.core.types",
 ]:
-    if _mod_name not in sys.modules:
-        _stub = types.ModuleType(_mod_name)
-        # Add commonly-needed attrs
-        for _attr in [
-            "PlanView", "TurnEvent",
-            "TurnEventType", "Message", "Role",
-        ]:
-            setattr(_stub, _attr, MagicMock())
-        sys.modules[_mod_name] = _stub
+    _stub = _StubModule(_mod_name)
+    # Add commonly-needed attrs
+    for _attr in [
+        "PlanView", "TurnEvent",
+        "TurnEventType", "Message", "Role",
+        "ToolCall", "ToolResult",
+    ]:
+        setattr(_stub, _attr, MagicMock())
+    sys.modules[_mod_name] = _stub
+
+# Other tests may leave stubbed UI modules behind; force fresh imports.
+# Note: we must also pop the parent package ``rikugan.ui.theme`` so
+# that Python can re-import its submodules from disk — a stub parent
+# (a ``types.ModuleType`` without ``__path__``) would otherwise block
+# the relative ``from .theme.manager import ...`` resolution that
+# ``markdown.py`` performs at import time.
+for _mod_name in [
+    "rikugan.ui.chat_view",
+    "rikugan.ui.message_widgets",
+    "rikugan.ui.plan_view",
+    "rikugan.ui.tool_widgets",
+    "rikugan.ui.styles",
+    "rikugan.ui.theme",
+    "rikugan.ui.theme.manager",
+    "rikugan.ui.theme.tokens",
+    "rikugan.ui.markdown",
+]:
+    sys.modules.pop(_mod_name, None)
 
 from rikugan.ui.chat_view import _is_hidden_system_user_message, _TOOL_GROUP_MIN_CALLS  # noqa: E402
+from rikugan.ui.bulk_renamer import BulkRenamerWidget  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -68,6 +102,27 @@ class TestChatViewConstants(unittest.TestCase):
 
     def test_tool_group_min_calls_value(self):
         self.assertEqual(_TOOL_GROUP_MIN_CALLS, 2)
+
+
+class TestBulkRenamerLookup(unittest.TestCase):
+    def test_find_row_iterates_table(self):
+        """``_find_row_for_address`` walks the table rows; verify
+        the stub's item() / data() contract is honored."""
+        # ``BulkRenamerWidget`` is a QWidget subclass; constructing it via
+        # ``__new__`` skips the Qt widget initialization (which would
+        # require a live ``QApplication`` and a fully-built UI tree) so we
+        # can unit-test the table-row lookup logic in isolation.
+        widget = BulkRenamerWidget.__new__(BulkRenamerWidget)
+
+        # Build a 2-row stub table where row 1 holds our address.
+        row1_item = MagicMock()
+        row1_item.data.return_value = 0x401000
+        table = MagicMock()
+        table.rowCount.return_value = 2
+        table.item.side_effect = lambda r, c: row1_item if r == 1 else None
+        widget._table = table
+        self.assertEqual(widget._find_row_for_address(0x401000), 1)
+        table.rowCount.assert_called()
 
 
 if __name__ == "__main__":

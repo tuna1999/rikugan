@@ -11,6 +11,8 @@ from .qt_compat import (
     QVBoxLayout,
     QWidget,
 )
+from .styles import build_input_area_stylesheet, build_skill_popup_stylesheet
+from .theme.manager import ThemeManager
 
 
 class _SkillPopup(QFrame):
@@ -27,23 +29,30 @@ class _SkillPopup(QFrame):
         super().__init__(parent)
         self.setObjectName("skill_popup")
         self.setWindowFlags(Qt.WindowType.ToolTip)
-        self.setStyleSheet(
-            "QFrame#skill_popup { border: 1px solid; border-radius: 4px; padding: 2px; }"
-            "QLabel { padding: 3px 8px; }"
-            'QLabel#skill_popup_label[selected="true"] {'
-            "    background-color: palette(highlight);"
-            "    color: palette(highlightedText);"
-            "}"
-            'QLabel#skill_popup_label[selected="false"] {'
-            "    background-color: transparent;"
-            "}"
-        )
+        # Apply the theme-aware QSS at construction so the popup uses
+        # light backgrounds + dark text in Rikugan Light mode, and
+        # dark backgrounds + light text in Rikugan Dark mode.  The
+        # previous default used ``palette(highlight)`` which collapses
+        # to invisible in some light hosts.  The QSS is rebuilt by
+        # :meth:`apply_theme` on every ``themeChanged`` signal.
+        self.apply_theme()
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(2, 2, 2, 2)
         self._layout.setSpacing(0)
         self._labels: list[QLabel] = []
         self._slugs: list[str] = []
         self._selected_idx = 0
+
+    def apply_theme(self) -> None:
+        """Refresh the popup QSS for the current theme tokens."""
+        try:
+            tokens = ThemeManager.instance().tokens()
+        except Exception:
+            return
+        try:
+            self.setStyleSheet(build_skill_popup_stylesheet(tokens))
+        except Exception:
+            pass
 
     def set_items(self, slugs: list[str]) -> None:
         """Replace popup contents with filtered slugs."""
@@ -115,6 +124,38 @@ class InputArea(QPlainTextEdit):
         self._popup: _SkillPopup | None = None
         self._submit_callback = None  # Callable[[str], None]
         self._cancel_callback = None  # Callable[[], None]
+        # Apply the theme-aware QSS at construction and subscribe to
+        # subsequent theme changes so the editor and skill popup
+        # always match the user-selected palette.  Without this, the
+        # host's default Qt palette (often dark) bleeds through and
+        # paints a black box around the editor in Rikugan Light mode.
+        self.apply_theme()
+        try:
+            ThemeManager.instance().themeChanged.connect(self.apply_theme)
+        except Exception:
+            pass
+
+    def apply_theme(self) -> None:
+        """Refresh the editor (and skill popup) QSS for the current theme.
+
+        Builds the stylesheet from the live :class:`ThemeTokens` and
+        applies it.  The stylesheet targets only
+        ``QPlainTextEdit#input_area`` (this widget's object name) so
+        it does not affect other plain text editors in the host.
+        """
+        try:
+            tokens = ThemeManager.instance().tokens()
+        except Exception:
+            return
+        try:
+            self.setStyleSheet(build_input_area_stylesheet(tokens))
+        except Exception:
+            pass
+        if self._popup is not None:
+            try:
+                self._popup.apply_theme()
+            except Exception:
+                pass
 
     def set_submit_callback(self, callback) -> None:
         """Set the callback for submit (Enter key). Callback signature: (str) -> None."""

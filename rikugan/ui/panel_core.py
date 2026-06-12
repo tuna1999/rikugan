@@ -13,17 +13,19 @@ from ..agent.mutation import MutationRecord
 from ..agent.turn import TurnEvent, TurnEventType
 from ..core.config import RikuganConfig
 from ..core.logging import log_debug, log_error, log_info, log_warning
-from ..core.startup_timing import end, set_metadata, start
 from ..core.types import Role
+from ..providers.auth_cache import resolve_auth_cached
 from .chat_view import ChatView
 from .context_bar import ContextBar
 from .input_area import InputArea
+from .mutation_log_view import MutationLogPanel
 from .qt_compat import (
     QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
     QHBoxLayout,
+    QLabel,
     QMenu,
     QMessageBox,
     QPushButton,
@@ -36,24 +38,55 @@ from .qt_compat import (
     QToolButton,
     QVBoxLayout,
     QWidget,
-    Signal,
+    qt_flags,
+    qt_run,
 )
 from .styles import (
-    DARK_THEME,
-    LIGHT_THEME,
-    get_add_tab_btn_style,
-    get_cancel_btn_style,
-    get_message_dialog_style,
-    get_mode_bar_style,
-    get_small_btn_style,
-    get_splitter_handle_style,
-    get_tab_widget_style,
-    set_current_theme,
+    build_small_button_stylesheet,
+    build_theme_stylesheet,
+    maybe_host_stylesheet,
+    use_native_host_theme,
 )
+from .theme.manager import ThemeManager
 from .tool_widgets import _SharedSpinnerTimer
 from .tools_panel import ToolsPanel
 
 _TOOL_RESULT_TRUNCATE_CHARS = 2000
+
+
+def _tab_label():
+    """Higher-contrast tab label color (>=4.5:1 against ``alt_base``).
+
+    A 50/50 text/mid blend (``_muted``) yields ~3.5:1 in light mode and
+    falls under WCAG AA. We shift the blend toward ``text`` (0.35) so
+    unselected tabs stay readable in both light and dark modes.
+    """
+    from .theme.manager import _blend_hex
+
+    t = ThemeManager.instance().tokens()
+    return _blend_hex(t.text, t.mid, 0.35)
+
+
+def _small_btn_style() -> str:
+    t = ThemeManager.instance().tokens()
+    return (
+        f"QPushButton {{ background: {t.alt_base}; color: {t.text}; border: 1px solid {t.mid}; "
+        f"border-radius: 6px; padding: 4px; font-size: 11px; }}"
+        f"QPushButton:hover {{ background: {t.mid}; }}"
+    )
+
+
+def _cancel_btn_style() -> str:
+    from .theme.manager import _blend_hex
+
+    t = ThemeManager.instance().tokens()
+    danger_hover = _blend_hex(t.alt_base, t.error, 0.3)
+    return (
+        f"QPushButton {{ background: {t.alt_base}; color: {t.error}; border: 1px solid {t.error}; "
+        f"border-radius: 6px; padding: 4px; font-size: 11px; }}"
+        f"QPushButton:hover {{ background: {danger_hover}; }}"
+    )
+
 
 _SANITIZER_TAG_RE = re.compile(
     r"^\[The following is (?:a tool execution result|output from an EXTERNAL MCP server)"
@@ -76,10 +109,11 @@ def _strip_sanitizer_tags(text: str) -> str:
 _TOOL_LANG_MAP = {
     "execute_python": "python",
     "decompile_function": "c",
+    "get_il": "c",
     "declare_c_type": "c",
     "define_types": "c",
     "set_function_prototype": "c",
-    "read_disassembly": "x86asm",
+    "fetch_disassembly": "x86asm",
 }
 
 
@@ -164,29 +198,51 @@ def _export_format_subagent_log(messages) -> str:
 class _AddButtonTabBar(QTabBar):
     """Tab bar with an integrated '+' button positioned after the last tab."""
 
-    add_tab_requested = Signal()
-    export_tab_requested = Signal(int)
-    fork_tab_requested = Signal(int)
-
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._add_tab_callback: Callable[[], None] | None = None
+        self._export_tab_callback: Callable[[int], None] | None = None
+        self._fork_tab_callback: Callable[[int], None] | None = None
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
         self._add_btn = QToolButton(self)
         self._add_btn.setText("+")
         self._add_btn.setAutoRaise(True)
         self._add_btn.setFixedSize(20, 20)
-        self.refresh_inline_styles()
-        self._add_btn.clicked.connect(self.add_tab_requested)
+        self._add_btn.clicked.connect(self._handle_add_tab)
+        self._apply_styles()
+
+    def _apply_styles(self) -> None:
+        t = ThemeManager.instance().tokens()
+        self._add_btn.setStyleSheet(
+            maybe_host_stylesheet(
+                f"QToolButton {{ color: {t.text}; font-size: 14px; font-weight: bold; "
+                f"border: none; background: transparent; }}"
+                f"QToolButton:hover {{ background: {t.mid}; border-radius: 3px; }}"
+            )
+        )
 
     def refresh_inline_styles(self) -> None:
-        """Re-apply the theme-aware add-button style.
+        """Re-apply the inline stylesheet from the current theme tokens.
 
-        Called from ``RikuganPanelCore._refresh_inline_styles()`` whenever
-        the theme changes.  Without this, the ``+`` button would keep the
-        hard-coded dark palette when the user switches to the light theme.
+        Public counterpart of :meth:`_apply_styles`.  Callers (e.g. the
+        theme-change path in :class:`RikuganPanelCore`) invoke this after
+        a theme swap so the ``+`` button reflects the new palette.
         """
-        self._add_btn.setStyleSheet(get_add_tab_btn_style())
+        self._apply_styles()
+
+    def set_add_tab_callback(self, callback: Callable[[], None] | None) -> None:
+        self._add_tab_callback = callback
+
+    def set_export_tab_callback(self, callback: Callable[[int], None] | None) -> None:
+        self._export_tab_callback = callback
+
+    def set_fork_tab_callback(self, callback: Callable[[int], None] | None) -> None:
+        self._fork_tab_callback = callback
+
+    def _handle_add_tab(self) -> None:
+        if self._add_tab_callback is not None:
+            self._add_tab_callback()
 
     def _show_context_menu(self, pos):
         index = self.tabAt(pos)
@@ -195,11 +251,11 @@ class _AddButtonTabBar(QTabBar):
         menu = QMenu(self)
         export_action = menu.addAction("Export Chat")
         fork_action = menu.addAction("Fork Session")
-        action = menu.exec_(self.mapToGlobal(pos))
-        if action == export_action:
-            self.export_tab_requested.emit(index)
-        elif action == fork_action:
-            self.fork_tab_requested.emit(index)
+        action = qt_run(menu, self.mapToGlobal(pos))
+        if action == export_action and self._export_tab_callback is not None:
+            self._export_tab_callback(index)
+        elif action == fork_action and self._fork_tab_callback is not None:
+            self._fork_tab_callback(index)
 
     def tabInserted(self, index):
         super().tabInserted(index)
@@ -233,20 +289,21 @@ class RikuganPanelCore(QWidget):
         tools_form_factory: Callable[..., Any] | None = None,
         parent: QWidget = None,
     ):
-        t_init = start("panel_core.init_total")
         super().__init__(parent)
-        t_config = start("config.load_or_create")
         self._config = RikuganConfig.load_or_create()
-        end("config.load_or_create", t_config)
+        self._use_native_host_theme = use_native_host_theme()
         log_debug(
             f"Config loaded: provider={self._config.provider.name} model={self._config.provider.model}",
         )
+        # ``ProviderRegistry().dependency_warnings()`` walks all provider
+        # modules and is non-trivial (≈0.7ms cold). Defer it: log the
+        # warnings the first time the user looks at the dependency list,
+        # or the next event-loop turn — whichever comes first.
+        self._dependency_warnings: list[str] = []
+        QTimer.singleShot(0, self._resolve_dependency_warnings)
         if self._config.has_encrypted_keys():
-            set_metadata("encrypted_prompt", True)
             self._prompt_decryption_password()
-        t_ctrl = start("controller.construct")
         self._ctrl = controller_factory(self._config)
-        end("controller.construct", t_ctrl)
         self._poll_timer: QTimer | None = None
         self._polling = False
         self._pending_answer = False
@@ -259,30 +316,77 @@ class RikuganPanelCore(QWidget):
 
         # Tab-to-ChatView mapping
         self._chat_views: dict[str, ChatView] = {}
+        self._pending_restore_messages: dict[str, list] = {}
         self._context_bar: ContextBar | None = None
-        self._mutation_panel: Any = None  # MutatedLogPanel — lazy import
+        self._mutation_panel: MutationLogPanel | None = None
         self._skills_refresh_timer: QTimer | None = None
 
-        # Only warm OAuth when using Anthropic without an explicit API key.
-        if self._config.provider.name == "anthropic" and not self._config.provider.api_key:
-            self._check_oauth_consent()
-            t_oauth = start("boot.oauth_warmup_spawn")
+        self._check_oauth_consent()
 
-            def _warm_oauth() -> None:
-                try:
-                    from ..providers.auth_cache import resolve_auth_cached
+        def _warm_oauth() -> None:
+            try:
+                resolve_auth_cached()
+            except Exception as e:
+                log_debug(f"OAuth warm-up failed: {e}")
 
-                    resolve_auth_cached()
-                except Exception as e:
-                    log_debug(f"OAuth warm-up failed: {e}")
-
-            threading.Thread(target=_warm_oauth, daemon=True).start()
-            end("boot.oauth_warmup_spawn", t_oauth)
-
-        t_ui = start("ui.build_total")
+        threading.Thread(target=_warm_oauth, daemon=True).start()
         self._build_ui()
-        end("ui.build_total", t_ui)
-        end("panel_core.init_total", t_init)
+        # Refresh themed widgets when the user switches the active theme.
+        # The hookup is narrow on purpose: it only catches the
+        # connect-time exceptions (RuntimeError / TypeError when the
+        # signal is on a partially-initialised manager, SystemError
+        # from PySide6's ``returned a result with an exception set``
+        # quirk).  Any other failure is logged but does not crash
+        # the panel — the theme change path can still work via the
+        # initial-theme application below.
+        try:
+            ThemeManager.instance().themeChanged.connect(self._on_theme_changed)
+        except (RuntimeError, TypeError, SystemError) as e:
+            log_debug(f"ThemeManager.themeChanged hookup failed: {e}")
+        # Honor the persisted theme from config so the user does not
+        # have to re-pick their theme on every restart.  Map the
+        # legacy config.theme string to the new ThemeMode enum.
+        self._apply_initial_theme_from_config(self._config)
+
+    @staticmethod
+    def _apply_initial_theme_from_config(config: Any) -> None:
+        """Set the active ``ThemeManager`` mode from ``config.theme``.
+
+        Pulled out of ``__init__`` so the bootstrap can be exercised
+        in isolation by unit tests.  Safe to call repeatedly: a
+        no-op when the persisted mode matches the live mode.
+        """
+        try:
+            from .theme.tokens import ThemeMode
+
+            theme_str = getattr(config, "theme", "ida") or "ida"
+            mode_map = {
+                "ida": ThemeMode.IDA_NATIVE,
+                "dark": ThemeMode.DARK,
+                "light": ThemeMode.LIGHT,
+                "auto": ThemeMode.AUTO,
+            }
+            initial_mode = mode_map.get(theme_str)
+            if initial_mode is not None and initial_mode != ThemeManager.instance().mode:
+                ThemeManager.instance().set_mode(initial_mode)
+        except Exception as e:  # best-effort
+            log_debug(f"ThemeManager initial mode from config failed: {e}")
+
+    def _resolve_dependency_warnings(self) -> None:
+        """Compute and log dependency warnings for the active providers.
+
+        Called once via ``QTimer.singleShot(0, …)`` so it lands after
+        the first paint. Storing the list on ``self`` also lets
+        ``dependency_warnings()`` callers avoid recomputing it.
+        """
+        try:
+            from ..providers.registry import ProviderRegistry
+
+            self._dependency_warnings = ProviderRegistry().dependency_warnings()
+            for warning in self._dependency_warnings:
+                log_warning(f"Dependency warning: {warning}")
+        except Exception as e:  # pragma: no cover - defensive
+            log_debug(f"dependency_warnings() failed: {e}")
 
     def _prompt_decryption_password(self) -> None:
         """Prompt for the encryption password at session start."""
@@ -299,13 +403,16 @@ class RikuganPanelCore(QWidget):
             pw_edit.setPlaceholderText("Password")
             layout.addWidget(pw_edit)
             buttons = QDialogButtonBox(
-                QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+                qt_flags(
+                    QDialogButtonBox.StandardButton.Ok,
+                    QDialogButtonBox.StandardButton.Cancel,
+                ),
             )
             buttons.accepted.connect(dlg.accept)
             buttons.rejected.connect(dlg.reject)
             layout.addWidget(buttons)
 
-            if dlg.exec_() != QDialog.DialogCode.Accepted:
+            if qt_run(dlg) != QDialog.DialogCode.Accepted:
                 break  # user cancelled — keys stay empty
             if self._config.decrypt_stored_keys(pw_edit.text()):
                 log_debug("API keys decrypted successfully")
@@ -358,20 +465,76 @@ class RikuganPanelCore(QWidget):
             # Runtime init completed but no skills found; stop polling.
             self._stop_skills_refresh_timer()
 
+    @property
+    def _MODE_BAR_STYLE_TEMPLATE(self) -> str:
+        """Themed mode-bar (top tab) QSS, regenerated on theme change."""
+        t = ThemeManager.instance().tokens()
+        return (
+            f"QTabBar {{ background: {t.alt_base}; border: none; border-bottom: 1px solid {t.mid}; }}"
+            f"QTabBar::tab {{ background: {t.alt_base}; color: {_tab_label()}; padding: 4px 16px; "
+            f"border: none; border-bottom: 2px solid transparent; font-size: 11px; }}"
+            f"QTabBar::tab:selected {{ color: {t.text}; border-bottom: 2px solid {t.success}; }}"
+            f"QTabBar::tab:hover:!selected {{ color: {t.text}; }}"
+        )
+
+    def _dependency_banner_style(self) -> str:
+        """Themed QSS for the yellow dependency-warnings banner."""
+        from .theme.manager import _blend_hex
+
+        t = ThemeManager.instance().tokens()
+        # Derive a warning pair: muted amber background, brighter amber border.
+        warn_bg = _blend_hex(t.base, t.error, 0.2)  # dark amber
+        warn_fg = _blend_hex(t.error, t.highlight_text, 0.4)
+        warn_border = _blend_hex(t.error, t.highlight, 0.4)
+        return (
+            f"QLabel#dependency_banner {{"
+            f"background: {warn_bg}; color: {warn_fg}; "
+            f"border-top: 1px solid {warn_border}; "
+            f"border-bottom: 1px solid {warn_border}; "
+            f"padding: 6px 8px; font-size: 11px; }}"
+        )
+
+    def _tab_widget_style(self) -> str:
+        """Themed QSS for the inner tab widget (chat tabs)."""
+        t = ThemeManager.instance().tokens()
+        return (
+            f"QTabWidget::pane {{ border: none; }}"
+            f"QTabBar {{ background: {t.base}; border: none; }}"
+            f"QTabBar::tab {{ background: {t.alt_base}; color: {_tab_label()}; padding: 2px 8px; "
+            f"border: none; border-right: 1px solid {t.mid}; "
+            f"font-size: 11px; max-width: 140px; }}"
+            # ``t.text`` (not ``t.highlight_text``) is used here: in light
+            # mode ``t.base`` is near-white and ``highlight_text`` is
+            # also white, so the selected-tab label would be invisible.
+            # ``t.text`` is dark in light mode and light in dark mode,
+            # so it always contrasts with ``t.base``.
+            f"QTabBar::tab:selected {{ background: {t.base}; color: {t.text}; }}"
+            f"QTabBar::tab:hover {{ background: {t.alt_base}; }}"
+            f"QTabBar::close-button {{ image: none; border: none; padding: 1px; }}"
+            f"QTabBar::close-button:hover {{ background: {t.error}; border-radius: 2px; }}"
+        )
+
+    def _main_splitter_style(self) -> str:
+        """Themed QSS for the main horizontal splitter handle."""
+        t = ThemeManager.instance().tokens()
+        return f"QSplitter::handle {{ background: {t.mid}; }}"
+
+    # Backward-compat alias: legacy callers referencing ``_MODE_BAR_STYLE``
+    # directly get the themed value at access time.
+
     def _build_ui(self) -> None:
         self.setObjectName("rikugan_panel")
-        self._current_theme = self._config.theme
-        self._apply_theme(self._config.theme)
+        self.setStyleSheet(build_theme_stylesheet(self))
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
         # Top-level mode switcher: Chat | Tools.
-        # Hidden for IDA which uses a separate dockable form for tools.
+        # Hosts may optionally provide tools in a separate form.
         self._mode_bar = QTabBar()
         self._mode_bar.setObjectName("mode_bar")
-        self._mode_bar.setStyleSheet(get_mode_bar_style())
+        self._mode_bar.setStyleSheet("" if self._use_native_host_theme else self._MODE_BAR_STYLE_TEMPLATE)
         self._mode_bar.setExpanding(False)
         self._mode_bar.setDrawBase(False)
         self._mode_bar.addTab("Chat")
@@ -385,6 +548,16 @@ class RikuganPanelCore(QWidget):
         self._mode_stack = QStackedWidget()
         layout.addWidget(self._mode_stack, 1)
 
+        self._dependency_banner = QLabel()
+        self._dependency_banner.setObjectName("dependency_banner")
+        self._dependency_banner.setWordWrap(True)
+        self._dependency_banner.setStyleSheet(maybe_host_stylesheet(self._dependency_banner_style()))
+        if self._dependency_warnings:
+            self._dependency_banner.setText("Warnings: " + " ".join(self._dependency_warnings))
+            layout.insertWidget(1, self._dependency_banner)
+        else:
+            self._dependency_banner.hide()
+
         # --- Page 0: Chat ---
         chat_page = QWidget()
         chat_layout = QVBoxLayout(chat_page)
@@ -392,23 +565,20 @@ class RikuganPanelCore(QWidget):
         chat_layout.setSpacing(0)
         self._build_tab_widget()
         self._build_main_splitter(chat_layout)
-        t_create_tab = start("ui.create_initial_chat_tab")
         self._create_tab(self._ctrl.active_tab_id, "New Chat")
-        end("ui.create_initial_chat_tab", t_create_tab)
-        self._build_chat_input_splitter(chat_layout)
+        chat_layout.addWidget(self._build_input_section())
         self._mode_stack.addWidget(chat_page)
 
         # --- Page 1: Tools (lazily populated on first switch) ---
         self._tools_panel: ToolsPanel | None = ToolsPanel()
         self._tools_panel.hide_header()
         if self._tools_form_factory is not None:
-            # IDA: ToolsPanel will live in a separate dockable form, not
-            # in the mode_stack.  Add a lightweight placeholder so the
-            # stack still has a page 1.
+            # Separate tools-form hosts keep a lightweight placeholder in the
+            # stack so page indices stay stable while tools live elsewhere.
             _tools_placeholder = QWidget()
             self._mode_stack.addWidget(_tools_placeholder)
         else:
-            # Embed tools panel directly in the mode stack.
+            # Embed the tools panel directly in the mode stack.
             self._mode_stack.addWidget(self._tools_panel)
         self._tools_tab_index = -1  # kept for IDA compat
 
@@ -416,7 +586,6 @@ class RikuganPanelCore(QWidget):
         self._context_bar.set_model(self._config.provider.model)
         layout.addWidget(self._context_bar)
 
-        t_hooks = start("ui.hooks_setup")
         if self._ui_hooks_factory is not None:
             try:
                 self._ui_hooks = self._ui_hooks_factory(lambda: self)
@@ -425,17 +594,8 @@ class RikuganPanelCore(QWidget):
             except Exception as e:
                 log_debug(f"UI hook setup failed: {e}")
                 self._ui_hooks = None
-        end("ui.hooks_setup", t_hooks)
 
-        t_restore = start("session_restore.sync_total")
         self._try_restore_session()
-        end("session_restore.sync_total", t_restore)
-
-        # Ensure the inline-styled widgets (buttons, mode bar, tab widget,
-        # splitters) use the right helper palette for the current theme.
-        # ``_apply_theme`` runs first, so the global theme state is correct
-        # by the time we re-issue the widget-local stylesheets.
-        self._refresh_inline_styles()
 
     def _build_tab_widget(self) -> None:
         """Create the tab widget with custom tab bar."""
@@ -446,10 +606,10 @@ class RikuganPanelCore(QWidget):
         self._tab_widget.setTabsClosable(True)
         self._tab_widget.tabCloseRequested.connect(self._on_close_tab)
         self._tab_widget.currentChanged.connect(self._on_tab_changed)
-        self._tab_bar.add_tab_requested.connect(self._on_new_tab)
-        self._tab_bar.export_tab_requested.connect(self._on_export_tab)
-        self._tab_bar.fork_tab_requested.connect(self._on_fork_tab)
-        self._tab_widget.setStyleSheet(get_tab_widget_style())
+        self._tab_bar.set_add_tab_callback(self._on_new_tab)
+        self._tab_bar.set_export_tab_callback(self._on_export_tab)
+        self._tab_bar.set_fork_tab_callback(self._on_fork_tab)
+        self._tab_widget.setStyleSheet(maybe_host_stylesheet(self._tab_widget_style()))
         self._tab_bar.setExpanding(False)
         self._tab_bar.setVisible(False)  # hidden until 2+ tabs
 
@@ -457,34 +617,18 @@ class RikuganPanelCore(QWidget):
         """Create the horizontal splitter (chat | mutation log) and add to layout."""
         self._main_splitter = QSplitter(Qt.Orientation.Horizontal)
         self._main_splitter.setHandleWidth(1)
-        self._main_splitter.setStyleSheet(get_splitter_handle_style())
+        self._main_splitter.setStyleSheet(maybe_host_stylesheet(self._main_splitter_style()))
         self._main_splitter.addWidget(self._tab_widget)
 
-        # Mutation log container — created immediately so the splitter has
-        # exactly two children (chat area + container).  The real
-        # MutationLogPanel is inserted into this container when first needed.
-        self._mutation_container = QWidget()
-        self._mutation_container.setVisible(False)
-        self._mutation_container_layout = QVBoxLayout(self._mutation_container)
-        self._mutation_container_layout.setContentsMargins(0, 0, 0, 0)
-        self._main_splitter.addWidget(self._mutation_container)
+        self._mutation_panel = MutationLogPanel()
+        self._mutation_panel.undo_requested.connect(self._on_undo_requested)
+        self._mutation_panel.setVisible(False)
+        self._main_splitter.addWidget(self._mutation_panel)
 
         self._main_splitter.setStretchFactor(0, 3)
         self._main_splitter.setStretchFactor(1, 1)
 
         layout.addWidget(self._main_splitter, 1)
-
-    def _build_chat_input_splitter(self, layout: QVBoxLayout) -> None:
-        """Create the vertical splitter between chat view and input area for resizing."""
-        self._chat_input_splitter = QSplitter(Qt.Orientation.Vertical)
-        self._chat_input_splitter.setHandleWidth(3)
-        self._chat_input_splitter.setStyleSheet(get_splitter_handle_style())
-        self._chat_input_splitter.addWidget(self._main_splitter)
-        self._chat_input_splitter.addWidget(self._build_input_section())
-        # Give chat area 3x more space than input area initially
-        self._chat_input_splitter.setStretchFactor(0, 3)
-        self._chat_input_splitter.setStretchFactor(1, 1)
-        layout.addWidget(self._chat_input_splitter, 1)
 
     def _build_input_section(self) -> QWidget:
         """Build the bottom input area with text field and action buttons."""
@@ -492,7 +636,7 @@ class RikuganPanelCore(QWidget):
         input_layout = QHBoxLayout(self._input_container)
         input_layout.setContentsMargins(8, 4, 8, 4)
 
-        self._input_area = InputArea()
+        self._input_area = InputArea(self._input_container)
         self._input_area.set_submit_callback(self._on_submit)
         self._input_area.set_cancel_callback(self._on_cancel)
         self._input_area.set_skill_slugs(self._ctrl.skill_slugs)
@@ -509,34 +653,28 @@ class RikuganPanelCore(QWidget):
         self._send_btn = QPushButton("Send")
         self._send_btn.setObjectName("send_button")
         self._send_btn.setFixedWidth(64)
-        self._send_btn.setStyleSheet(get_small_btn_style())
         self._send_btn.clicked.connect(self._on_send_clicked)
         btn_layout.addWidget(self._send_btn)
         self._cancel_btn = QPushButton("Stop")
         self._cancel_btn.setObjectName("cancel_button")
         self._cancel_btn.setFixedWidth(64)
-        self._cancel_btn.setStyleSheet(get_cancel_btn_style())
         self._cancel_btn.setVisible(False)
         self._cancel_btn.clicked.connect(self._on_cancel)
         btn_layout.addWidget(self._cancel_btn)
         self._new_btn = QPushButton("New")
         self._new_btn.setFixedWidth(64)
-        self._new_btn.setStyleSheet(get_small_btn_style())
         self._new_btn.clicked.connect(self._on_new_tab)
         btn_layout.addWidget(self._new_btn)
         self._export_btn = QPushButton("Export")
         self._export_btn.setFixedWidth(64)
-        self._export_btn.setStyleSheet(get_small_btn_style())
         self._export_btn.clicked.connect(self._on_export_current)
         btn_layout.addWidget(self._export_btn)
         self._settings_btn = QPushButton("Settings")
         self._settings_btn.setFixedWidth(64)
-        self._settings_btn.setStyleSheet(get_small_btn_style())
         self._settings_btn.clicked.connect(self._on_settings)
         btn_layout.addWidget(self._settings_btn)
         self._mutations_btn = QPushButton("Mutations")
         self._mutations_btn.setFixedWidth(64)
-        self._mutations_btn.setStyleSheet(get_small_btn_style())
         self._mutations_btn.setCheckable(True)
         self._mutations_btn.clicked.connect(self._on_toggle_mutation_log)
         self._mutations_btn.setVisible(False)  # shown when first mutation is recorded
@@ -544,13 +682,75 @@ class RikuganPanelCore(QWidget):
 
         self._tools_btn = QPushButton("Tools")
         self._tools_btn.setFixedWidth(64)
-        self._tools_btn.setStyleSheet(get_small_btn_style())
         self._tools_btn.setCheckable(True)
         self._tools_btn.clicked.connect(self._on_toggle_tools)
         btn_layout.addWidget(self._tools_btn)
 
+        if self._use_native_host_theme:
+            default_btn_style = build_small_button_stylesheet(self)
+            danger_btn_style = build_small_button_stylesheet(self, danger=True)
+            self._send_btn.setStyleSheet(default_btn_style)
+            self._cancel_btn.setStyleSheet(danger_btn_style)
+            self._new_btn.setStyleSheet(default_btn_style)
+            self._export_btn.setStyleSheet(default_btn_style)
+            self._settings_btn.setStyleSheet(default_btn_style)
+            self._mutations_btn.setStyleSheet(default_btn_style)
+            self._tools_btn.setStyleSheet(default_btn_style)
+        else:
+            # Apply themed styles so colours track the current ThemeTokens.
+            self._apply_action_button_styles()
+
         btn_layout.addStretch()
         return btn_layout
+
+    def _apply_action_button_styles(self) -> None:
+        """Refresh the action-bar button styles from the current theme."""
+        self._send_btn.setStyleSheet(maybe_host_stylesheet(_small_btn_style()))
+        self._cancel_btn.setStyleSheet(maybe_host_stylesheet(_cancel_btn_style()))
+        self._new_btn.setStyleSheet(maybe_host_stylesheet(_small_btn_style()))
+        self._export_btn.setStyleSheet(maybe_host_stylesheet(_small_btn_style()))
+        self._settings_btn.setStyleSheet(maybe_host_stylesheet(_small_btn_style()))
+        self._mutations_btn.setStyleSheet(maybe_host_stylesheet(_small_btn_style()))
+        self._tools_btn.setStyleSheet(maybe_host_stylesheet(_small_btn_style()))
+
+    def _on_theme_changed(self, _tokens) -> None:
+        """Refresh themed widgets when the user switches the active theme.
+
+        ``use_native_host_theme()`` is read live (not cached) because the
+        user can switch between AUTO/IDA_NATIVE (host styles win) and
+        DARK/LIGHT (Rikugan styles win) at runtime. ``_use_native_host_theme``
+        is set once at construction and would be stale in that case.
+        """
+        if not use_native_host_theme():
+            # Re-apply the global QSS template with the new token values.
+            self.setStyleSheet(build_theme_stylesheet(self))
+            self._apply_action_button_styles()
+            if hasattr(self, "_mode_bar") and self._mode_bar is not None:
+                self._mode_bar.setStyleSheet(self._MODE_BAR_STYLE_TEMPLATE)
+            if hasattr(self, "_dependency_banner") and self._dependency_banner is not None:
+                self._dependency_banner.setStyleSheet(maybe_host_stylesheet(self._dependency_banner_style()))
+            if hasattr(self, "_tab_widget") and self._tab_widget is not None:
+                self._tab_widget.setStyleSheet(maybe_host_stylesheet(self._tab_widget_style()))
+            if hasattr(self, "_main_splitter") and self._main_splitter is not None:
+                self._main_splitter.setStyleSheet(maybe_host_stylesheet(self._main_splitter_style()))
+            # The add-tab '+' button lives on the tab bar, not on the
+            # panel itself.  Guard against the tab bar not being
+            # constructed yet (early emit) and against the button
+            # attribute being absent (older tab-bar implementations).
+            tab_bar = getattr(self, "_tab_bar", None)
+            add_btn = getattr(tab_bar, "_add_btn", None) if tab_bar is not None else None
+            if add_btn is not None:
+                tab_bar._apply_styles()
+        # Inline-styled widgets (ToolCallWidget, UserMessageWidget, code
+        # blocks, etc.) cache their colors at construction time.  Pushing
+        # a theme change must refresh them so they pick up the new tokens.
+        # ``refresh_inline_styles`` is a no-op for views that don't override
+        # it, so the call is safe for every existing ChatView.
+        for cv in list(self._chat_views.values()):
+            try:
+                cv.refresh_inline_styles()
+            except Exception as e:  # best-effort refresh
+                log_debug(f"ChatView.refresh_inline_styles failed: {e}")
 
     # --- Tab management ---
 
@@ -562,6 +762,12 @@ class RikuganPanelCore(QWidget):
         """Create a new ChatView and add it as a tab."""
         chat_view = ChatView()
         chat_view.setProperty("tab_id", tab_id)  # O(1) lookup in _tab_id_at_index
+        # ChatView exposes Qt signals (not Python callbacks).  Connect them
+        # to the matching panel slots so tool approvals, user answers, and
+        # orchestra approvals all flow into the agent loop.  Disconnections
+        # happen automatically when ``chat_view.deleteLater()`` is called
+        # on close/shutdown — Qt removes the connections along with the
+        # signal owner.
         chat_view.tool_approval_submitted.connect(self._on_tool_approval)
         chat_view.user_answer_submitted.connect(self._on_user_answer_submitted)
         chat_view.orchestra_approval_decided.connect(self._on_orchestra_approval)
@@ -570,6 +776,28 @@ class RikuganPanelCore(QWidget):
         self._tab_widget.setCurrentIndex(index)
         self._update_tab_bar_visibility()
         return chat_view
+
+    def _on_orchestra_approval(self, tool_call_id: str, decision: str) -> None:
+        """Forward orchestra delegation approval to the agent loop.
+
+        The orchestra / agent-handoff path uses the dedicated
+        ``submit_approval`` channel — which routes to the agent
+        loop's orchestra approval queue (``_approval_queue``) —
+        NOT the regular tool-approval queue.  The agent loop's
+        orchestra flow blocks on a different queue from tool
+        approvals, so the two must stay on separate channels.
+        ``submit_tool_approval`` would push to the wrong queue and
+        the orchestra decision would never be observed.
+        """
+        del tool_call_id  # unused; approval queue does not track ids
+        runner = self._ctrl.get_runner()
+        if runner:
+            runner.agent_loop.submit_approval(decision)
+        # Clear the same UI state flags that ``_on_tool_approval``
+        # clears: button-only mode is over, the user is no longer
+        # being asked a queued question.
+        self._pending_answer = False
+        self._awaiting_button_approval = False
 
     def _on_new_tab(self) -> None:
         """Create a new chat tab, with optional context clearing."""
@@ -615,7 +843,7 @@ class RikuganPanelCore(QWidget):
         # Restore messages into the forked chat view
         source_session = self._ctrl.get_session(new_tab_id)
         if source_session and source_session.messages:
-            chat_view.restore_from_messages(source_session.messages)
+            chat_view.restore_from_messages_async(source_session.messages)
         self._ctrl.switch_tab(new_tab_id)
         log_info(f"Forked tab {source_tab_id} → {new_tab_id}")
 
@@ -648,16 +876,28 @@ class RikuganPanelCore(QWidget):
         if session.subagent_logs:
             dlg = QDialog(self)
             dlg.setWindowTitle("Export Options")
-            dlg.setStyleSheet(get_message_dialog_style())
+            t = ThemeManager.instance().tokens()
+            dlg.setStyleSheet(
+                maybe_host_stylesheet(
+                    f"QDialog {{ background: {t.base}; }}"
+                    f"QLabel {{ color: {t.text}; font-size: 12px; }}"
+                    f"QCheckBox {{ color: {t.text}; font-size: 12px; }}"
+                )
+            )
             layout = QVBoxLayout(dlg)
             cb = QCheckBox(f"Include subagent logs ({len(session.subagent_logs)} subagent runs)")
             cb.setChecked(True)
             layout.addWidget(cb)
-            buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+            buttons = QDialogButtonBox(
+                qt_flags(
+                    QDialogButtonBox.StandardButton.Ok,
+                    QDialogButtonBox.StandardButton.Cancel,
+                )
+            )
             buttons.accepted.connect(dlg.accept)
             buttons.rejected.connect(dlg.reject)
             layout.addWidget(buttons)
-            if not dlg.exec():
+            if not qt_run(dlg):
                 return
             include_subagents = cb.isChecked()
 
@@ -742,6 +982,7 @@ class RikuganPanelCore(QWidget):
         if tab_id is None:
             return
         self._ctrl.switch_tab(tab_id)
+        self._restore_messages_if_needed(tab_id)
         self._update_token_display()
 
     def _tab_id_at_index(self, index: int) -> str | None:
@@ -761,6 +1002,15 @@ class RikuganPanelCore(QWidget):
     def _active_chat_view(self) -> ChatView | None:
         """Return the ChatView for the currently active tab."""
         return self._chat_views.get(self._ctrl.active_tab_id)
+
+    def _restore_messages_if_needed(self, tab_id: str) -> None:
+        """Replay deferred restored messages for a tab the first time it is shown."""
+        messages = self._pending_restore_messages.pop(tab_id, None)
+        if not messages:
+            return
+        chat_view = self._chat_views.get(tab_id)
+        if chat_view is not None:
+            chat_view.restore_from_messages_async(messages)
 
     def _update_token_display(self, token_count: int | None = None) -> None:
         """Update the context bar token display with context window percentage."""
@@ -800,144 +1050,93 @@ class RikuganPanelCore(QWidget):
         else:
             self._input_area.setFocus()
 
-    def _apply_theme(self, theme: str, effective_theme: str | None = None) -> None:
-        """Apply the theme stylesheet. Internal helper for _build_ui.
+    def set_theme(self, mode: str, effective_theme: str | None = None) -> None:
+        """Apply a theme to the panel core.
 
-        ``effective_theme`` controls the helper palette used for inline-styled
-        widgets (Send / New / Export / Settings / Tools / cancel / mode bar /
-        tab widget / splitters). When omitted, it is inferred from *theme*.
+        The IDA Pro wrapper (and any future host wrapper) calls this
+        method to align the panel's helper palette with the host's
+        detected color scheme.  ``mode`` is the user-configured theme
+        (``"light"``, ``"dark"``, ``"ida"``); ``effective_theme`` is
+        the resolved helper palette for inline-styled widgets and is
+        only consulted when ``mode == "ida"``.
+
+        The method also drives the new ThemeManager singleton so the
+        themed QSS gets rebuilt via the existing ``themeChanged``
+        signal.  Calling it on a shut-down panel is a no-op.
         """
-        # Always update the global theme state FIRST so subsequent
-        # ``get_small_btn_style()`` etc. calls return the right palette
-        # for inline-styled widgets.
-        set_current_theme(theme, effective_theme=effective_theme)
-        if theme == "dark":
-            self.setStyleSheet(DARK_THEME)
-        elif theme == "light":
-            self.setStyleSheet(LIGHT_THEME)
-        else:
-            # 'ida' (or any non-dark/light value) means "inherit the host's
-            # Qt theme".  Clear any previously applied LIGHT_THEME /
-            # DARK_THEME so a stale Rikugan palette does not bleed through.
-            # The IDA wrapper may then install a minimal targeted
-            # stylesheet on top.
-            self.setStyleSheet("")
+        if self._is_shutdown:
+            return
+        try:
+            from .styles import set_current_theme
+            from .theme.manager import ThemeManager
+            from .theme.tokens import ThemeMode
+        except ImportError as e:  # pragma: no cover — defensive
+            log_debug(f"set_theme: theme modules unavailable: {e}")
+            return
 
-    def set_theme(self, theme: str, effective_theme: str | None = None) -> None:
-        """Set the UI theme.
+        # Update the legacy helper-palette selector (used by inline
+        # stylesheet templates that read ``is_dark_theme()``).
+        try:
+            set_current_theme(mode, effective_theme=effective_theme)
+        except Exception as e:
+            log_debug(f"set_current_theme failed: {e}")
 
-        Args:
-            theme: One of 'ida', 'dark', or 'light'.
-               'ida' means inherit the host's Qt theme — no custom stylesheet is applied.
-               'dark' and 'light' apply the predefined Rikugan stylesheets.
-            effective_theme: Optional helper palette for inline-styled widgets
-                when *theme* is ``"ida"``. Pass ``"dark"`` or ``"light"`` based
-                on the host color scheme detection performed by the IDA
-                wrapper.
-        """
-        from .markdown import clear_code_block_theme, set_markdown_theme_colors
-
-        self._current_theme = theme
-        set_current_theme(theme, effective_theme=effective_theme)
-        if theme == "dark":
-            self.setStyleSheet(DARK_THEME)
-            set_markdown_theme_colors(True)
-            clear_code_block_theme()
-        elif theme == "light":
-            self.setStyleSheet(LIGHT_THEME)
-            set_markdown_theme_colors(True)
-            clear_code_block_theme()
-        else:
-            # 'ida' (or any non-dark/light value): inherit host Qt theme.
-            # Clear any previously applied LIGHT_THEME / DARK_THEME so a
-            # stale Rikugan palette does not bleed through.  The IDA
-            # wrapper installs a minimal targeted stylesheet on top.
-            self.setStyleSheet("")
-            # Disable explicit colors in markdown so text inherits from host.
-            set_markdown_theme_colors(False)
-        # Re-apply the inline-styled widget palette so any widgets created
-        # earlier (during _build_ui) get restyled, and so future widgets
-        # created via the existing getters see the updated palette.
-        self._refresh_inline_styles()
-
-    def _refresh_inline_styles(self) -> None:
-        """Re-apply the theme-aware inline styles to already-constructed widgets.
-
-        Qt's stylesheet cascade is per-widget. Widgets that were assigned
-        widget-local stylesheets at construction time do NOT auto-refresh
-        when the parent theme changes, so we re-issue the same style sheets
-        here. This is safe to call at any time after the widgets exist.
-        """
-        for btn in (
-            getattr(self, "_send_btn", None),
-            getattr(self, "_new_btn", None),
-            getattr(self, "_export_btn", None),
-            getattr(self, "_settings_btn", None),
-            getattr(self, "_mutations_btn", None),
-            getattr(self, "_tools_btn", None),
-        ):
-            if btn is not None:
-                try:
-                    btn.setStyleSheet(get_small_btn_style())
-                except RuntimeError:
-                    pass  # widget deleted
-        cancel_btn = getattr(self, "_cancel_btn", None)
-        if cancel_btn is not None:
-            try:
-                cancel_btn.setStyleSheet(get_cancel_btn_style())
-            except RuntimeError:
-                pass
-        mode_bar = getattr(self, "_mode_bar", None)
-        if mode_bar is not None:
-            try:
-                mode_bar.setStyleSheet(get_mode_bar_style())
-            except RuntimeError:
-                pass
-        tab_widget = getattr(self, "_tab_widget", None)
-        if tab_widget is not None:
-            try:
-                tab_widget.setStyleSheet(get_tab_widget_style())
-            except RuntimeError:
-                pass
-        tab_bar = getattr(self, "_tab_bar", None)
-        if tab_bar is not None and hasattr(tab_bar, "refresh_inline_styles"):
-            try:
-                tab_bar.refresh_inline_styles()
-            except RuntimeError:
-                pass
-        # Re-apply chat-view inline styles (history nav strip) on every
-        # open tab so the strip matches the active palette after a
-        # theme switch.
-        for chat_view in getattr(self, "_chat_views", {}).values():
-            try:
-                chat_view.refresh_inline_styles()
-            except RuntimeError:
-                pass
-        for splitter in (
-            getattr(self, "_main_splitter", None),
-            getattr(self, "_chat_input_splitter", None),
-        ):
-            if splitter is not None:
-                try:
-                    splitter.setStyleSheet(get_splitter_handle_style())
-                except RuntimeError:
-                    pass
+        # Drive the ThemeManager so the ``themeChanged`` signal fires
+        # and the panel-wide QSS gets rebuilt.  Map legacy mode names
+        # to the new ThemeMode values.
+        try:
+            mode_map = {
+                "ida": ThemeMode.IDA_NATIVE,
+                "dark": ThemeMode.DARK,
+                "light": ThemeMode.LIGHT,
+                "auto": ThemeMode.AUTO,
+            }
+            mgr_mode = mode_map.get(mode)
+            if mgr_mode is not None:
+                ThemeManager.instance().set_mode(mgr_mode)
+        except Exception as e:
+            log_debug(f"ThemeManager.set_mode failed: {e}")
 
     def shutdown(self) -> None:
         if self._is_shutdown:
             return
         self._is_shutdown = True
-        # Stop renamer chunk loading and reconfigure tools poll timer before
-        # tearing down widgets — active timers can fire during teardown and
-        # reference stale object attributes.
-        self._cleanup_renamer_chunk(cancel_controller=True, cancel_widget=True)
-        self._cancel_renamer_engine()
-        self._stop_tools_poll_timer()
         try:
             tools_form = getattr(self, "_tools_form", None)
             tools_panel = getattr(self, "_tools_panel", None)
+            # Stop the bulk-renamer chunk fetch timer (if any) so
+            # it does not fire after teardown and dereference
+            # already-disposed widgets.
+            self._cleanup_renamer_chunk(cancel_controller=True, cancel_widget=False)
+            # Cancel any in-flight renamer engine so background worker
+            # threads exit before the panel teardown completes.  Without
+            # this, an active engine can keep the panel alive across
+            # teardown and dereference disposed widgets.
+            engine = getattr(self, "_renamer_engine", None)
+            if engine is not None:
+                try:
+                    engine.cancel()
+                except Exception as e:  # defensive
+                    log_debug(f"renamer engine cancel on shutdown failed: {e}")
+                self._renamer_engine = None
             self._stop_poll_timer()
             self._stop_skills_refresh_timer()
+            # Detach from ThemeManager.themeChanged so the singleton
+            # doesn't keep a dangling reference to this panel alive
+            # after teardown.  ``disconnect`` may raise if the panel
+            # never connected (e.g. tests that bypass _build_ui), so
+            # we swallow a broad set of disconnect-time errors:
+            # ``RuntimeError`` / ``TypeError`` for already-disconnected
+            # signals, and ``SystemError`` for PySide6's
+            # ``returned a result with an exception set`` quirk
+            # (observed on PySide6 6.7+ when the signal is on a
+            # partially-initialised manager).
+            try:
+                from .theme.manager import ThemeManager
+
+                ThemeManager.instance().themeChanged.disconnect(self._on_theme_changed)
+            except (RuntimeError, TypeError, SystemError, ImportError) as e:
+                log_debug(f"ThemeManager disconnect skipped: {e}")
             _SharedSpinnerTimer.shutdown()
             if self._context_bar:
                 self._context_bar.stop()
@@ -965,21 +1164,38 @@ class RikuganPanelCore(QWidget):
         """Called when the user opens a different file."""
         if self._is_shutdown:
             return
-        normalized = os.path.normcase(os.path.realpath(os.path.abspath(new_path))) if new_path else ""
+        if new_path:
+            try:
+                normalized = os.path.normcase(os.path.realpath(os.path.abspath(new_path)))
+            except (FileNotFoundError, OSError):
+                # File may not exist yet (e.g., database closed without opening a new one)
+                normalized = os.path.normcase(os.path.abspath(new_path))
+        else:
+            normalized = ""
         if normalized == self._ctrl._idb_path:
             return
         self._ctrl.reset_for_new_file(normalized)
-        # Close the renamer and clear its state — stale function data
-        # from the previous binary would be misleading.
-        if getattr(self, "_tools_panel", None) is not None:
-            self._tools_panel.hide()
-            self._tools_panel.close()
-            self._tools_panel = None
+        # Stop the in-flight renamer chunk fetch (if any) so the
+        # in-progress enumeration does not keep the old IDB
+        # state alive across the database swap.
         self._cleanup_renamer_chunk(cancel_controller=True, cancel_widget=True)
+        # Cancel any in-flight renamer engine (if any) so background
+        # worker threads for the previous IDB exit before we rebuild
+        # the chat tabs and tools panel.
+        engine = getattr(self, "_renamer_engine", None)
+        if engine is not None:
+            try:
+                engine.cancel()
+            except Exception as e:  # defensive
+                log_debug(f"renamer engine cancel on db change failed: {e}")
+            self._renamer_engine = None
         if hasattr(self, "_bulk_renamer"):
-            self._bulk_renamer.clear_functions()
-        # Cancel any in-flight renamer engine
-        self._cancel_renamer_engine()
+            # Clear the renamer table; the new IDB has a different
+            # function list and the old rows would be misleading.
+            try:
+                self._bulk_renamer.clear_functions()
+            except Exception as e:  # defensive
+                log_debug(f"bulk_renamer.clear_functions on db change failed: {e}")
         # Remove all existing tabs
         for cv in self._chat_views.values():
             cv.shutdown()
@@ -989,6 +1205,7 @@ class RikuganPanelCore(QWidget):
             if w:
                 w.deleteLater()
         self._chat_views.clear()
+        self._pending_restore_messages.clear()
         # Create default tab and try to restore saved sessions
         self._create_tab(self._ctrl.active_tab_id, "New Chat")
         self._try_restore_session()
@@ -1036,26 +1253,24 @@ class RikuganPanelCore(QWidget):
             chat_view.remove_queued_messages()
 
     def _on_settings(self) -> None:
-        from .settings_dialog import SettingsDialog
-
         try:
+            from .settings_dialog import SettingsDialog
+
             dlg = SettingsDialog(
                 self._config,
                 registry=self._ctrl.provider_registry,
                 tool_registry=self._ctrl.tool_registry,
+                is_running_callback=lambda: self._ctrl.is_agent_running,
             )
-            result = dlg.exec_()
+            result = qt_run(dlg)
             if result:
                 self._config.save(password=dlg.encryption_password)
                 self._ctrl.update_settings()
                 self._ctrl.reload_mcp()
+                # Refresh autocomplete with updated skill list
+                self._input_area.set_skill_slugs(self._ctrl.skill_slugs)
                 if self._context_bar is not None:
                     self._context_bar.set_model(self._config.provider.model)
-                # Apply OAuth consent when switching to Anthropic without an explicit key.
-                # This ensures the consent state is applied even if the user started
-                # with a different provider and later switches.
-                if self._config.provider.name == "anthropic" and not self._config.provider.api_key:
-                    self._check_oauth_consent()
                 log_info(f"Settings updated: {self._config.provider.name}/{self._config.provider.model}")
             dlg.setParent(None)
         except Exception as e:
@@ -1067,12 +1282,15 @@ class RikuganPanelCore(QWidget):
         dlg.setWindowTitle("New Chat")
         dlg.setText("Start a new chat? Current conversation will be saved.")
         dlg.setInformativeText(f"Context usage: {context_pct}%")
+        t = ThemeManager.instance().tokens()
         dlg.setStyleSheet(
-            "QMessageBox { background: #1e1e1e; color: #d4d4d4; }"
-            ""
-            "QPushButton { background: #2d2d2d; color: #d4d4d4; border: 1px solid #3c3c3c; "
-            "border-radius: 4px; padding: 6px 16px; font-size: inherit; min-width: 80px; }"
-            "QPushButton:hover { background: #3c3c3c; }"
+            maybe_host_stylesheet(
+                f"QMessageBox {{ background: {t.base}; color: {t.text}; }}"
+                f"QLabel {{ color: {t.text}; font-size: 12px; }}"
+                f"QPushButton {{ background: {t.alt_base}; color: {t.text}; border: 1px solid {t.mid}; "
+                f"border-radius: 4px; padding: 6px 16px; font-size: 11px; min-width: 80px; }}"
+                f"QPushButton:hover {{ background: {t.mid}; }}"
+            )
         )
         yes_btn = dlg.addButton("Yes", QMessageBox.ButtonRole.AcceptRole)
         clear_btn = dlg.addButton(
@@ -1081,7 +1299,7 @@ class RikuganPanelCore(QWidget):
         )
         no_btn = dlg.addButton("No", QMessageBox.ButtonRole.RejectRole)
         dlg.setDefaultButton(no_btn)
-        dlg.exec_()
+        qt_run(dlg)
         clicked = dlg.clickedButton()
         if clicked is clear_btn:
             return "clear"
@@ -1130,13 +1348,26 @@ class RikuganPanelCore(QWidget):
             return
         self._polling = True
         try:
-            for _ in range(10):
-                event = self._ctrl.get_event(timeout=0)
-                if event is None:
-                    if not self._ctrl.is_agent_running:
-                        self._on_agent_finished()
-                    return
-                self._on_event(event)
+            chat_view = self._active_chat_view()
+            container = chat_view._container if chat_view is not None else None
+            # Defer layout/paint passes until the whole batch is processed.
+            # When 3 tools complete between ticks, each TOOL_RESULT makes a hidden
+            # widget visible which triggers an O(n-widgets) layout cascade on the
+            # chat container.  Batching those into one final pass cuts this from
+            # O(k·n) to O(n) per tick.
+            if container is not None:
+                container.setUpdatesEnabled(False)
+            try:
+                for _ in range(30):
+                    event = self._ctrl.get_event(timeout=0)
+                    if event is None:
+                        if not self._ctrl.is_agent_running:
+                            self._on_agent_finished()
+                        return
+                    self._on_event(event)
+            finally:
+                if container is not None:
+                    container.setUpdatesEnabled(True)
         finally:
             self._polling = False
 
@@ -1182,14 +1413,6 @@ class RikuganPanelCore(QWidget):
         if runner:
             runner.agent_loop.submit_tool_approval(decision)
 
-    def _on_orchestra_approval(self, tool_call_id: str, decision: str) -> None:
-        """Forward orchestra delegation approval to the agent loop."""
-        runner = self._ctrl.get_runner()
-        if runner:
-            runner.agent_loop.submit_approval(decision)
-        self._pending_answer = False
-        self._awaiting_button_approval = False
-
     def _on_user_answer_submitted(self, answer: str) -> None:
         """Handle a button click from UserQuestionWidget (plan/save/ask_user)."""
         if not self._pending_answer:
@@ -1223,13 +1446,15 @@ class RikuganPanelCore(QWidget):
         self._set_running(False)
 
     def _try_restore_session(self) -> None:
+        # Honor ``startup_restore_sessions`` config: "none" → skip,
+        # "latest" → only the most recent session, "all" (default) →
+        # restore every saved session.
         restore_mode = getattr(self._config, "startup_restore_sessions", "all")
         if restore_mode == "none":
             return
         if restore_mode == "all":
             restored = self._ctrl.restore_sessions()
         else:
-            # "latest" — restore only the most recent session
             restored = self._ctrl.restore_sessions(latest_only=True)
         if restored:
             # Remove the default empty tab if it was replaced
@@ -1246,8 +1471,8 @@ class RikuganPanelCore(QWidget):
 
             for tab_id, session in restored:
                 label = self._ctrl.tab_label(tab_id)
-                cv = self._create_tab(tab_id, label)
-                cv.restore_from_messages(session.messages)
+                self._pending_restore_messages[tab_id] = session.messages
+                self._create_tab(tab_id, label)
 
             # Activate the last (most recent) tab
             if restored:
@@ -1258,6 +1483,7 @@ class RikuganPanelCore(QWidget):
                         if self._tab_widget.widget(i) is last_cv:
                             self._tab_widget.setCurrentIndex(i)
                             break
+                    self._restore_messages_if_needed(last_tab_id)
                 self._update_token_display()
         else:
             # No saved sessions — try legacy single-session restore
@@ -1265,31 +1491,15 @@ class RikuganPanelCore(QWidget):
             if session:
                 legacy_cv = self._active_chat_view()
                 if legacy_cv:
-                    legacy_cv.restore_from_messages(session.messages)
+                    legacy_cv.restore_from_messages_async(session.messages)
                 self._update_token_display()
 
     # --- Mutation log integration ---
 
-    def _ensure_mutation_panel(self):
-        """Lazily create the mutation log panel on first access.
-
-        The panel is inserted into ``_mutation_container`` so the splitter
-        always has exactly two children (chat area + container).  No third
-        splitter widget is ever added.
-        """
-        from .mutation_log_view import MutationLogPanel
-
-        if self._mutation_panel is not None:
-            return self._mutation_panel
-        self._mutation_panel = MutationLogPanel()
-        self._mutation_panel.undo_requested.connect(self._on_undo_requested)
-        self._mutation_panel.setVisible(False)
-        self._mutation_container_layout.addWidget(self._mutation_panel)
-        return self._mutation_panel
-
     def _on_mutation_recorded(self, event: TurnEvent) -> None:
         """Handle a MUTATION_RECORDED event by adding it to the mutation log panel."""
-        panel = self._ensure_mutation_panel()
+        if self._mutation_panel is None:
+            return
         meta = event.metadata
         record = MutationRecord(
             tool_name=event.tool_name,
@@ -1299,16 +1509,16 @@ class RikuganPanelCore(QWidget):
             description=event.text,
             reversible=meta.get("reversible", False),
         )
-        panel.add_mutation(record)
+        self._mutation_panel.add_mutation(record)
         # Show the mutations button once the first mutation is recorded
         self._mutations_btn.setVisible(True)
 
     def _on_toggle_mutation_log(self) -> None:
-        """Toggle visibility of the mutation log panel and its container."""
-        panel = self._ensure_mutation_panel()
-        visible = not panel.isVisible()
-        panel.setVisible(visible)
-        self._mutation_container.setVisible(visible)
+        """Toggle visibility of the mutation log panel."""
+        if self._mutation_panel is None:
+            return
+        visible = not self._mutation_panel.isVisible()
+        self._mutation_panel.setVisible(visible)
         self._mutations_btn.setChecked(visible)
 
     def _on_mode_changed(self, index: int) -> None:
@@ -1428,28 +1638,54 @@ class RikuganPanelCore(QWidget):
         return self._subagent_manager
 
     def _get_or_create_renamer_engine(self, batch_size: int, max_workers: int):
-        """Create a BulkRenamerEngine for the current session."""
-        from ..agent.bulk_renamer import BulkRenamerEngine
+        """Create a BulkRenamerEngine for the current session.
 
-        # Ensure advanced (deferred) tools are registered before the
-        # renamer engine is created — the engine needs decompile_function
-        # and other advanced tools even if no chat prompt has been sent.
-        if not self._ctrl.ensure_advanced_tools_ready():
-            log_warning("Advanced tool registration incomplete — bulk renamer may lack required tools")
-
-        # Verify that required tools are actually available.
-        registry = self._ctrl.get_tool_registry()
-        missing = [name for name in ("decompile_function",) if registry.get(name) is None]
-        if missing:
-            log_error(f"Cannot start bulk renamer: missing required tool(s): {', '.join(missing)}")
+        The engine talks to the decompiler through ``decompile_function``,
+        which lives in the *advanced* tool group (registered lazily by
+        the host controller).  We must run the preflight before
+        constructing the engine, otherwise the engine will enqueue jobs
+        and then fail every one of them with "tool not registered".
+        """
+        # Preflight: ensure the advanced tool set (which includes
+        # ``decompile_function``) is registered before we hand the
+        # engine the tool registry.  ``ensure_advanced_tools_ready``
+        # is idempotent and never raises; it just schedules a retry
+        # on failure.
+        ensure_fn = getattr(self._ctrl, "ensure_advanced_tools_ready", None)
+        if callable(ensure_fn):
+            try:
+                ready = ensure_fn()
+            except Exception as e:  # defensive — never crash the click
+                log_error(f"ensure_advanced_tools_ready raised: {e}")
+                ready = False
+        else:
+            ready = True
+        if not ready:
+            log_error(
+                "Cannot start renamer: advanced tool registration did not complete. "
+                "Check the Rikugan output window for decompiler errors."
+            )
             return None
+
+        # Verify the decompiler tool actually made it into the
+        # registry — a no-op preflight would otherwise let the
+        # engine start and then fail every job silently.
+        tool_registry = self._ctrl.get_tool_registry()
+        if tool_registry.get("decompile_function") is None:
+            log_error(
+                "Cannot start renamer: decompile_function is not registered. "
+                "Open the Tools menu and re-run ensure_advanced_tools_ready."
+            )
+            return None
+
+        from ..agent.bulk_renamer import BulkRenamerEngine
 
         provider = self._ctrl.get_provider()
         if provider is None:
             return None
         return BulkRenamerEngine(
             provider=provider,
-            tool_registry=self._ctrl.get_tool_registry(),
+            tool_registry=tool_registry,
             config=self._config,
             host_name=self._ctrl.host_name,
             skill_registry=getattr(self._ctrl, "_skill_registry", None),
@@ -1461,96 +1697,125 @@ class RikuganPanelCore(QWidget):
     def _load_renamer_functions(self) -> None:
         """Populate the bulk renamer widget with functions from the binary.
 
-        Uses the host-specific ``list_functions_raw()`` on the controller
-        (not a direct IDA import) with chunked QTimer-driven loading to
-        keep the UI thread responsive during enumeration of large binaries.
+        Uses the host controller's structured function-enumeration
+        pump (``begin_function_enumeration`` / ``next_function_chunk``)
+        so the widget gets accurate ``is_import`` and ``size_bytes``
+        metadata.  Each chunk is delivered through a zero-interval
+        QTimer so the UI thread stays responsive between pages.
         """
         if not hasattr(self, "_bulk_renamer"):
             return
 
+        # Cancel any in-flight load before starting a new one
+        # (the refresh button can be clicked multiple times in a row).
+        self._cleanup_renamer_chunk(cancel_controller=True, cancel_widget=True)
+
+        begin = getattr(self._ctrl, "begin_function_enumeration", None)
+        if not callable(begin):
+            log_info("Controller has no begin_function_enumeration — renamer table will be empty")
+            return
         try:
-            self._cleanup_renamer_chunk(cancel_controller=True, cancel_widget=True)
-            self._ctrl.begin_function_enumeration()
-            self._bulk_renamer.begin_function_load()
+            begin()
         except Exception as e:
-            log_error(f"Failed to start function enumeration for bulk renamer: {e}")
-            try:
-                self._bulk_renamer.fail_function_load(f"Failed to load functions: {e}")
-            except Exception as widget_err:
-                log_error(f"Failed to restore bulk renamer after start failure: {widget_err}")
-            finally:
-                self._cleanup_renamer_chunk(cancel_controller=True)
+            log_error(f"begin_function_enumeration failed: {e}")
             return
 
-        # Start chunked enumeration via QTimer
-        self._renamer_chunk_limit = 200
-        self._renamer_chunk_timer = QTimer(self)
-        self._renamer_chunk_timer.setInterval(0)
-        self._renamer_chunk_timer.timeout.connect(self._renamer_chunk_step)
-        self._renamer_chunk_timer.start()
+        # Tell the widget we're starting a fresh load so it can
+        # show its "Loading functions..." state.
+        begin_load = getattr(self._bulk_renamer, "begin_function_load", None)
+        if callable(begin_load):
+            try:
+                begin_load()
+            except Exception as e:
+                log_debug(f"bulk_renamer.begin_function_load failed: {e}")
+
+        # Zero-interval timer: pump one chunk per tick, return
+        # control to the Qt event loop between chunks.
+        self._renamer_fetch_timer = QTimer(self)
+        self._renamer_fetch_timer.setInterval(0)
+        self._renamer_fetch_timer.timeout.connect(self._renamer_chunk_step)
+        self._renamer_fetch_timer.start()
 
     def _renamer_chunk_step(self) -> None:
-        """Fetch and populate the next chunk of function data from the controller."""
-        timer = getattr(self, "_renamer_chunk_timer", None)
-        if timer is None:
-            return
-
-        if self._is_shutdown:
-            self._cleanup_renamer_chunk(cancel_controller=True)
-            return
-
-        limit = self._renamer_chunk_limit
-
+        """Drain one chunk from the controller into the widget."""
+        next_chunk = getattr(self._ctrl, "next_function_chunk", None)
+        append_chunk = getattr(self._bulk_renamer, "append_function_chunk", None)
         try:
-            chunk, more = self._ctrl.next_function_chunk(limit)
+            if not callable(next_chunk) or not callable(append_chunk):
+                # Defensive — should not happen because
+                # ``_load_renamer_functions`` checked for
+                # ``begin_function_enumeration`` already, but a
+                # custom controller might omit the chunk getter.
+                self._cleanup_renamer_chunk(cancel_controller=True, cancel_widget=True)
+                return
+            chunk, more = next_chunk(limit=500)
         except Exception as e:
-            log_error(f"Failed to enumerate functions chunk: {e}")
-            try:
-                self._bulk_renamer.fail_function_load(f"Failed to load functions: {e}")
-            except Exception as widget_err:
-                log_error(f"Failed to restore bulk renamer after load failure: {widget_err}")
-            finally:
-                self._cleanup_renamer_chunk(cancel_controller=True)
+            log_error(f"next_function_chunk failed: {e}")
+            fail = getattr(self._bulk_renamer, "fail_function_load", None)
+            if callable(fail):
+                fail(str(e))
+            self._cleanup_renamer_chunk(cancel_controller=True, cancel_widget=True)
             return
 
         if chunk:
-            self._bulk_renamer.append_function_chunk(chunk)
+            try:
+                append_chunk(chunk)
+            except Exception as e:
+                log_error(f"append_function_chunk failed: {e}")
+                fail = getattr(self._bulk_renamer, "fail_function_load", None)
+                if callable(fail):
+                    fail(str(e))
+                self._cleanup_renamer_chunk(cancel_controller=True, cancel_widget=True)
+                return
 
-        if not more:
-            self._bulk_renamer.finish_function_load()
-            self._cleanup_renamer_chunk()
-            log_info("Loaded functions into bulk renamer")
+        if more:
             return
 
-    def _cleanup_renamer_chunk(self, cancel_controller: bool = False, cancel_widget: bool = False) -> None:
-        """Clean up the chunked loading timer and state."""
-        if hasattr(self, "_renamer_chunk_timer") and self._renamer_chunk_timer is not None:
-            self._renamer_chunk_timer.stop()
-            self._renamer_chunk_timer.deleteLater()
-            self._renamer_chunk_timer = None
-        if hasattr(self, "_renamer_chunk_limit"):
-            del self._renamer_chunk_limit
-        if cancel_controller and hasattr(self._ctrl, "cancel_function_enumeration"):
-            self._ctrl.cancel_function_enumeration()
-        if cancel_widget and hasattr(self, "_bulk_renamer"):
-            self._bulk_renamer.cancel_function_load()
-
-    def _stop_tools_poll_timer(self) -> None:
-        timer = getattr(self, "_tools_poll_timer", None)
-        if timer is not None:
-            timer.stop()
-            timer.deleteLater()
-            self._tools_poll_timer = None
-
-    def _cancel_renamer_engine(self) -> None:
-        """Cancel any active bulk renamer engine and clear the reference."""
-        engine = getattr(self, "_renamer_engine", None)
-        if engine is not None:
+        # Last chunk — stop the timer and finalize the widget.
+        finish = getattr(self._bulk_renamer, "finish_function_load", None)
+        if callable(finish):
             try:
-                engine.cancel()
+                finish()
             except Exception as e:
-                log_warning(f"Failed to cancel bulk renamer engine: {e}")
-        self._renamer_engine = None
+                log_debug(f"bulk_renamer.finish_function_load failed: {e}")
+        self._cleanup_renamer_chunk(cancel_controller=True, cancel_widget=True)
+        log_info("Bulk renamer function load complete")
+
+    def _cleanup_renamer_chunk(
+        self,
+        cancel_controller: bool = True,
+        cancel_widget: bool = True,
+    ) -> None:
+        """Stop the chunk-fetch timer and (optionally) the controller.
+
+        Called from ``_load_renamer_functions`` (to reset before a new
+        load), ``_renamer_chunk_step`` (on completion or failure),
+        and from the panel-level shutdown / database-change paths
+        (so an in-flight load cannot survive a teardown).
+        """
+        timer = getattr(self, "_renamer_fetch_timer", None)
+        if timer is not None:
+            try:
+                timer.stop()
+                timer.deleteLater()
+            except Exception as e:  # defensive
+                log_debug(f"renamer fetch timer cleanup failed: {e}")
+            self._renamer_fetch_timer = None
+        if cancel_controller:
+            cancel = getattr(self._ctrl, "cancel_function_enumeration", None)
+            if callable(cancel):
+                try:
+                    cancel()
+                except Exception as e:  # defensive
+                    log_debug(f"cancel_function_enumeration failed: {e}")
+        if cancel_widget:
+            widget = getattr(self, "_bulk_renamer", None)
+            cancel_fn = getattr(widget, "cancel_function_load", None)
+            if callable(cancel_fn):
+                try:
+                    cancel_fn()
+                except Exception as e:  # defensive
+                    log_debug(f"bulk_renamer.cancel_function_load failed: {e}")
 
     # --- Tools panel event handlers ---
 
@@ -1580,7 +1845,10 @@ class RikuganPanelCore(QWidget):
 
         engine = self._get_or_create_renamer_engine(batch_size, max_concurrent)
         if engine is None:
-            log_error("Cannot start renamer: resources unavailable")
+            log_error("Cannot start renamer: LLM provider not available")
+            # Reset the widget's running state so the Start button
+            # re-enables and the user can retry once the upstream
+            # issue (provider / decompiler registration) is fixed.
             if hasattr(self, "_bulk_renamer"):
                 self._bulk_renamer.set_running_state(False)
             return
@@ -1588,14 +1856,15 @@ class RikuganPanelCore(QWidget):
         engine.enqueue(rename_jobs)
         self._renamer_engine = engine
 
-        # Preload decompilation on the main thread before starting worker pool.
-        # This ensures all IDA API calls happen on the main thread; workers
-        # only run LLM calls and the final rename tool (which is also safe).
+        # Preload decompilation on the main thread (IDA requires API
+        # calls on the main thread), then start the worker. Wrapped in
+        # QTimer.singleShot(0, ...) so the click handler returns
+        # immediately and the panel can repaint before the blocking
+        # decompile loop runs.
         def _preload_and_start() -> None:
             engine.preload_decompilation()
             engine.start(deep=(mode == "deep"), preload_on_main_thread=True)
 
-        # Defer to next event-loop tick so the UI remains responsive
         QTimer.singleShot(0, _preload_and_start)
 
     def _on_renamer_pause(self) -> None:

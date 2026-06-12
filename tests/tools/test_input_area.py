@@ -5,11 +5,23 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock
 
-from tests.qt_stubs import ensure_pyside6_stubs
+# Defensive: drop any ``_StubModule`` entries a sibling test file
+# (e.g. ``tests/tools/test_settings_dialog.py`` or
+# ``tests/tools/test_panel_core.py``) left in ``sys.modules`` before
+# we import the real rikugan modules.  Without this purge, the
+# input-area tests see a ``MagicMock`` ``InputArea`` class and fail
+# with ``TypeError: object.__new__(X): X is not a type object`` on
+# the first ``_make_input()`` call.  See
+# ``tests/providers/test_providers.py`` for the canonical pattern.
+from tests import purge_rikugan_stubs
+
+purge_rikugan_stubs()
+
+from tests.qt_stubs import ensure_pyside6_stubs  # noqa: E402
+
 ensure_pyside6_stubs()
 
 from rikugan.ui.input_area import InputArea, _SkillPopup  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # _SkillPopup — pure list logic

@@ -10,6 +10,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from tests.mocks.ida_mock import install_ida_mocks
 install_ida_mocks()
 
+# Defensive: drop any ``_StubModule`` entries a sibling test file
+# (e.g. ``tests/tools/test_panel_core.py``) left in ``sys.modules``
+# before we import the real rikugan modules.  Without this purge
+# the provider tests would see a ``MagicMock`` registry and fail
+# with ``AttributeError: __name__`` on ``assertRaises``.
+from tests import purge_rikugan_stubs
+purge_rikugan_stubs()
+
 from rikugan.core.types import Message, Role, ToolCall, ToolResult, TokenUsage, StreamChunk
 from rikugan.providers.registry import ProviderRegistry
 from rikugan.core.errors import ProviderError

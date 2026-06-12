@@ -6,14 +6,16 @@ import os
 import sys
 import tempfile
 import unittest
+from typing import ClassVar
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from tests.mocks.ida_mock import install_ida_mocks
+
 install_ida_mocks()
 
-from rikugan.core.config import RikuganConfig
-from rikugan.core.types import Message, Role, TokenUsage, ToolCall, ToolResult
-from rikugan.ida.ui.session_controller import IdaSessionController
+from rikugan.core.config import RikuganConfig  # noqa: E402
+from rikugan.core.types import Message, Role, TokenUsage, ToolCall, ToolResult  # noqa: E402
+from rikugan.ida.ui.session_controller import IdaSessionController  # noqa: E402
 
 
 class TestIdaSessionController(unittest.TestCase):
@@ -86,6 +88,7 @@ class TestIdaSessionController(unittest.TestCase):
 
         # Verify session was saved to disk
         from rikugan.state.history import SessionHistory
+
         history = SessionHistory(self.cfg)
         sessions = history.list_sessions(db_instance_id=self.ctrl._db_instance_id)
         self.assertTrue(any(s["id"] == self.ctrl.session.id for s in sessions))
@@ -192,6 +195,233 @@ class TestIdaSessionController(unittest.TestCase):
         new_tab_id = self.ctrl.fork_session(source_tab)
         forked = self.ctrl._sessions[new_tab_id]
         self.assertEqual(forked.metadata.get("forked_from"), source_id)
+
+
+class TestEnsureAdvancedToolsReady(unittest.TestCase):
+    """Regression tests for ``ensure_advanced_tools_ready``.
+
+    These tests exercise the controller in isolation (no IDA, no
+    agent loop) and verify the defensive paths that the
+    review remediation plan flagged as commit blockers.
+    """
+
+    def _make_controller(self, ensure_tools_ready):
+        """Build a bare controller instance for ``ensure_advanced_tools_ready`` tests."""
+        cfg = RikuganConfig()
+        cfg._config_dir = tempfile.mkdtemp()
+        # Use ``SessionControllerBase`` directly so the IDA tool
+        # registry / background runtime init are bypassed.
+        from rikugan.ui.session_controller_base import SessionControllerBase
+
+        class _StubToolRegistry:
+            def set_capabilities(self, _caps):
+                return None
+
+        ctrl = SessionControllerBase.__new__(SessionControllerBase)
+        ctrl._advanced_tools_registered = False
+        ctrl._ensure_tools_ready = ensure_tools_ready
+        ctrl._reset_deferred_tools = None
+        # ``ensure_advanced_tools_ready`` passes the live
+        # ``self.tool_registry`` getter result to the host callback.
+        # We don't want to construct a real registry here, so we
+        # bypass the property and attach a stub directly.
+        ctrl._tool_registry = _StubToolRegistry()
+        return ctrl
+
+    def test_returns_false_without_raising_when_callback_raises(self):
+        """A raising host callback must not propagate — the controller
+        returns ``False`` so the retry path can fire later."""
+
+        def _boom(_registry):
+            raise RuntimeError("advanced tool registration crashed")
+
+        ctrl = self._make_controller(_boom)
+        try:
+            result = ctrl.ensure_advanced_tools_ready()
+        except NameError as e:
+            self.fail(f"ensure_advanced_tools_ready leaked NameError: {e}")
+        self.assertFalse(result)
+        # Stays un-registered so subsequent calls will retry.
+        self.assertFalse(ctrl._advanced_tools_registered)
+
+    def test_returns_true_when_callback_returns_truthy(self):
+        """A successful callback marks the controller as registered."""
+        class _OkResult:
+            ok: bool = True
+            registered: int = 7
+            failed_modules: ClassVar[list[str]] = []
+
+        ctrl = self._make_controller(lambda _r: _OkResult())
+        self.assertTrue(ctrl.ensure_advanced_tools_ready())
+        self.assertTrue(ctrl._advanced_tools_registered)
+
+    def test_returns_false_when_callback_reports_failure(self):
+        """A callback returning ``ok=False`` must be reported as
+        ``False`` (so a retry can be scheduled) but must not raise."""
+
+        class _FailResult:
+            ok: bool = False
+            registered: int = 3
+            failed_modules: ClassVar[list[str]] = ["ida.decompiler"]
+
+        ctrl = self._make_controller(lambda _r: _FailResult())
+        self.assertFalse(ctrl.ensure_advanced_tools_ready())
+        # Still flagged as not-registered so a retry is possible.
+        self.assertFalse(ctrl._advanced_tools_registered)
+
+    def test_short_circuits_when_already_registered(self):
+        """After a successful first call, the controller must not
+        invoke the host callback a second time."""
+        calls: list[int] = []
+
+        class _OkResult:
+            ok: bool = True
+            registered: int = 1
+            failed_modules: ClassVar[list[str]] = []
+
+        def _cb(_registry):
+            calls.append(1)
+            return _OkResult()
+
+        ctrl = self._make_controller(_cb)
+        self.assertTrue(ctrl.ensure_advanced_tools_ready())
+        self.assertTrue(ctrl.ensure_advanced_tools_ready())
+        self.assertEqual(calls, [1])
+
+    def test_reset_deferred_tools_allows_retry(self):
+        """``reset_deferred_tools`` must clear the cached flag so the
+        next call to ``ensure_advanced_tools_ready`` re-invokes the
+        callback."""
+
+        class _OkResult:
+            ok: bool = True
+            registered: int = 1
+            failed_modules: ClassVar[list[str]] = []
+
+        calls: list[int] = []
+
+        def _cb(_registry):
+            calls.append(1)
+            return _OkResult()
+
+        ctrl = self._make_controller(_cb)
+        self.assertTrue(ctrl.ensure_advanced_tools_ready())
+        # Reset must be safe to call even when the controller
+        # never provided a ``reset_deferred_tools`` callback.
+        ctrl.reset_deferred_tools()
+        self.assertFalse(ctrl._advanced_tools_registered)
+        self.assertTrue(ctrl.ensure_advanced_tools_ready())
+        self.assertEqual(calls, [1, 1])
+
+
+# ---------------------------------------------------------------------------
+# IDA function enumeration import-failure defensive contract.
+# ---------------------------------------------------------------------------
+#
+# These tests pin the contract that a failed IDA import inside
+# ``begin_function_enumeration`` / ``next_function_chunk`` does NOT
+# leave a stale ``_funcs_iter`` behind.  The review remediation
+# plan flagged the previous revision as leaving a stale iterator
+# if ``idautils`` / ``ida_funcs`` / ``ida_name`` were missing or
+# import-time-broken, so the controller would silently resume
+# draining a previous enumeration whose IDA modules no longer
+# exist.
+#
+# We exercise the contract by monkey-patching
+# ``importlib.import_module`` so the specific modules used by the
+# enumeration methods raise ``ImportError``.
+
+
+class TestIdaFunctionEnumerationImportFailures(unittest.TestCase):
+    """A failed IDA import must not leave a stale enumeration iterator."""
+
+    def _make_controller(self):
+        from rikugan.ida.ui.session_controller import IdaSessionController
+
+        cfg = RikuganConfig()
+        cfg._config_dir = tempfile.mkdtemp()
+        return IdaSessionController(cfg)
+
+    def test_begin_function_enumeration_clears_state_on_idautils_import_error(self) -> None:
+        """If ``idautils`` cannot be imported, ``_funcs_iter`` must
+        be ``None`` and the ``ImportError`` must propagate so
+        callers can recover."""
+        import importlib
+
+        original = importlib.import_module
+        call_count = {"n": 0}
+
+        def _failing_import(name, *args, **kwargs):
+            call_count["n"] += 1
+            if name == "idautils":
+                raise ImportError("simulated missing idautils")
+            return original(name, *args, **kwargs)
+
+        ctrl = self._make_controller()
+        # Pre-set a non-None ``_funcs_iter`` to prove the fix
+        # clears it on import failure (the previous revision left
+        # the stale reference behind).
+        sentinel = iter([0xDEAD, 0xBEEF])
+        ctrl._funcs_iter = sentinel
+
+        with unittest.mock.patch.object(importlib, "import_module", side_effect=_failing_import):
+            with self.assertRaises(ImportError):
+                ctrl.begin_function_enumeration()
+        # The fix must clear the stale iterator reference.
+        self.assertIsNone(ctrl._funcs_iter)
+        self.addCleanup(ctrl.shutdown)
+
+    def test_next_function_chunk_clears_state_on_ida_funcs_import_error(self) -> None:
+        """If ``ida_funcs`` / ``ida_name`` cannot be imported during
+        a chunk pull, ``_funcs_iter`` must be ``None`` so the next
+        enumeration cycle starts from a clean slate."""
+        import importlib
+
+        original = importlib.import_module
+        fail_ida_funcs = {"on": False}
+
+        def _failing_import(name, *args, **kwargs):
+            if name == "ida_funcs" and fail_ida_funcs["on"]:
+                raise ImportError("simulated missing ida_funcs")
+            return original(name, *args, **kwargs)
+
+        ctrl = self._make_controller()
+        # Plant a fake iterator so we can prove the chunk pull is
+        # actually mid-enumeration when the import fails.
+        fake_iter = iter([0x1000, 0x1100])
+        ctrl._funcs_iter = fake_iter
+
+        with unittest.mock.patch.object(importlib, "import_module", side_effect=_failing_import):
+            fail_ida_funcs["on"] = True
+            with self.assertRaises(ImportError):
+                ctrl.next_function_chunk(limit=10)
+        # The fix must clear the stale iterator reference, not
+        # leave it pointing at the half-drained fake iterator.
+        self.assertIsNone(ctrl._funcs_iter)
+        self.addCleanup(ctrl.shutdown)
+
+    def test_next_function_chunk_clears_state_on_ida_name_import_error(self) -> None:
+        """Symmetric guarantee: an ``ida_name`` import failure also
+        clears enumeration state and propagates the exception."""
+        import importlib
+
+        original = importlib.import_module
+        fail_ida_name = {"on": False}
+
+        def _failing_import(name, *args, **kwargs):
+            if name == "ida_name" and fail_ida_name["on"]:
+                raise ImportError("simulated missing ida_name")
+            return original(name, *args, **kwargs)
+
+        ctrl = self._make_controller()
+        ctrl._funcs_iter = iter([0x2000])
+
+        with unittest.mock.patch.object(importlib, "import_module", side_effect=_failing_import):
+            fail_ida_name["on"] = True
+            with self.assertRaises(ImportError):
+                ctrl.next_function_chunk(limit=10)
+        self.assertIsNone(ctrl._funcs_iter)
+        self.addCleanup(ctrl.shutdown)
 
 
 if __name__ == "__main__":

@@ -80,7 +80,13 @@ class TestMdToHtmlNumberedList(unittest.TestCase):
 class TestMdToHtmlFencedCodeBlock(unittest.TestCase):
     def test_code_block_rendered(self):
         result = md_to_html("```python\nx = 1\n```")
-        self.assertIn("x = 1", result)
+        # Pygments wraps individual tokens in <span> tags, so the literal
+        # string "x = 1" may not appear contiguously.  Strip HTML tags to
+        # confirm the code text is present and that preformatted styling
+        # is applied.
+        import re as _re
+        text_only = _re.sub(r"<[^>]+>", "", result)
+        self.assertIn("x = 1", text_only)
         self.assertIn("white-space:pre", result)
 
     def test_code_block_with_lang_tag(self):

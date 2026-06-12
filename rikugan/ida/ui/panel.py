@@ -221,7 +221,10 @@ class RikuganPanel(idaapi.PluginForm):
         This method respects the config's theme setting. If theme is "dark"
         or "light", use the predefined stylesheets. If "ida" (default),
         apply a minimal targeted stylesheet for Rikugan-specific elements while
-        inheriting IDA's Qt stylesheet for everything else.
+        inheriting IDA's Qt stylesheet for everything else.  If ``"auto"``,
+        keep the manager in AUTO mode (so the live QApplication palette drives
+        the effective theme) while still deriving per-widget color hints from
+        the current IDA palette.
         """
         from rikugan.ui.markdown import clear_code_block_theme, set_code_block_theme
 
@@ -238,14 +241,32 @@ class RikuganPanel(idaapi.PluginForm):
             clear_code_block_theme()
             return
 
-        # config_theme == "ida" or invalid — apply minimal targeted overrides.
+        # ``config_theme`` is "ida" or "auto" (or an unknown value, which
+        # the manager normalizes).  Derive the live IDA palette either
+        # way so we can pick the right helper palette for inline-styled
+        # widgets (action buttons, mode bar, history nav, etc.).
         c = _get_ida_theme_colors()
         is_dark = bool(c.get("is_dark", False))
-        # Tell the core which helper palette inline-styled widgets should
-        # use. Without this, theme-aware style getters fall back to light
-        # and the action buttons (Send / New / Export / Settings / Tools)
-        # appear with light backgrounds in a dark IDA.
-        self._core.set_theme("ida", effective_theme="dark" if is_dark else "light")
+
+        if config_theme == "auto":
+            # AUTO: keep the manager in AUTO so its ``tokens()`` is
+            # recomputed from the live QApplication palette.  The
+            # effective theme we pass here only feeds the *legacy*
+            # ``styles.set_current_theme`` helper used by
+            # ``is_dark_theme()``/``is_host_theme()``-aware style
+            # getters; the new ``ThemeManager.tokens()`` derives its
+            # own value.
+            self._core.set_theme(
+                "auto", effective_theme="dark" if is_dark else "light"
+            )
+        else:
+            # config_theme == "ida" (or any non-dark/light value):
+            # tell the core to use the host's Qt theme.  Inline-styled
+            # widgets get the helper palette so action buttons render
+            # with the right contrast in a dark IDA.
+            self._core.set_theme(
+                "ida", effective_theme="dark" if is_dark else "light"
+            )
         set_code_block_theme(
             bg=_rgb_to_hex(c["code_block_bg"]),
             border=_rgb_to_hex(c["code_block_border"]),

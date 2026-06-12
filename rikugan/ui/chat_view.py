@@ -1,12 +1,13 @@
-"""Chat view: scrollable area containing message widgets."""
+﻿"""Chat view: scrollable area containing message widgets."""
 
 from __future__ import annotations
 
 import json
 import time
+from dataclasses import dataclass, field
 
 from ..agent.turn import TurnEvent, TurnEventType
-from ..core.types import Message, Role
+from ..core.types import Message, Role, ToolResult
 from .message_widgets import (
     AssistantMessageWidget,
     ErrorMessageWidget,
@@ -30,6 +31,7 @@ from .qt_compat import (
     QScrollArea,
     QSizePolicy,
     Qt,
+    QThread,
     QTimer,
     QVBoxLayout,
     QWidget,
@@ -45,6 +47,11 @@ from .tool_widgets import ToolApprovalWidget, ToolCallWidget, ToolGroupWidget
 
 _THINKING_MIN_DISPLAY_MS = 500
 
+# How many MessageSpec objects the worker accumulates before emitting
+# a single ``chunk_ready`` signal to the main thread.  Larger chunks
+# reduce per-emit overhead but increase latency-to-first-paint.
+_RESTORE_CHUNK_SIZE = 20
+
 # Collapse consecutive tool runs once they reach this many calls.
 # A single tool call is shown inline with its name visible;
 # only 2+ consecutive calls get grouped into a collapsible widget.
@@ -56,6 +63,361 @@ def _is_hidden_system_user_message(content: str) -> bool:
     if not content:
         return False
     return content.lstrip().startswith("[SYSTEM]")
+
+
+# ---------------------------------------------------------------------------
+# Async restore: spec types, placeholder, worker
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ToolSpec:
+    """Pre-serialized tool call/result pair for async restore.
+
+    Frozen so it can safely cross thread boundaries without locks.
+    """
+
+    id: str
+    name: str
+    arguments_json: str  # pre-serialized via json.dumps
+    # Estimated pixel height of the rendered ToolCallWidget.
+    estimated_height: int = 80
+    # ToolResult side: optional result content / error flag.
+    result_content: str = ""
+    result_is_error: bool = False
+
+
+@dataclass(frozen=True)
+class MessageSpec:
+    """Pre-built description of a single chat message.
+
+    Built off the UI thread by :class:`RestoreWorker`.  Carries everything
+    needed to instantiate the real Qt widget on the main thread without
+    further I/O or computation.
+    """
+
+    # Stable identifier ΓÇö set once in the worker so the main thread can
+    # correlate emitted chunks with their original position in the list.
+    msg_id: str
+    role: str  # one of Role.{USER,ASSISTANT,TOOL}
+    # USER / ASSISTANT raw text (assistant text is the *markdown* source;
+    # HTML is rendered on the main thread inside set_text_deferred).
+    content: str = ""
+    # USER_QUESTION payload
+    question_options: tuple[str, ...] = ()
+    # TOOL side: list of ToolSpec (call + result)
+    tool_specs: tuple[ToolSpec, ...] = ()
+    # Estimated pixel height of the widget once it is laid out at the
+    # current viewport width.  Used for MessagePlaceholder sizing.
+    estimated_height: int = 60
+
+
+@dataclass
+class _RenderedChunk:
+    """A batch of MessageSpecs delivered from worker to main thread.
+
+    Wrapped in a mutable dataclass so the queued signal can carry an
+    object (signals carrying ``tuple`` work but are harder to extend).
+    """
+
+    specs: list[MessageSpec] = field(default_factory=list)
+
+
+def _estimate_assistant_height(text: str) -> int:
+    """Cheap line-count based height estimate for an assistant message.
+
+    Used to size MessagePlaceholder widgets before the real
+    AssistantMessageWidget is constructed.  18px per text line + 32px
+    for header/footer chrome.  Falls back to 32px for empty content.
+    """
+    if not text:
+        return 32
+    lines = text.count("\n") + 1
+    # ~18px per wrapped line, capped to a sensible minimum
+    return max(64, min(800, 32 + lines * 18))
+
+
+def _estimate_tool_height(result_content: str = "") -> int:
+    """Cheap height estimate for a single tool call + result.
+
+    Takes the raw ``result_content`` string (not a full ``ToolSpec``)
+    so callers do not have to allocate a throw-away dataclass just to
+    measure the rendered height. The base 80 px covers the widget's
+    header/result-box chrome; the per-line term accounts for the
+    wrapped result text (capped at 400 px to keep the placeholder
+    height bounded for very large results).
+    """
+    result_lines = (result_content.count("\n") + 1) if result_content else 0
+    extra = min(400, result_lines * 14)
+    return 80 + extra
+
+
+def _estimate_user_height(text: str) -> int:
+    """Cheap height estimate for a user message."""
+    if not text:
+        return 40
+    lines = text.count("\n") + 1
+    # ~16px per wrapped line
+    return max(40, min(600, 32 + lines * 16))
+
+
+class MessagePlaceholder(QFrame):
+    """Lightweight sized spacer used during async restore.
+
+    Holds the vertical space for an upcoming real widget so the
+    QScrollArea can compute correct scrollbar geometry.  Replaced by
+    the real widget via :func:`replace_with` when the chunk is
+    rendered.  Holds no real content ΓÇö just a fixed ``minimumHeight``.
+    """
+
+    def __init__(self, estimated_height: int, msg_id: str, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._msg_id = msg_id
+        self.setObjectName("chat_msg_placeholder")
+        # QFrame with no frame looks invisible ΓÇö exactly what we want.
+        # We only need its size contribution to the layout.
+        self.setMinimumHeight(max(16, int(estimated_height)))
+        self.setMaximumHeight(self.minimumHeight())
+
+    @property
+    def msg_id(self) -> str:
+        return self._msg_id
+
+
+class RestoreWorker(QThread):
+    """Background thread that builds MessageSpec objects.
+
+    Walks the input ``list[Message]`` and emits a single
+    ``chunk_ready(_RenderedChunk)`` signal per :data:`_RESTORE_CHUNK_SIZE`
+    messages.  When the loop is exhausted, ``finished_ok`` is emitted
+    so the main thread can finalise the restore (apply viewport
+    detection, scrollbar geometry, etc.).
+
+    Cancellation: :func:`cancel`` sets a stop flag the worker checks at
+    the top of each iteration.  Late signals from a cancelled worker
+    are ignored by the main thread via a generation counter.
+    """
+
+    chunk_ready = Signal(object)  # _RenderedChunk
+    finished_ok = Signal()
+
+    def __init__(self, messages: list[Message], parent=None):
+        super().__init__(parent)
+        self._messages = messages
+        self._stop_requested = False
+
+    def cancel(self) -> None:
+        """Request the worker to stop at the next safe point."""
+        self._stop_requested = True
+
+    def run(self) -> None:
+        chunk = _RenderedChunk()
+        i = 0
+        n = len(self._messages)
+        while i < n:
+            if self._stop_requested:
+                return
+            msg = self._messages[i]
+            next_msg = self._messages[i + 1] if i + 1 < n else None
+            spec, consumed = self._build_spec(msg, i, next_msg)
+            if spec is not None:
+                chunk.specs.append(spec)
+                if len(chunk.specs) >= _RESTORE_CHUNK_SIZE:
+                    self.chunk_ready.emit(chunk)
+                    chunk = _RenderedChunk()
+            # Advance past any consumed follow-up message.  For
+            # ASSISTANT+TOOL pairs the TOOL is consumed so its
+            # placeholder (which ``restore_from_messages_async`` also
+            # skips) is never expected by the main thread.
+            i += 1 + consumed
+        # Flush remainder
+        if chunk.specs and not self._stop_requested:
+            self.chunk_ready.emit(chunk)
+        if not self._stop_requested:
+            self.finished_ok.emit()
+
+    @staticmethod
+    def _build_spec(
+        msg: Message,
+        idx: int,
+        next_msg: Message | None,
+    ) -> tuple[MessageSpec | None, int]:
+        """Convert one Message into a MessageSpec (or None to skip).
+
+        Returns ``(spec, consumed)`` where ``consumed`` is the number
+        of *additional* messages consumed by this spec — currently 0
+        or 1, used to fold a trailing TOOL result message into the
+        preceding ASSISTANT tool-call spec so the renderer can build a
+        single ``MessageSpec`` per logical "assistant turn" unit.
+        """
+        # msg_id is derived here and only here — used for correlation
+        # between emitted chunks and their original position.
+        msg_id = msg.id or f"restore_{idx}"
+
+        if msg.role == Role.USER:
+            if _is_hidden_system_user_message(msg.content):
+                return None, 0
+            return (
+                MessageSpec(
+                    msg_id=msg_id,
+                    role=Role.USER.value,
+                    content=msg.content,
+                    estimated_height=_estimate_user_height(msg.content),
+                ),
+                0,
+            )
+
+        if msg.role == Role.ASSISTANT:
+            content = msg.content or ""
+            # Pair tool_calls with results from the *immediately
+            # following* TOOL message (normal persisted shape).  A
+            # normal TOOL message carries only ``tool_results`` —
+            # ``tool_calls`` belongs to the preceding ASSISTANT.
+            tool_specs = RestoreWorker._collect_tool_specs(msg, next_msg)
+            estimated = _estimate_assistant_height(content) + sum(
+                s.estimated_height for s in tool_specs
+            )
+            # Tolerate ``tool_calls`` being ``None`` on a malformed
+            # persisted message (older sessions, manual edits, partial
+            # recovery from a corrupt IDB).  ``msg.tool_calls or []``
+            # makes the truthiness check robust against ``None``.
+            tool_calls = msg.tool_calls or []
+            consumed = 0
+            if (
+                tool_calls
+                and next_msg is not None
+                and next_msg.role == Role.TOOL
+            ):
+                consumed = 1
+            return (
+                MessageSpec(
+                    msg_id=msg_id,
+                    role=Role.ASSISTANT.value,
+                    content=content,
+                    tool_specs=tuple(tool_specs),
+                    estimated_height=estimated or _estimate_assistant_height(content),
+                ),
+                consumed,
+            )
+
+        if msg.role == Role.TOOL:
+            # Orphan TOOL message (no preceding assistant call).  Some
+            # persisted transcripts include the ``tool_calls`` on the
+            # TOOL message itself (older versions paired the call and
+            # result on a single message); if so, use the call's
+            # arguments for the rendered args panel.  Otherwise fall
+            # back to an empty JSON object — this branch only fires
+            # if the persisted transcript has a TOOL without a
+            # matching ASSISTANT (defensive).
+            results_by_id: dict[str, ToolResult] = {
+                r.tool_call_id: r for r in (msg.tool_results or [])
+            }
+            tool_specs: list[ToolSpec] = []
+            # Pair any ``tool_calls`` with matching ``tool_results``.
+            # Iterate over whichever side is present so we always
+            # produce a spec for every result, even if the call was
+            # dropped from the persisted transcript.
+            seen_ids: set[str] = set()
+            for tc in (msg.tool_calls or []):
+                tr = results_by_id.get(tc.id)
+                try:
+                    args_json = json.dumps(
+                        tc.arguments or {},
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                except (TypeError, ValueError):
+                    args_json = "{}"
+                result_content = tr.content if tr else ""
+                tool_specs.append(
+                    ToolSpec(
+                        id=tc.id,
+                        name=tc.name,
+                        arguments_json=args_json,
+                        estimated_height=_estimate_tool_height(result_content),
+                        result_content=result_content,
+                        result_is_error=tr.is_error if tr else False,
+                    )
+                )
+                seen_ids.add(tc.id)
+            # Results whose call is not on this message (orphan
+            # results): produce a placeholder spec with empty args.
+            for tr_id, tr in results_by_id.items():
+                if tr_id in seen_ids:
+                    continue
+                tool_specs.append(
+                    ToolSpec(
+                        id=tr.tool_call_id,
+                        name=tr.name,
+                        arguments_json="{}",
+                        estimated_height=_estimate_tool_height(tr.content),
+                        result_content=tr.content,
+                        result_is_error=tr.is_error,
+                    )
+                )
+            return (
+                MessageSpec(
+                    msg_id=msg_id,
+                    role=Role.TOOL.value,
+                    tool_specs=tuple(tool_specs),
+                    estimated_height=sum(s.estimated_height for s in tool_specs) or 60,
+                ),
+                0,
+            )
+
+        # SYSTEM / unknown — skip
+        return None, 0
+
+    @staticmethod
+    def _collect_tool_specs(
+        msg: Message, next_msg: Message | None
+    ) -> list[ToolSpec]:
+        """Build ToolSpec objects pairing ``msg.tool_calls`` with results.
+
+        Results are looked up on the immediately-following TOOL
+        message (``next_msg``).  A tool call with no matching result
+        still gets a ``ToolSpec`` — with an empty result — so the
+        renderer produces a widget for the call regardless of whether
+        the transcript was complete.
+        """
+        results_by_id: dict[str, ToolResult] = {}
+        if next_msg is not None and next_msg.role == Role.TOOL:
+            # ``next_msg.tool_results or []`` — tolerate malformed
+            # persisted TOOL messages whose ``tool_results`` is
+            # ``None`` instead of an empty list.
+            results_by_id = {
+                r.tool_call_id: r for r in (next_msg.tool_results or [])
+            }
+        specs: list[ToolSpec] = []
+        # ``msg.tool_calls or []`` — tolerate ``None`` on malformed
+        # ASSISTANT messages so the loop body is unreachable when the
+        # field is missing.
+        for tc in (msg.tool_calls or []):
+            tr = results_by_id.get(tc.id)
+            try:
+                # ``indent=2`` mirrors the sync restore path so the
+                # rendered args panel looks identical whether the
+                # transcript was restored sync or async.
+                args_json = json.dumps(tc.arguments or {}, ensure_ascii=False, indent=2)
+            except (TypeError, ValueError):
+                args_json = "{}"
+            # Build the height estimate using the same shape the
+            # renderer will see (i.e. include the result content).
+            # Pass the raw result string — ``_estimate_tool_height`` only
+            # needs the result content, so we avoid allocating a
+            # throw-away ``ToolSpec`` here.
+            result_content = tr.content if tr else ""
+            specs.append(
+                ToolSpec(
+                    id=tc.id,
+                    name=tc.name,
+                    arguments_json=args_json,
+                    estimated_height=_estimate_tool_height(result_content),
+                    result_content=result_content,
+                    result_is_error=tr.is_error if tr else False,
+                )
+            )
+        return specs
 
 
 class ChatView(QScrollArea):
@@ -82,6 +444,10 @@ class ChatView(QScrollArea):
         self._layout.addStretch()
         self.setWidget(self._container)
 
+        # Set to True during ``restore_from_messages`` so the per-widget
+        # ``resizeEvent`` cascade is suppressed. See that method.
+        self._in_restore: bool = False
+
         # Track current assistant widget for streaming
         self._current_assistant: AssistantMessageWidget | None = None
         self._message_thinking: _ThinkingBlock | None = None  # For message content thinking
@@ -99,7 +465,14 @@ class ChatView(QScrollArea):
         # Map tool_call_id -> group it belongs to (for result routing/status)
         self._group_map: dict[str, ToolGroupWidget] = {}
 
-        # Member timer for scroll-to-bottom — coalesce at 80ms to reduce
+        # Async restore state.  ``_restore_generation`` is bumped on
+        # every new restore (and on cancel) so any in-flight chunks
+        # from a superseded worker are ignored.
+        self._restore_generation: int = 0
+        self._restore_worker: RestoreWorker | None = None
+        self._placeholders: dict[str, MessagePlaceholder] = {}
+
+        # Member timer for scroll-to-bottom ΓÇö coalesce at 80ms to reduce
         # layout thrashing during rapid streaming
         self._scroll_timer = QTimer(self)
         self._scroll_timer.setSingleShot(True)
@@ -111,11 +484,13 @@ class ChatView(QScrollArea):
         self._thinking_hide_timer.setSingleShot(True)
         self._thinking_hide_timer.timeout.connect(self._force_hide_thinking)
 
-        # Batched session restore state
-        self._pending_restore: list[Message] = []
-        self._restore_chunk_size = 10
+        # Batched session restore state ΓÇö REMOVED.  The async restore
+        # path is the only chunked path; ``_pending_restore`` and
+        # ``_restore_chunk_size`` were leftovers from an earlier
+        # chunked-batch design that was superseded by
+        # ``restore_from_messages_async`` / ``RestoreWorker``.
 
-        # Paginated restore state — restored histories are rendered as
+        # Paginated restore state ΓÇö restored histories are rendered as
         # page windows instead of one huge transcript. See
         # _build_restore_units / _build_restore_pages / _render_restore_window.
         self._restore_messages: list[Message] = []
@@ -175,7 +550,7 @@ class ChatView(QScrollArea):
            stray click can no longer wipe the live tail.
         3. Remove any nav frames that may still be in the layout from
            the previous render.  Live widgets (already inserted before
-           this call) are intentionally left untouched — this method
+           this call) are intentionally left untouched ΓÇö this method
            only touches ``self._nav_widgets``.
         """
         if not self._restore_paged:
@@ -183,7 +558,7 @@ class ChatView(QScrollArea):
         # 1. Jump to latest page WITHOUT nav so the visible restored
         #    content is the latest page but no nav strip is added.
         self._ensure_latest_restore_window_for_live_append(show_nav=False)
-        # 2. Lock the live tail — subsequent _render_restore_window
+        # 2. Lock the live tail ΓÇö subsequent _render_restore_window
         #    calls become a no-op, and _go_restore_* callbacks no-op.
         self._restore_live_tail_started = True
         # 3. Strip any nav frames left from a previous render so the
@@ -379,7 +754,7 @@ class ChatView(QScrollArea):
                 # Buffer text until </think> arrives
                 self._think_buffer += text
                 if "</think>" in text:
-                    # Complete — parse accumulated buffer
+                    # Complete ΓÇö parse accumulated buffer
                     thinking_text, visible_text = _split_thinking(self._think_buffer)
                     self._waiting_think_close = False
                     if thinking_text:
@@ -393,7 +768,7 @@ class ChatView(QScrollArea):
                             self._insert_widget(self._current_assistant)
                         self._current_assistant.append_text(visible_text)
             elif "<think>" in text and "</think>" not in text:
-                # Opening <think> without closing — start buffering
+                # Opening <think> without closing ΓÇö start buffering
                 self._waiting_think_close = True
                 self._think_buffer = text
                 thinking_text, visible_text = _split_thinking(text)
@@ -570,7 +945,7 @@ class ChatView(QScrollArea):
                 )
             )
             self._scroll_to_bottom()
-        # RESEARCH_NOTE_REVIEWED — no separate widget, info is in the saved event
+        # RESEARCH_NOTE_REVIEWED ΓÇö no separate widget, info is in the saved event
 
     def _handle_subagent_event(self, event: TurnEvent) -> None:
         meta = event.metadata
@@ -640,8 +1015,14 @@ class ChatView(QScrollArea):
         available on demand via the navigation controls emitted into the
         chat; the full message list is retained in memory for the agent
         context.
+
+        Sets ``_in_restore`` so the cascade of ``resizeEvent`` calls
+        triggered by every ``insertWidget`` is suppressed ΓÇö without
+        this, 50+ widgets can each trigger a ``setFixedWidth`` and a
+        full layout pass, which dominates restore time (~50% in
+        profiling). The width is fixed up explicitly at the end.
         """
-        # Full reset — clears widgets and pagination state.
+        # Full reset ΓÇö clears widgets and pagination state.
         self.clear_chat()
         # A fresh restore re-enables history navigation; the live-tail
         # guard is reset by clear_chat() above, but be explicit.
@@ -661,23 +1042,21 @@ class ChatView(QScrollArea):
         self._restore_last_page = last_page
         self._restore_first_page = last_page
         self._restore_paged = True
-        self._render_restore_window(scroll_to="bottom")
+        self._in_restore = True
+        try:
+            self._render_restore_window(scroll_to="bottom")
+        finally:
+            self._in_restore = False
 
     def _build_restore_units(self, messages: list[Message]) -> list[tuple[int, int]]:
         """Group messages into render units for paged restore.
 
-        Rules (see plan §2):
-        - Hidden persisted system hints (USER messages with ``[SYSTEM]`` prefix)
-          are skipped.
-        - SYSTEM (or unknown) messages are also skipped here so the
-          paginated unit/page counts stay consistent with
-          ``_render_restored_messages`` (which never renders them).
+        Rules:
+        - Hidden persisted system hints (USER messages with ``[SYSTEM]`` prefix) are skipped.
         - A normal USER message is one unit.
-        - An ASSISTANT message is one unit, extended to include the
-          immediately following TOOL message so tool call + result never
-          straddle a page boundary.
-        - Orphan TOOL messages (no preceding assistant) are included as
-          their own unit for safety.
+        - An ASSISTANT message is one unit, extended to include the immediately following
+          TOOL message so tool call + result never straddle a page boundary.
+        - Orphan TOOL messages are included as their own unit for safety.
         """
         units: list[tuple[int, int]] = []
         n = len(messages)
@@ -693,19 +1072,13 @@ class ChatView(QScrollArea):
             elif msg.role == Role.ASSISTANT:
                 start = i
                 i += 1
-                # Absorb the immediately following TOOL message into the
-                # same unit so the tool result never lands in a later page
-                # than its tool call.
                 if i < n and messages[i].role == Role.TOOL:
                     i += 1
                 units.append((start, i))
             elif msg.role == Role.TOOL:
-                # Orphan tool result (no matching assistant).  Keep it as
-                # its own unit so it can be rendered harmlessly.
                 units.append((i, i + 1))
                 i += 1
             else:
-                # SYSTEM (or unknown) — never rendered, so skip here too.
                 i += 1
         return units
 
@@ -786,7 +1159,7 @@ class ChatView(QScrollArea):
         """Render a slice of restored messages into the current page window.
 
         This is the page-bounded equivalent of the old
-        ``_restore_next_chunk`` body — it iterates the supplied messages
+        ``_restore_next_chunk`` body ΓÇö it iterates the supplied messages
         once and dispatches by role, but never mutates any pending queue.
         """
         for msg in messages:
@@ -805,8 +1178,8 @@ class ChatView(QScrollArea):
                         tb.set_thinking(thinking_text, in_progress=False)
                         self._insert_widget(tb)
 
-                    w = AssistantMessageWidget()
-                    w.set_text(visible_text if visible_text else msg.content)
+                    w = AssistantMessageWidget(parent=self._container)
+                    w.set_text_deferred(visible_text if visible_text else msg.content)
                     self._insert_widget(w)
                 else:
                     w = AssistantMessageWidget()
@@ -830,13 +1203,13 @@ class ChatView(QScrollArea):
                     group = self._group_map.get(tr.tool_call_id)
                     if group:
                         group.notify_result(tr.is_error)
-            # SYSTEM / unknown — skip during restore; not part of UI transcript.
+            # SYSTEM / unknown ΓÇö skip during restore; not part of UI transcript.
 
     def _make_restore_nav_widget(self, position: str) -> QWidget:
         """Build a small navigation strip for the paged restore view.
 
-        Two of these are emitted per render — one at the top, one at the
-        bottom — so the user can jump in either direction regardless of
+        Two of these are emitted per render ΓÇö one at the top, one at the
+        bottom ΓÇö so the user can jump in either direction regardless of
         scroll position.  Buttons are disabled when no pages exist in
         that direction or when only a single page is present.
         """
@@ -936,7 +1309,7 @@ class ChatView(QScrollArea):
 
         In the ``"ida"`` (host) theme the per-widget stylesheets are
         cleared instead, so the IDA wrapper's minimal targeted
-        stylesheet — or the host's Qt palette — can take over without
+        stylesheet ΓÇö or the host's Qt palette ΓÇö can take over without
         a stale light/dark inline stylesheet leaking through.
 
         Only direct children whose ``objectName()`` is
@@ -998,7 +1371,7 @@ class ChatView(QScrollArea):
         the live-tail pre-lock helper).
         """
         # Live-tail safety: a render after a live append must not wipe
-        # the live widgets.  The early-return is structural — it guards
+        # the live widgets.  The early-return is structural ΓÇö it guards
         # against any future caller that might trigger a re-render
         # (e.g. a stray nav-button click that bypasses the _go_*
         # guards, or a re-entry from a different code path).
@@ -1009,20 +1382,19 @@ class ChatView(QScrollArea):
             return
 
         # Clamp window into [0, len(pages)) and cap its size to
-        # ``_restore_max_window_pages``.
+        # ``_restore_max_window_pages``.  Navigation callbacks keep
+        # their requested windows under this cap, but this defensive
+        # clamp protects callers that set page indices directly.
         total_pages = len(self._restore_pages)
-        last = min(self._restore_last_page, total_pages - 1)
-        first = min(self._restore_first_page, last)
-        # If the window would exceed the cap, shrink from the leading edge.
-        if last - first + 1 > self._restore_max_window_pages:
-            first = last - self._restore_max_window_pages + 1
-        if first < 0:
-            first = 0
-            last = min(self._restore_max_window_pages - 1, total_pages - 1)
+        max_window = max(1, self._restore_max_window_pages)
+        last = max(0, min(self._restore_last_page, total_pages - 1))
+        first = max(0, min(self._restore_first_page, last))
+        if last - first + 1 > max_window:
+            first = max(0, last - max_window + 1)
         self._restore_first_page = first
         self._restore_last_page = last
 
-        # Reset the live-tracked nav widgets — _clear_rendered_widgets
+        # Reset the live-tracked nav widgets ΓÇö _clear_rendered_widgets
         # below will delete them.
         self._nav_widgets = []
 
@@ -1033,7 +1405,7 @@ class ChatView(QScrollArea):
         if show_nav is None:
             show_nav = total_pages > 1
 
-        # Top nav — only show if there's at least one page to navigate to.
+        # Top nav ΓÇö only show if there's at least one page to navigate to.
         if show_nav:
             top_nav = self._make_restore_nav_widget("top")
             self._nav_widgets.append(top_nav)
@@ -1071,129 +1443,480 @@ class ChatView(QScrollArea):
         else:
             self._scroll_to_bottom()
 
+    # ------------------------------------------------------------------
+    # History navigation callbacks wired from ``_make_restore_nav_widget``.
+    #
+    # All three callbacks are no-ops when live tail has started (the
+    # live tail is the source of truth once a live widget has been
+    # appended; allowing the user to wipe it by clicking a nav button
+    # would be a regression) and when there are no pages to navigate.
+    # The actual slide/jump logic is in ``_render_restore_window``,
+    # which is idempotent and clamps the window into the valid range.
+    # ------------------------------------------------------------------
+
     def _go_restore_older(self) -> None:
-        """Extend the window one page older (sliding cap at 5)."""
-        if not self._restore_pages:
-            return
+        """Slide the visible page window toward older pages.
+
+        Each click grows the window by its current size (roughly
+        doubling the visible history) up to
+        ``_restore_max_window_pages``.  When the window is already at
+        the cap, it slides the capped window back so the user sees
+        fresh older pages instead of the same fixed window.  No-op if
+        the window already touches the oldest page, if the live tail
+        has started, or if there are no pages.
+        """
         if self._restore_live_tail_started:
-            # Live tail safety: a click on the nav button must not
-            # re-render the restore window, which would wipe any
-            # user/agent widgets that were appended after the restore.
             return
-        if self._restore_first_page == 0:
+        if not self._restore_paged or not self._restore_pages:
             return
-        self._restore_first_page -= 1
-        if (
-            self._restore_last_page - self._restore_first_page + 1
-            > self._restore_max_window_pages
-        ):
-            self._restore_last_page -= 1
+        total = len(self._restore_pages)
+        first = max(0, min(self._restore_first_page, total - 1))
+        last = max(first, min(self._restore_last_page, total - 1))
+        if first == 0:
+            return  # already at the oldest page
+        current_size = last - first + 1
+        max_window = max(1, self._restore_max_window_pages)
+        if current_size >= max_window:
+            # Already at the cap: slide the capped window toward
+            # older pages rather than growing past the cap.
+            new_first = max(0, first - current_size)
+            new_last = min(total - 1, new_first + current_size - 1)
+        else:
+            # Grow the visible window toward older pages, preserving
+            # the newest edge of the current window.
+            new_size = min(current_size * 2, max_window)
+            new_first = max(0, last - new_size + 1)
+            new_last = last
+        if new_first == first and new_last == last:
+            return  # nothing changed
+        self._restore_first_page = new_first
+        self._restore_last_page = new_last
         self._render_restore_window(scroll_to="top")
 
     def _go_restore_newer(self) -> None:
-        """Extend the window one page newer (sliding cap at 5)."""
-        if not self._restore_pages:
-            return
-        if self._restore_live_tail_started:
-            return
-        last_page = len(self._restore_pages) - 1
-        if self._restore_last_page >= last_page:
-            return
-        self._restore_last_page += 1
-        if (
-            self._restore_last_page - self._restore_first_page + 1
-            > self._restore_max_window_pages
-        ):
-            self._restore_first_page += 1
-        self._render_restore_window(scroll_to="bottom")
+        """Slide the visible page window toward newer pages.
 
-    def _go_restore_latest(self) -> None:
-        """Jump back to the final page (or the default window at the end)."""
-        if not self._restore_pages:
-            return
+        Moves ``_restore_last_page`` forward by the current window
+        size (so the window slides rather than grows), capped at the
+        final page.  No-op if the window already touches the newest
+        page, if the live tail has started, or if there are no pages.
+        """
         if self._restore_live_tail_started:
             return
-        last_page = len(self._restore_pages) - 1
-        window = max(1, min(self._restore_default_window_pages, self._restore_max_window_pages))
-        self._restore_last_page = last_page
-        self._restore_first_page = max(0, last_page - window + 1)
-        # Use force-bottom so the user always lands on the latest page
-        # even if they had previously scrolled up.
+        if not self._restore_paged or not self._restore_pages:
+            return
+        total = len(self._restore_pages)
+        first = max(0, min(self._restore_first_page, total - 1))
+        last = max(first, min(self._restore_last_page, total - 1))
+        if last >= total - 1:
+            return  # already at the newest page
+        current_size = last - first + 1
+        new_last = min(total - 1, last + current_size)
+        if new_last == last:
+            return  # nothing changed
+        # Keep the window the same size; the leading edge slides with
+        # the trailing edge so the user keeps the same amount of
+        # context on screen.
+        new_first = max(0, new_last - current_size + 1)
+        self._restore_first_page = new_first
+        self._restore_last_page = new_last
         self._render_restore_window(scroll_to="force_bottom")
 
-    def _restore_next_chunk(self) -> None:
-        """Legacy batched restore — no longer invoked by ``restore_from_messages``.
+    def _go_restore_latest(self) -> None:
+        """Jump the visible page window to the final page.
 
-        Retained as a no-op for backwards compatibility with any
-        external callers (e.g. older plugins) that may still trigger it
-        via ``QTimer.singleShot`` callbacks scheduled before
-        ``clear_chat`` ran.  The early-return at the top of this method
-        ensures that, after ``clear_chat`` empties ``_pending_restore``
-        and ``_restore_messages``, a late-firing callback cannot
-        repopulate the chat.  New code should use
-        ``restore_from_messages`` instead.
+        No-op if the window is already at the final page, if the
+        live tail has started, or if there are no pages.
         """
-        # If invoked after a clear, exit immediately.
-        if not self._pending_restore or not self._restore_messages:
+        if self._restore_live_tail_started:
             return
-        chunk_size = min(self._restore_chunk_size, len(self._pending_restore))
-        for _ in range(chunk_size):
-            if not self._pending_restore:
-                break
-            msg = self._pending_restore.pop(0)
-            if msg.role == Role.USER:
-                if _is_hidden_system_user_message(msg.content):
-                    continue
-                self._reset_tool_run()
-                self.add_user_message(msg.content)
-            elif msg.role == Role.ASSISTANT:
-                self._reset_tool_run()
-                if msg.content:
-                    thinking_text, visible_text = _split_thinking(msg.content)
+        if not self._restore_paged or not self._restore_pages:
+            return
+        total = len(self._restore_pages)
+        last = total - 1
+        if self._restore_last_page == last and self._restore_first_page == last:
+            return  # already at the latest
+        self._restore_first_page = last
+        self._restore_last_page = last
+        self._render_restore_window(scroll_to="force_bottom")
 
-                    if thinking_text:
-                        tb = _ThinkingBlock()
-                        tb.set_thinking(thinking_text, in_progress=False)
-                        self._insert_widget(tb)
+    # ------------------------------------------------------------------
+    # Async restore ΓÇö uses a worker thread to build MessageSpecs without
+    # blocking the GUI.  The main thread inserts MessagePlaceholders up
+    # front (so scrollbar geometry is correct from frame 1) and replaces
+    # them with real widgets as each chunk_ready signal arrives.
+    # ------------------------------------------------------------------
 
-                    w = AssistantMessageWidget()
-                    w.set_text(visible_text if visible_text else msg.content)
-                    self._insert_widget(w)
-                else:
-                    w = AssistantMessageWidget()
-                    self._insert_widget(w)
-                for tc in msg.tool_calls:
-                    tw = ToolCallWidget(tc.name, tc.id)
-                    try:
-                        args_str = json.dumps(tc.arguments, indent=2)
-                    except (TypeError, ValueError):
-                        args_str = str(tc.arguments)
-                    tw.set_arguments(args_str)
-                    tw.mark_done()
-                    self._tool_widgets[tc.id] = tw
-                    self._register_tool_widget(tc.name, tc.id, tw)
-            elif msg.role == Role.TOOL:
-                self._reset_tool_run()
-                for tr in msg.tool_results:
-                    existing_tw = self._tool_widgets.get(tr.tool_call_id)
-                    if existing_tw is not None:
-                        existing_tw.set_result(tr.content, tr.is_error)
-                    group = self._group_map.get(tr.tool_call_id)
-                    if group:
-                        group.notify_result(tr.is_error)
+    def restore_from_messages_async(self, messages: list[Message]) -> None:
+        """Start a background restore of *messages*.
 
-        if self._pending_restore:
-            QTimer.singleShot(0, self._restore_next_chunk)
-        else:
-            self._current_assistant = None
+        Behaviour:
+        1. Cancels any in-flight restore (its worker is told to stop and
+           any late signals are dropped via a generation counter).
+        2. Clears the view and immediately inserts one
+           :class:`MessagePlaceholder` per message so the layout has a
+           correct total height.  This gives the QScrollArea an accurate
+           ``verticalScrollBar().maximum()`` from the first paint.
+        3. Starts a :class:`RestoreWorker` thread that builds
+           ``MessageSpec`` objects off the UI thread.  Each
+           ``chunk_ready`` slot replaces the corresponding placeholders
+           with real widgets.
+
+        Idempotency: calling this method twice cancels the first
+        worker and discards its late signals.
+        """
+        # Cancel any prior worker ΓÇö late signals are dropped via
+        # ``_restore_generation`` below.
+        self._cancel_restore()
+
+        self.clear_chat()
+        self._in_restore = True
+
+        # Bump generation so any late signals from the prior worker
+        # are ignored.  Captured in closures for chunk/finished slots.
+        self._restore_generation += 1
+        generation = self._restore_generation
+
+        # Insert one placeholder per *visible* message so the layout
+        # is full from the start.  We mirror the worker's pairing
+        # rule: an ASSISTANT message with tool_calls followed by a
+        # TOOL message is a single render unit, so only the ASSISTANT
+        # gets a placeholder.  The TOOL message is "consumed" by the
+        # ASSISTANT spec and never produces its own placeholder.
+        self._placeholders: dict[str, MessagePlaceholder] = {}
+        i = 0
+        n = len(messages)
+        while i < n:
+            msg = messages[i]
+            if msg.role == Role.USER and _is_hidden_system_user_message(msg.content):
+                i += 1
+                continue
+            placeholder_id = msg.id or f"restore_{i}"
+            # Use a per-message heuristic so placeholders track the
+            # content size closely enough for the scrollbar.  When
+            # this message will be paired with the next TOOL message,
+            # include the tool heights in the placeholder estimate so
+            # the scrollbar doesn't jump when the real widgets land.
+            est = self._placeholder_height_for(msg)
+            consumed = 0
+            if (
+                msg.role == Role.ASSISTANT
+                and msg.tool_calls
+                and i + 1 < n
+                and messages[i + 1].role == Role.TOOL
+            ):
+                next_msg = messages[i + 1]
+                est += self._tool_results_height_estimate(next_msg.tool_results)
+                consumed = 1
+            ph = MessagePlaceholder(est, placeholder_id, parent=self._container)
+            self._insert_widget(ph)
+            self._placeholders[placeholder_id] = ph
+            i += 1 + consumed
+
+        # Pin width once now; widgets added later inherit it.
+        if self._container is not None:
+            self._container.setFixedWidth(self.viewport().width())
+
+        # Start the worker.  Slots capture ``generation`` so they can
+        # bail out if a newer restore has superseded us.
+        worker = RestoreWorker(messages, parent=self)
+        worker.chunk_ready.connect(
+            lambda chunk, gen=generation: self._on_chunk_ready(chunk, gen)
+        )
+        worker.finished_ok.connect(
+            lambda gen=generation: self._on_restore_finished(gen)
+        )
+        # ``finished`` is emitted by QThread when ``run`` returns; use
+        # it as a hard cleanup point regardless of ``finished_ok``.
+        worker.finished.connect(lambda w=worker: self._on_worker_finished(w))
+        self._restore_worker = worker
+        worker.start()
+
+    @staticmethod
+    def _placeholder_height_for(msg: Message) -> int:
+        """Cheap height estimate for the placeholder of a single message."""
+        if msg.role == Role.USER:
+            return _estimate_user_height(msg.content)
+        if msg.role == Role.ASSISTANT:
+            return _estimate_assistant_height(msg.content)
+        if msg.role == Role.TOOL:
+            return max(60, 80 * len(msg.tool_results or msg.tool_calls))
+        return 60
+
+    @staticmethod
+    def _tool_results_height_estimate(results) -> int:
+        """Approximate total height for a list of ``ToolResult`` objects.
+
+        Used to pad an ASSISTANT placeholder that will be paired with
+        the following TOOL message, so the scrollbar does not have to
+        be re-sized twice (once for the placeholder, once again when
+        the real tool widgets land).
+        """
+        if not results:
+            return 0
+        total = 0
+        for tr in results:
+            spec = ToolSpec(
+                id=tr.tool_call_id,
+                name=tr.name,
+                arguments_json="",
+                result_content=tr.content,
+                result_is_error=tr.is_error,
+            )
+            total += _estimate_tool_height(spec.result_content)
+        return total
+
+    def _cancel_restore(self) -> None:
+        """Cancel the in-flight restore (if any) and bump generation."""
+        worker = getattr(self, "_restore_worker", None)
+        if worker is not None:
+            try:
+                worker.cancel()
+            except RuntimeError:
+                pass  # already deleted
+        self._restore_generation += 1
+        self._restore_worker = None
+        # Without this, cancelling an async restore permanently
+        # suppresses resizeEvent layout.  The flag is normally managed
+        # by restore_from_messages' try/finally, but cancel can be
+        # invoked out-of-band (clear_chat, new restore, etc.).
+        self._in_restore = False
+
+    def _on_chunk_ready(self, chunk: _RenderedChunk, generation: int) -> None:
+        """Replace placeholders with real widgets for one chunk.
+
+        Each spec may produce zero, one, or multiple widgets (e.g. an
+        ASSISTANT spec with both visible text and tool calls expands
+        to a thinking block + assistant widget + one or more tool
+        widgets).  All widgets produced for a single spec are
+        inserted at the placeholder's *original* layout index, in
+        render order, so order is preserved across chunk boundaries.
+
+        Drops the chunk if a newer restore has superseded this worker.
+        """
+        if generation != self._restore_generation:
+            return  # superseded
+        for spec in chunk.specs:
+            ph = self._placeholders.pop(spec.msg_id, None)
+            if ph is None:
+                continue
+            # Mirror the sync restore: each spec starts a fresh tool
+            # run so restored grouping state cannot leak into the
+            # next spec (or the next live turn after restore).
             self._reset_tool_run()
-            self._scroll_to_bottom()
+            widgets = self._build_widgets_from_spec(spec)
+            if not widgets:
+                # Spec was filtered out (hidden user, empty tool
+                # list, etc.) ΓÇö collapse the placeholder to zero
+                # height and delete it cleanly.
+                ph.setMinimumHeight(0)
+                ph.setMaximumHeight(0)
+                ph.deleteLater()
+                continue
+            self._replace_placeholder_with_widgets(ph, widgets)
+        # Belt-and-braces: clear any per-spec run state that may
+        # still be in flight from the last spec in the chunk so the
+        # next live event starts clean.
+        self._reset_tool_run()
+        # Trigger a single repaint of the affected region.
+        if self._container is not None:
+            self._container.update()
+
+    def _on_restore_finished(self, generation: int) -> None:
+        if generation != self._restore_generation:
+            return
+        # All placeholders should be gone; clear any leftovers.
+        leftovers = list(self._placeholders.values())
+        self._placeholders.clear()
+        for ph in leftovers:
+            ph.deleteLater()
+        self._in_restore = False
+        # Reapply width and scroll-to-bottom now that the real widgets
+        # are in place.
+        if self._container is not None:
+            self._container.setFixedWidth(self.viewport().width())
+        self._scroll_to_bottom()
+
+    def _on_worker_finished(self, worker: RestoreWorker) -> None:
+        """Cleanup hook for the worker's QThread.finished signal.
+
+        Decouples the worker from the view so it can be GC'd.  Also
+        acts as a safety net: if the worker exits without emitting
+        ``finished_ok`` (e.g. a hard crash, an unhandled exception,
+        or an early cancel before any chunks), ``_in_restore`` would
+        otherwise remain True forever and suppress the resizeEvent
+        cascade on every subsequent live message.  We clear
+        ``_in_restore`` here for the *current* generation only ΓÇö a
+        newer restore's generation does not match and is left alone.
+        """
+        try:
+            worker.chunk_ready.disconnect()
+            worker.finished_ok.disconnect()
+        except (TypeError, RuntimeError):
+            pass
+        # Safety-net cleanup: if the worker exited without a clean
+        # ``finished_ok`` (the normal completion path is
+        # ``_on_restore_finished`` which already cleared
+        # ``_in_restore``), make sure the flag does not leak.
+        # ``self._restore_worker`` is the worker the view still
+        # considers "current" ΓÇö if it matches, we own the cleanup.
+        if getattr(self, "_restore_worker", None) is worker:
+            # We do not know which generation this worker was
+            # started under, but the per-generation guards in
+            # ``_on_chunk_ready`` / ``_on_restore_finished`` already
+            # ensure no later restore has been disturbed.  The only
+            # remaining leak is the ``_in_restore`` flag itself and
+            # any leftover placeholders that may not have been
+            # consumed (e.g. a worker that crashed mid-loop).
+            self._in_restore = False
+            leftovers = list(self._placeholders.values())
+            self._placeholders.clear()
+            for ph in leftovers:
+                try:
+                    ph.deleteLater()
+                except RuntimeError:
+                    pass
+        worker.deleteLater()
+
+    def _replace_placeholder_with_widgets(
+        self, placeholder: MessagePlaceholder, widgets: list[QWidget]
+    ) -> None:
+        """Replace *placeholder* with *widgets* in render order.
+
+        The widgets are inserted at the placeholder's original layout
+        index, in the supplied order, so the visual order matches
+        the order the worker emitted them.  This preserves order
+        even when ``_RESTORE_CHUNK_SIZE == 1`` and chunks are
+        delivered one spec at a time.
+        """
+        layout = self._layout
+        if layout is None:
+            return
+        idx = layout.indexOf(placeholder)
+        if idx < 0:
+            # Placeholder already gone ΓÇö fall back to the live-append
+            # path.  ``_insert_widget`` puts each widget just before
+            # the trailing stretch.
+            for w in widgets:
+                self._insert_widget(w)
+            return
+        layout.removeWidget(placeholder)
+        placeholder.setParent(None)
+        placeholder.deleteLater()
+        # Insert in order.  Each ``insertWidget`` shifts subsequent
+        # items down by one, so consecutive ``idx + i`` positions
+        # keep the widgets packed together at the placeholder's slot.
+        for i, w in enumerate(widgets):
+            target = idx + i
+            if target >= layout.count():
+                self._insert_widget(w)
+            else:
+                layout.insertWidget(target, w)
+
+    def _build_widgets_from_spec(self, spec: MessageSpec) -> list[QWidget]:
+        """Materialise the real widgets for a single MessageSpec.
+
+        Returns a list of top-level widgets in *render order*.  The
+        caller is responsible for inserting them into the layout.
+        An empty list means "this spec produced no visible widget"
+        (e.g. a hidden system user message, or an orphan TOOL with
+        no results) and the caller should collapse the placeholder.
+
+        For an ASSISTANT spec the function mirrors the sync restore
+        path exactly:
+        - run ``_split_thinking`` on the content
+        - emit a ``_ThinkingBlock`` if any thinking was extracted
+        - emit an ``AssistantMessageWidget`` with ``set_text_deferred``
+          populated with the *visible* portion (falling back to the
+          full content if visible_text is empty, like the sync path)
+        - emit one or more restored tool widgets (grouped into a
+          ``ToolGroupWidget`` when the spec carries 2+ tool_specs)
+        """
+        try:
+            role = Role(spec.role)
+        except ValueError:
+            return []
+
+        if role == Role.USER:
+            if _is_hidden_system_user_message(spec.content):
+                return []
+            return [UserMessageWidget(spec.content, parent=self._container)]
+
+        if role == Role.ASSISTANT:
+            widgets: list[QWidget] = []
+            content = spec.content or ""
+            visible_text = ""
+            thinking_text = ""
+            if content:
+                thinking_text, visible_text = _split_thinking(content)
+                if thinking_text:
+                    tb = _ThinkingBlock(parent=self._container)
+                    tb.set_thinking(thinking_text, in_progress=False)
+                    widgets.append(tb)
+            # Mirror the sync path: always emit an
+            # ``AssistantMessageWidget`` for an ASSISTANT message,
+            # even when the content is empty (the widget acts as a
+            # spacer before the following tool widgets).
+            w = AssistantMessageWidget(parent=self._container)
+            # ``set_text_deferred`` defers HTML rendering until first
+            # show.  Fall back to the raw content when
+            # ``visible_text`` is empty so we still render
+            # something user-visible (matches the sync path).
+            w.set_text_deferred(visible_text if visible_text else content)
+            widgets.append(w)
+            widgets.extend(self._build_restored_tool_widgets(spec.tool_specs))
+            return widgets
+
+        if role == Role.TOOL:
+            return self._build_restored_tool_widgets(spec.tool_specs)
+
+        return []
+
+    def _build_restored_tool_widgets(
+        self, tool_specs: tuple[ToolSpec, ...]
+    ) -> list[QWidget]:
+        """Build tool widgets from a sequence of ``ToolSpec``.
+
+        Restored widgets are marked done and have their result
+        pre-applied so they look exactly like completed live calls.
+        2+ tool calls collapse into a single ``ToolGroupWidget``,
+        matching the sync restore's ``_register_tool_widget``
+        grouping behaviour.  ``self._tool_widgets`` and
+        ``self._group_map`` are updated so future TOOL_RESULT events
+        can still route back to the right widget.
+        """
+        if not tool_specs:
+            return []
+        tool_widgets: list[ToolCallWidget] = []
+        for ts in tool_specs:
+            tw = ToolCallWidget(ts.name, ts.id, parent=self._container)
+            tw.set_arguments(ts.arguments_json)
+            tw.mark_done()
+            if ts.result_content or ts.result_is_error:
+                tw.set_result(ts.result_content, ts.result_is_error)
+            self._tool_widgets[ts.id] = tw
+            tool_widgets.append(tw)
+
+        if len(tool_widgets) >= _TOOL_GROUP_MIN_CALLS:
+            group = ToolGroupWidget(parent=self._container)
+            for tw, ts in zip(tool_widgets, tool_specs, strict=False):
+                tw.hide_preview()
+                group.add_widget(tw, ts.name)
+                self._group_map[ts.id] = group
+                # Pre-account for results so the group's status
+                # reflects "all done" at first render.
+                group.notify_result(ts.result_is_error)
+            return [group]
+
+        return list(tool_widgets)
 
     def clear_chat(self) -> None:
-        # Full reset — wipes widgets AND pagination state.
+        # Cancel any in-flight async restore so its worker stops
+        # emitting signals while we tear down the widgets.
+        self._cancel_restore()
+        # Full reset ΓÇö wipes widgets AND pagination state.
         self._force_hide_thinking()
         self._thinking_hide_timer.stop()
-        self._pending_restore.clear()
         self._think_buffer = ""
         self._waiting_think_close = False
         while self._layout.count() > 1:
@@ -1207,6 +1930,7 @@ class ChatView(QScrollArea):
         self._plan_view = None
         self._reset_tool_run()
         self._group_map.clear()
+        self._placeholders.clear()
 
         # Reset pagination state.
         self._restore_messages = []
@@ -1233,9 +1957,15 @@ class ChatView(QScrollArea):
         horizontal scrollbar, but QLabel rich-text word-wrap still sometimes
         requests a wider sizeHint.  Explicitly clamping here guarantees text
         wraps to the visible area.
+
+        Suppressed during ``restore_from_messages`` because every
+        ``insertWidget`` triggers a resize cascade; 50+ widgets in
+        a row causes 50+ ``setFixedWidth`` calls (~50% of total
+        restore time in profiling). The width is reapplied once at
+        the end of the restore.
         """
         super().resizeEvent(event)
-        if self._container is not None:
+        if self._container is not None and not getattr(self, "_in_restore", False):
             self._container.setFixedWidth(self.viewport().width())
 
     def _is_near_bottom(self) -> bool:
@@ -1267,6 +1997,7 @@ class ChatView(QScrollArea):
         sb.setValue(sb.maximum())
 
     def shutdown(self) -> None:
+        self._cancel_restore()
         self._scroll_timer.stop()
         self._thinking_hide_timer.stop()
         self._force_hide_thinking()

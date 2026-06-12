@@ -1043,6 +1043,23 @@ class AgentLoop:
         current_tool_names: dict[str, str] = {}
         last_usage: TokenUsage | None = None
         raw_parts: Any = None
+        # Guard against duplicate tool-call completions.  Some
+        # OpenAI-compatible proxies re-emit the same final
+        # tool-call-end chunk more than once.  Without this guard
+        # the same ``ToolCall`` would be appended to ``tool_calls``
+        # twice — the assistant ``Message`` would then be persisted
+        # with duplicate ``ToolCall`` ids, and the next
+        # ``_format_messages`` call would fail with OpenAI's
+        # ``invalid params, duplicate tool_call id`` 400 error.
+        #
+        # The check is a one-liner today, but extracting it as a
+        # static helper makes the production guard a callable,
+        # public enough to test in isolation without re-implementing
+        # the dedup logic inside the test (the previous
+        # ``TestAgentLoopDuplicateToolCallIdGuard`` re-implemented
+        # the dedup branch in the test body and could silently
+        # diverge from production).
+        completed_tool_call_ids: set[str] = set()
 
         provider_messages, estimated_prompt_tokens, estimated_usage = self._prepare_provider_messages(system_prompt)
         # Do not emit a pre-stream estimate — it causes the display to jump
@@ -1077,6 +1094,12 @@ class AgentLoop:
 
             if chunk.is_tool_call_end and chunk.tool_call_id:
                 tc_id = chunk.tool_call_id
+                if AgentLoop._is_duplicate_tool_call_end(tc_id, completed_tool_call_ids):
+                    log_debug(
+                        f"AgentLoop: ignoring duplicate tool_call_end for {tc_id!r}"
+                    )
+                    continue
+                completed_tool_call_ids.add(tc_id)
                 tc_name = current_tool_names.get(tc_id, chunk.tool_name or "")
                 raw_args = "".join(current_tool_arg_parts.get(tc_id, []))
                 try:
@@ -1089,6 +1112,7 @@ class AgentLoop:
                         "The tool call will proceed with empty arguments."
                     )
                 tool_calls.append(ToolCall(id=tc_id, name=tc_name, arguments=args))
+                completed_tool_call_ids.add(tc_id)
                 yield TurnEvent.tool_call_done(tc_id, tc_name, raw_args)
 
             if chunk.usage:
@@ -1110,6 +1134,24 @@ class AgentLoop:
         assistant_text = "".join(assistant_text_parts)
         log_debug(f"Stream done: {chunk_count} chunks, {len(assistant_text)} chars, {len(tool_calls)} tool calls")
         return (assistant_text, tool_calls, last_usage, raw_parts)
+
+    @staticmethod
+    def _is_duplicate_tool_call_end(tc_id: str, completed_ids: set[str]) -> bool:
+        """Return True if ``tc_id`` has already been recorded as
+        completed.  Production agent loop calls this guard on every
+        ``is_tool_call_end`` chunk to keep duplicate-end emissions
+        from re-appending the same ``ToolCall`` to the assistant
+        message.  See ``_stream_llm_turn_inner``.
+
+        The helper is intentionally a no-side-effect check: the
+        caller is responsible for ``completed_ids.add(tc_id)`` when
+        the chunk is *not* a duplicate, so a duplicate chunk never
+        mutates the set.  The test
+        ``TestAgentLoopDuplicateToolCallIdGuard`` exercises the
+        helper directly so the production guard is covered without
+        re-implementing the dedup branch in the test body.
+        """
+        return tc_id in completed_ids
 
     @staticmethod
     def _estimate_prompt_tokens(provider_messages: list[Message], system_prompt: str) -> int:

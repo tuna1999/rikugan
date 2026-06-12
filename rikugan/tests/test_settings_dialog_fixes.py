@@ -24,6 +24,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from rikugan.core.types import Message, Role
 from rikugan.providers.openai_provider import OpenAIProvider
 
 # ----------------------------------------------------------------------------
@@ -1170,13 +1171,15 @@ class TestOpenAIRetryableErrorMapping(unittest.TestCase):
 
 class TestAddButtonTabBarTheme(unittest.TestCase):
     """The ``+`` button on the tab bar must reflect the current theme
-    palette (light or dark) via ``get_add_tab_btn_style()`` rather than
-    a hard-coded dark stylesheet.
+    palette (light or dark) by re-applying its inline stylesheet from
+    ``ThemeManager.tokens()`` rather than a hard-coded dark stylesheet.
     """
 
     def test_uses_add_tab_btn_style_for_current_theme(self) -> None:
         from rikugan.ui import styles
         from rikugan.ui.panel_core import _AddButtonTabBar
+        from rikugan.ui.theme.manager import ThemeManager
+        from rikugan.ui.theme.tokens import ThemeMode
 
         _ensure_qapplication()
 
@@ -1185,26 +1188,31 @@ class TestAddButtonTabBarTheme(unittest.TestCase):
         # is no public getter, so read the module attributes directly.
         old_current = styles._current_theme
         old_effective = styles._effective_theme
+        old_mgr_mode = ThemeManager.instance().mode
         try:
             # Switch to light theme and confirm the add button picks up
-            # the light palette.
+            # the light palette tokens.
             styles.set_current_theme("light")
+            ThemeManager.instance().set_mode(ThemeMode.LIGHT)
             bar = _AddButtonTabBar()
             try:
                 bar.refresh_inline_styles()
+                light_tokens = ThemeManager.instance().tokens()
                 self.assertIn(
-                    "#2c232e",
+                    light_tokens.text,
                     bar._add_btn.styleSheet(),
                     "Light theme should inject the dark-text color into the add button.",
                 )
             finally:
                 bar.deleteLater()
                 styles.set_current_theme("dark")
+                ThemeManager.instance().set_mode(ThemeMode.DARK)
                 bar2 = _AddButtonTabBar()
             try:
                 bar2.refresh_inline_styles()
+                dark_tokens = ThemeManager.instance().tokens()
                 self.assertIn(
-                    "#d4d4d4",
+                    dark_tokens.text,
                     bar2._add_btn.styleSheet(),
                     "Dark theme should inject the light-text color into the add button.",
                 )
@@ -1214,6 +1222,548 @@ class TestAddButtonTabBarTheme(unittest.TestCase):
             # Restore the theme that was in effect before the test ran,
             # regardless of whether the assertions above passed or failed.
             styles.set_current_theme(old_current, old_effective)
+            ThemeManager.instance().set_mode(old_mgr_mode)
+
+
+# ----------------------------------------------------------------------------
+# H. OpenAI duplicate tool_call id regression
+# ----------------------------------------------------------------------------
+
+
+class TestOpenAIDuplicateToolCallIdStreaming(unittest.TestCase):
+    """OpenAI's streaming code must never emit more than one
+    ``is_tool_call_end`` event for the same tool-call id, even when
+    the upstream proxy re-emits the same final tool-call state.
+
+    Background: a recent runtime failure surfaced as
+    ``openai: Error code: 400 - invalid params, duplicate tool_call
+    id: call_function_...``.  The duplicate id came from a persisted
+    assistant message that had two ``ToolCall`` entries with the
+    same id — a direct consequence of the streaming code yielding
+    a duplicate ``is_tool_call_end`` for the same id, which the
+    agent loop then appended as a duplicate ``ToolCall`` to
+    ``tool_calls``.  Fixing the bug at the source keeps the
+    session history clean.
+    """
+
+    def test_duplicate_finish_chunks_emit_one_tool_call_end(self) -> None:
+        """A stream that re-emits the same final tool-call state
+        twice (e.g. a proxy that flushes twice on keep-alive
+        boundaries) must yield exactly one
+        ``StreamChunk(is_tool_call_end=True)`` per tool-call id."""
+        provider = OpenAIProvider(api_key="x", model="gpt-4o")
+
+        # First final chunk: start + args + finish.
+        start_chunk = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content=None,
+                        reasoning_content=None,
+                        tool_calls=[
+                            SimpleNamespace(
+                                index=0,
+                                id="call_function_nc4eo99zfk3n_1",
+                                function=SimpleNamespace(
+                                    name="do_thing",
+                                    arguments='{"x":',
+                                ),
+                            )
+                        ],
+                    ),
+                    finish_reason=None,
+                )
+            ],
+            usage=None,
+        )
+        args_chunk = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content=None,
+                        reasoning_content=None,
+                        tool_calls=[
+                            SimpleNamespace(
+                                index=0,
+                                id=None,
+                                function=SimpleNamespace(
+                                    name=None,
+                                    arguments="1}",
+                                ),
+                            )
+                        ],
+                    ),
+                    finish_reason=None,
+                )
+            ],
+            usage=None,
+        )
+        finish_chunk = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content=None,
+                        reasoning_content=None,
+                        tool_calls=None,
+                    ),
+                    finish_reason="tool_calls",
+                )
+            ],
+            usage=None,
+        )
+        # Duplicate final chunk: same finish_reason, no new
+        # content.  This is the regression case.
+        duplicate_finish_chunk = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content=None,
+                        reasoning_content=None,
+                        tool_calls=None,
+                    ),
+                    finish_reason="tool_calls",
+                )
+            ],
+            usage=None,
+        )
+        usage_chunk = SimpleNamespace(
+            choices=[],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+        )
+
+        def fake_create(**_kwargs):
+            return iter(
+                [
+                    start_chunk,
+                    args_chunk,
+                    finish_chunk,
+                    duplicate_finish_chunk,
+                    usage_chunk,
+                ]
+            )
+
+        fake_client = MagicMock()
+        fake_client.chat.completions.create = fake_create
+
+        kwargs = {
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 16,
+            "temperature": 0.0,
+        }
+        chunks = list(provider._stream_chunks(fake_client, kwargs))
+        end_chunks = [c for c in chunks if c.is_tool_call_end]
+        self.assertEqual(
+            len(end_chunks),
+            1,
+            f"Duplicate finish chunks must collapse to one end event, "
+            f"got {len(end_chunks)}: {[c.tool_call_id for c in end_chunks]}",
+        )
+        self.assertEqual(end_chunks[0].tool_call_id, "call_function_nc4eo99zfk3n_1")
+        # Start event still emitted once.
+        start_chunks = [c for c in chunks if c.is_tool_call_start]
+        self.assertEqual(len(start_chunks), 1)
+
+    def test_finish_reason_duplicate_emitted_only_once(self) -> None:
+        """The ``finish_reason`` must also not be re-emitted on a
+        duplicate final chunk."""
+        provider = OpenAIProvider(api_key="x", model="gpt-4o")
+        start_chunk = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content=None,
+                        reasoning_content=None,
+                        tool_calls=[
+                            SimpleNamespace(
+                                index=0,
+                                id="call_a",
+                                function=SimpleNamespace(name="f", arguments="{}"),
+                            )
+                        ],
+                    ),
+                    finish_reason=None,
+                )
+            ],
+            usage=None,
+        )
+        finish_a = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content=None,
+                        reasoning_content=None,
+                        tool_calls=None,
+                    ),
+                    finish_reason="tool_calls",
+                )
+            ],
+            usage=None,
+        )
+        finish_b = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content=None,
+                        reasoning_content=None,
+                        tool_calls=None,
+                    ),
+                    finish_reason="tool_calls",
+                )
+            ],
+            usage=None,
+        )
+
+        def fake_create(**_kwargs):
+            return iter([start_chunk, finish_a, finish_b])
+
+        fake_client = MagicMock()
+        fake_client.chat.completions.create = fake_create
+
+        kwargs = {
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 16,
+            "temperature": 0.0,
+        }
+        chunks = list(provider._stream_chunks(fake_client, kwargs))
+        finish_chunks = [c for c in chunks if c.finish_reason]
+        self.assertEqual(
+            len(finish_chunks),
+            1,
+            "Duplicate finish_reason chunks must collapse to one StreamChunk.",
+        )
+
+    def test_empty_tool_call_id_does_not_emit_end(self) -> None:
+        """If a tool call is somehow left with an empty id (e.g.
+        a broken proxy never supplies one), the end event must
+        be skipped — emitting an end for ``""`` would cause the
+        agent loop to append a ``ToolCall`` with ``id=""`` and
+        OpenAI would reject the next request."""
+        provider = OpenAIProvider(api_key="x", model="gpt-4o")
+        # Start chunk with no id (only name) — some proxies
+        # split id and name across two deltas.
+        start_chunk = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content=None,
+                        reasoning_content=None,
+                        tool_calls=[
+                            SimpleNamespace(
+                                index=0,
+                                id=None,  # no id on first delta
+                                function=SimpleNamespace(name="f", arguments=None),
+                            )
+                        ],
+                    ),
+                    finish_reason=None,
+                )
+            ],
+            usage=None,
+        )
+        args_chunk = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content=None,
+                        reasoning_content=None,
+                        tool_calls=[
+                            SimpleNamespace(
+                                index=0,
+                                id="call_x",
+                                function=SimpleNamespace(name=None, arguments="{}"),
+                            )
+                        ],
+                    ),
+                    finish_reason=None,
+                )
+            ],
+            usage=None,
+        )
+        finish_chunk = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content=None,
+                        reasoning_content=None,
+                        tool_calls=None,
+                    ),
+                    finish_reason="tool_calls",
+                )
+            ],
+            usage=None,
+        )
+
+        def fake_create(**_kwargs):
+            return iter([start_chunk, args_chunk, finish_chunk])
+
+        fake_client = MagicMock()
+        fake_client.chat.completions.create = fake_create
+
+        kwargs = {
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 16,
+            "temperature": 0.0,
+        }
+        chunks = list(provider._stream_chunks(fake_client, kwargs))
+        end_chunks = [c for c in chunks if c.is_tool_call_end]
+        self.assertEqual(
+            len(end_chunks),
+            1,
+            "Empty-id end events must be skipped, otherwise the agent loop persists a ToolCall with id=''.",
+        )
+        self.assertEqual(end_chunks[0].tool_call_id, "call_x")
+
+
+class TestOpenAIFormatMessagesRepair(unittest.TestCase):
+    """``_format_messages`` must repair duplicate / missing
+    ``tool_calls[].id`` values before sending the request to
+    OpenAI, because the API rejects duplicate ids with HTTP 400
+    (``invalid params, duplicate tool_call id``).
+    """
+
+    def test_duplicate_ids_in_one_assistant_message_are_rewritten(self) -> None:
+        provider = OpenAIProvider(api_key="x", model="gpt-4o")
+        from rikugan.core.types import ToolCall, ToolResult
+
+        # Assistant message with two tool calls that share the
+        # same id (regression case from a corrupt session).
+        msgs = [
+            Message(role=Role.USER, content="hi"),
+            Message(
+                role=Role.ASSISTANT,
+                content="",
+                tool_calls=[
+                    ToolCall(id="dup", name="f1", arguments={}),
+                    ToolCall(id="dup", name="f2", arguments={}),
+                ],
+            ),
+            Message(
+                role=Role.TOOL,
+                tool_results=[
+                    ToolResult(tool_call_id="dup", name="f1", content="r1"),
+                    ToolResult(tool_call_id="dup", name="f2", content="r2"),
+                ],
+            ),
+        ]
+        formatted = provider._format_messages(msgs)
+        # Two assistant tool_calls, both rewritten to unique ids.
+        assistant = next(m for m in formatted if m["role"] == "assistant")
+        ids = [tc["id"] for tc in assistant["tool_calls"]]
+        self.assertEqual(len(ids), 2)
+        self.assertEqual(len(set(ids)), 2, "All formatted assistant tool_call ids must be unique.")
+        # The first id is unique within the request, so it is
+        # preserved.  The second collides, so it must be replaced
+        # with a synthesized id.
+        self.assertEqual(ids[0], "dup")
+        self.assertNotIn("dup", ids[1:], "Duplicate id must be replaced with a unique synthesized id.")
+
+        tool_msgs = [m for m in formatted if m["role"] == "tool"]
+        self.assertEqual(len(tool_msgs), 2)
+        for tm in tool_msgs:
+            self.assertIn(
+                tm["tool_call_id"],
+                ids,
+                f"Tool result tool_call_id={tm['tool_call_id']!r} must reference a formatted assistant id.",
+            )
+
+    def test_missing_id_is_generated(self) -> None:
+        provider = OpenAIProvider(api_key="x", model="gpt-4o")
+        from rikugan.core.types import ToolCall, ToolResult
+
+        msgs = [
+            Message(role=Role.USER, content="hi"),
+            Message(
+                role=Role.ASSISTANT,
+                content="",
+                tool_calls=[ToolCall(id="", name="f", arguments={})],
+            ),
+            Message(
+                role=Role.TOOL,
+                tool_results=[ToolResult(tool_call_id="", name="f", content="r")],
+            ),
+        ]
+        formatted = provider._format_messages(msgs)
+        assistant = next(m for m in formatted if m["role"] == "assistant")
+        self.assertEqual(len(assistant["tool_calls"]), 1)
+        new_id = assistant["tool_calls"][0]["id"]
+        self.assertTrue(new_id, "Missing tool_call id must be replaced with a non-empty value.")
+        # The corresponding tool result must reference the same id.
+        tool_msg = next(m for m in formatted if m["role"] == "tool")
+        self.assertEqual(tool_msg["tool_call_id"], new_id)
+
+    def test_duplicate_ids_across_turns_are_repaired(self) -> None:
+        """A restored session that reuses the same tool_call id
+        across multiple turns (e.g. a tool that always uses
+        ``call_X``) must not produce a request with duplicate
+        assistant tool_calls[].id values."""
+        provider = OpenAIProvider(api_key="x", model="gpt-4o")
+        from rikugan.core.types import ToolCall, ToolResult
+
+        msgs = [
+            Message(role=Role.USER, content="hi"),
+            # First turn: id="X" used.
+            Message(
+                role=Role.ASSISTANT,
+                content="",
+                tool_calls=[ToolCall(id="X", name="f", arguments={})],
+            ),
+            Message(
+                role=Role.TOOL,
+                tool_results=[ToolResult(tool_call_id="X", name="f", content="ok")],
+            ),
+            Message(role=Role.USER, content="again"),
+            # Second turn: same id "X" — the request-formatter
+            # must repair this duplicate.
+            Message(
+                role=Role.ASSISTANT,
+                content="",
+                tool_calls=[ToolCall(id="X", name="f", arguments={})],
+            ),
+            Message(
+                role=Role.TOOL,
+                tool_results=[ToolResult(tool_call_id="X", name="f", content="ok2")],
+            ),
+        ]
+        formatted = provider._format_messages(msgs)
+        all_assistant_ids = [tc["id"] for m in formatted if m["role"] == "assistant" for tc in m.get("tool_calls", [])]
+        self.assertEqual(len(all_assistant_ids), 2)
+        self.assertEqual(
+            len(set(all_assistant_ids)),
+            2,
+            f"Duplicate id reused across turns must be repaired; got {all_assistant_ids}",
+        )
+        # Every tool result still references a real assistant id.
+        assistant_id_set = set(all_assistant_ids)
+        for tm in (m for m in formatted if m["role"] == "tool"):
+            self.assertIn(
+                tm["tool_call_id"],
+                assistant_id_set,
+                f"Tool result id={tm['tool_call_id']!r} must reference a valid assistant id.",
+            )
+
+    def test_valid_unique_history_is_unchanged(self) -> None:
+        """A well-formed history with unique tool_call ids must
+        pass through ``_format_messages`` unchanged (no
+        rewriting, no synthesized ids)."""
+        provider = OpenAIProvider(api_key="x", model="gpt-4o")
+        from rikugan.core.types import ToolCall, ToolResult
+
+        msgs = [
+            Message(role=Role.USER, content="hi"),
+            Message(
+                role=Role.ASSISTANT,
+                content="",
+                tool_calls=[
+                    ToolCall(id="call_a", name="f1", arguments={"x": 1}),
+                    ToolCall(id="call_b", name="f2", arguments={"y": 2}),
+                ],
+            ),
+            Message(
+                role=Role.TOOL,
+                tool_results=[
+                    ToolResult(tool_call_id="call_a", name="f1", content="r1"),
+                    ToolResult(tool_call_id="call_b", name="f2", content="r2"),
+                ],
+            ),
+        ]
+        formatted = provider._format_messages(msgs)
+        assistant = next(m for m in formatted if m["role"] == "assistant")
+        ids = sorted(tc["id"] for tc in assistant["tool_calls"])
+        self.assertEqual(ids, ["call_a", "call_b"])
+        # Tool result ids must also be unchanged.
+        tool_ids = sorted(m["tool_call_id"] for m in formatted if m["role"] == "tool")
+        self.assertEqual(tool_ids, ["call_a", "call_b"])
+
+    def test_format_messages_does_not_mutate_input(self) -> None:
+        """The repair logic must produce new dicts; the original
+        ``Message.tool_calls`` and ``Message.tool_results`` lists
+        must keep their original ids intact."""
+        provider = OpenAIProvider(api_key="x", model="gpt-4o")
+        from rikugan.core.types import ToolCall, ToolResult
+
+        tc1 = ToolCall(id="dup", name="f1", arguments={})
+        tc2 = ToolCall(id="dup", name="f2", arguments={})
+        tr1 = ToolResult(tool_call_id="dup", name="f1", content="r1")
+        tr2 = ToolResult(tool_call_id="dup", name="f2", content="r2")
+        assistant = Message(role=Role.ASSISTANT, content="", tool_calls=[tc1, tc2])
+        tool = Message(role=Role.TOOL, tool_results=[tr1, tr2])
+        msgs = [assistant, tool]
+        provider._format_messages(msgs)
+        self.assertEqual([tc.id for tc in assistant.tool_calls], ["dup", "dup"])
+        self.assertEqual([tr.tool_call_id for tr in tool.tool_results], ["dup", "dup"])
+
+
+class TestAgentLoopDuplicateToolCallIdGuard(unittest.TestCase):
+    """The agent loop must guard against duplicate tool-call-end
+    events: only one ``ToolCall`` may be appended per id, and only
+    one ``tool_call_done`` event may be emitted.  This keeps the
+    session history clean even if a provider adapter re-emits
+    the same final state.
+
+    The dedup logic now lives in :meth:`AgentLoop._is_duplicate_tool_call_end`
+    so the test exercises production code directly.  Re-implementing
+    the dedup branch in the test body would silently diverge from
+    production if the helper ever changes.
+    """
+
+    def test_duplicate_end_chunks_return_one_tool_call(self) -> None:
+        """Drive the agent loop's tool-call-end guard directly by
+        feeding it duplicate ``is_tool_call_end`` chunks for the
+        same id and asserting the persisted tool list contains
+        exactly one entry for that id."""
+        from rikugan.agent.loop import AgentLoop
+        from rikugan.core.types import ToolCall
+
+        completed_ids: set[str] = set()
+        tool_calls: list[ToolCall] = []
+
+        def _process(tc_id: str) -> None:
+            """Mirror the production dedup branch exactly."""
+            if AgentLoop._is_duplicate_tool_call_end(tc_id, completed_ids):
+                return
+            completed_ids.add(tc_id)
+            tool_calls.append(ToolCall(id=tc_id, name="f", arguments={}))
+
+        # First end: must be recorded.
+        _process("call_x")
+        # Duplicate end: must be ignored by the production guard.
+        _process("call_x")
+        # Different id: must be recorded.
+        _process("call_y")
+
+        self.assertEqual(
+            len(tool_calls),
+            2,
+            f"Expected 2 tool calls (one per unique id); got {len(tool_calls)}: {tool_calls!r}",
+        )
+        self.assertEqual(tool_calls[0].id, "call_x")
+        self.assertEqual(tool_calls[1].id, "call_y")
+        # The completed_ids set should mirror the tool_calls list
+        # — the production helper must NOT add a duplicate id to
+        # the set (a regression in the helper could break that
+        # contract and silently still dedupe the next chunk).
+        self.assertEqual(completed_ids, {"call_x", "call_y"})
+
+    def test_helper_is_pure_check(self) -> None:
+        """The helper is a no-side-effect check; mutating the set
+        is the caller's responsibility.  Pin that contract so a
+        future refactor cannot silently add the duplicate to the
+        set after returning True."""
+        from rikugan.agent.loop import AgentLoop
+
+        seen: set[str] = set()
+        # First call returns False and does not mutate.
+        self.assertFalse(AgentLoop._is_duplicate_tool_call_end("c1", seen))
+        self.assertEqual(seen, set())
+        # Caller adds; helper returns False again.
+        seen.add("c1")
+        self.assertFalse(AgentLoop._is_duplicate_tool_call_end("c2", seen))
+        # Helper now reports duplicate without mutating.
+        self.assertTrue(AgentLoop._is_duplicate_tool_call_end("c1", seen))
+        self.assertEqual(seen, {"c1"})
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import queue
 import threading
+from collections.abc import Callable
 from typing import Any
 
 from ..core.config import RikuganConfig
@@ -33,12 +34,14 @@ from .qt_compat import (
     QWidget,
 )
 from .styles import (
+    build_settings_dialog_stylesheet,
     get_err_status_style,
     get_error_label_style,
     get_hint_status_style,
     get_ok_status_style,
     get_settings_btn_style,
 )
+from .theme.manager import ThemeManager
 
 _DEFAULT_MINIMAX_URL = "https://api.minimax.io/anthropic"
 _CUSTOM_PROVIDER_URL_PLACEHOLDER = "https://api.example.com/v1"
@@ -200,15 +203,23 @@ class SettingsDialog(QDialog):
         config: RikuganConfig,
         registry: ProviderRegistry | None = None,
         tool_registry: Any | None = None,
+        is_running_callback: Callable[[], bool] | None = None,
         parent: QWidget = None,
     ):
         # Use None parent to avoid lifecycle coupling with IDA PluginForm widgets
         super().__init__(None)
         self.setWindowModality(Qt.WindowModality.ApplicationModal)
+        # Object name is used by ``build_settings_dialog_stylesheet`` to
+        # scope the QSS so it does not bleed into the host UI.
+        self.setObjectName("rikugan_settings")
         self._config = config
         self._tool_registry = tool_registry
         self._registry = registry or ProviderRegistry()
         self._registry.register_custom_providers(list(self._config.custom_providers.keys()))
+        # Optional callback the panel uses to know whether the agent is
+        # currently running. The dialog uses it to disable inputs that
+        # would race the live runner (e.g. provider switches mid-prompt).
+        self._is_running_callback = is_running_callback or (lambda: False)
         self._fetcher = _ModelFetcher(self._registry)
         self._fetched_models: list[ModelInfo] = []
         self._resolved_token: str = ""
@@ -588,17 +599,122 @@ class SettingsDialog(QDialog):
         self._font_size_spin.setToolTip("Font size in points. Set to 0 or leave at default to inherit from IDA Pro.")
         appearance_form.addRow("Font size:", self._font_size_spin)
 
+        # Theme selector — wired to ThemeManager. The combo has 4
+        # entries (auto / dark / light / ida) and updates the manager
+        # in real time so the user can preview the change before
+        # closing the dialog.
+        self._theme_combo = QComboBox()
+        from .theme.tokens import ThemeMode
+
+        for label, mode in (
+            ("Auto (follow host)", ThemeMode.AUTO),
+            ("Dark", ThemeMode.DARK),
+            ("Light", ThemeMode.LIGHT),
+            ("IDA native", ThemeMode.IDA_NATIVE),
+        ):
+            self._theme_combo.addItem(label, mode.value)
+        # Reflect current config — read from ``config.theme`` (not the
+        # legacy ``theme_mode`` field, which never existed in the
+        # RikuganConfig dataclass).
+        current = getattr(self._config, "theme", ThemeMode.AUTO.value) or ThemeMode.AUTO.value
+        for i in range(self._theme_combo.count()):
+            if self._theme_combo.itemData(i) == current:
+                self._theme_combo.setCurrentIndex(i)
+                break
+        self._theme_combo.setToolTip(
+            "Select the colour theme. Auto derives from the host palette; "
+            "Dark/Light use Rikugan's bundled palettes; IDA native follows "
+            "IDA's current Qt palette (no effect when not running in IDA)."
+        )
+        self._theme_combo.currentIndexChanged.connect(lambda _idx: self._on_theme_changed())
+        appearance_form.addRow("Theme:", self._theme_combo)
+
         return appearance_group
+
+    def _on_theme_changed(self) -> None:
+        """Apply the selected theme to the live ThemeManager and persist it."""
+        try:
+            from .theme.manager import ThemeManager
+            from .theme.tokens import ThemeMode
+
+            data = self._theme_combo.currentData() if hasattr(self, "_theme_combo") else None
+            if not data:
+                return
+            try:
+                mode = ThemeMode(data)
+            except ValueError:
+                return
+            ThemeManager.instance().set_mode(mode)
+            # Sync the legacy ``styles._current_theme`` helper so
+            # ``is_host_theme()`` and ``is_dark_theme()`` — read by the
+            # theme-aware style getters in ``rikugan.ui.styles`` —
+            # also reflect the new selection.  Without this the new
+            # ``"auto"`` and ``"ida"`` modes would leave the legacy
+            # selectors stale (still claiming ``light``), so inline
+            # styles built from the helper palette would not update.
+            # ``"ida"`` is mapped to the legacy ``"ida"`` value so
+            # ``is_host_theme()`` returns True; ``"auto"`` is mapped
+            # to ``"ida"`` too because the legacy helpers do not
+            # distinguish the two and the *effective* palette is
+            # decided by the live QApplication.
+            from .styles import set_current_theme
+            legacy_value = "ida" if mode in (ThemeMode.IDA_NATIVE, ThemeMode.AUTO) else mode.value
+            set_current_theme(legacy_value)
+            # Persist on ``config.theme`` — the canonical RikuganConfig
+            # field.  ``theme_mode`` was never declared and writing it
+            # would have silently vanished on the next save.
+            self._config.theme = mode.value
+        except Exception as e:  # settings are best-effort
+            log_debug(f"SettingsDialog theme change error: {e}")
+
+    def _apply_theme_styles(self) -> None:
+        """Re-apply the QSS for the currently selected theme.
+
+        The stylesheet is generated from the live ``ThemeTokens`` via
+        :func:`build_settings_dialog_stylesheet`.  It targets only
+        widgets under ``#rikugan_settings`` (the dialog's object name)
+        so it never bleeds into the host application.  Calling it
+        after the user picks a new theme in the combo box, or after
+        ``ThemeManager.themeChanged`` fires, refreshes every label /
+        line edit / spin box in the dialog with the new palette — so
+        Rikugan Light never shows the previous dark QSS as a
+        half-rendered black background.
+        """
+        try:
+            tokens = ThemeManager.instance().tokens()
+        except Exception:
+            return
+        try:
+            self.setStyleSheet(build_settings_dialog_stylesheet(tokens))
+        except Exception as e:
+            log_debug(f"SettingsDialog._apply_theme_styles error: {e}")
 
     # --- Show event: defer all non-widget work to here ---
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        if not self._shown:
+        if not getattr(self, "_shown", False):
             self._shown = True
             # Defer auth resolution and model fetch to AFTER the dialog is painted.
             # This avoids subprocess.run() and background threads during construction.
             self._init_timer.start()
+        # Re-apply the QSS for the current theme on every show so a
+        # light/dark switch performed while the dialog was hidden
+        # becomes visible immediately, and so the dialog is
+        # theme-consistent after restoration from a saved layout.
+        self._apply_theme_styles()
+        # Subscribe (idempotently) to subsequent theme changes so the
+        # QSS updates without requiring the user to close and
+        # reopen the dialog.  ``hasattr`` is the cheap guard against
+        # repeated connection — ``connect`` itself would not
+        # de-duplicate, and double-connecting would call
+        # ``_apply_theme_styles`` twice per ``themeChanged`` emit.
+        if not getattr(self, "_theme_signal_connected", False):
+            try:
+                ThemeManager.instance().themeChanged.connect(self._apply_theme_styles)
+                self._theme_signal_connected = True
+            except Exception:
+                pass
 
     def _deferred_init(self) -> None:
         """Runs after the dialog is fully painted. Safe for subprocesses/threads.
@@ -1121,6 +1237,14 @@ class SettingsDialog(QDialog):
         self._config.font_size_override = self._font_size_spin.value()
         self._config.preserve_context = self._preserve_context_cb.isChecked()
         self._config.oauth_consent_accepted = self._oauth_cb.isChecked()
+        # Persist the selected theme.  ``_on_theme_changed`` already
+        # wrote it when the user changed the combo, but we re-write
+        # here so even users who accepted the dialog without touching
+        # the combo get the current combo selection saved.
+        if hasattr(self, "_theme_combo"):
+            theme_data = self._theme_combo.currentData()
+            if theme_data:
+                self._config.theme = str(theme_data)
 
         # --- API key encryption handling ---
         wants_encrypt = self._encrypt_keys_cb.isChecked()

@@ -25,7 +25,13 @@ def _make_record(reversible: bool = True, description: str = "desc", tool_name: 
 def _make_panel():
     """Build a MutationLogPanel with all Qt calls mocked out."""
     from rikugan.ui.mutation_log_view import MutationLogPanel
-    panel = object.__new__(MutationLogPanel)
+    # Use ``MutationLogPanel.__new__`` rather than ``object.__new__``
+    # — ``MutationLogPanel`` inherits from ``QFrame`` (a C-level Qt
+    # class) which rejects ``object.__new__`` with ``TypeError``.
+    # The class-bound ``__new__`` delegates to the C-level allocator
+    # and is the idiom used in sibling test files
+    # (``test_panel_core.py`` and ``test_settings_dialog.py``).
+    panel = MutationLogPanel.__new__(MutationLogPanel)
     panel._entries = []
     panel._count_label = MagicMock()
     panel._undo_btn = MagicMock()

@@ -263,3 +263,23 @@ class ProviderRegistry:
         # Retire all instances to avoid unsafe cleanup
         self._retired_instances.extend(self._instances.values())
         self._instances.clear()
+
+    def retire_instances(self) -> None:
+        """Retire all currently-cached provider instances and clear the cache.
+
+        This is the safe public alternative to mutating ``_instances``
+        directly from outside code (e.g. ``SessionControllerBase.update_settings``).
+        It moves the existing instances onto the ``_retired_instances``
+        list so the next ``get_or_create`` / ``new_instance`` builds a
+        fresh instance with the updated credentials, without disrupting
+        the provider-spec registry.
+
+        Unlike :meth:`reset`, this method does not touch the provider
+        specs — it only retires cached *instances*.  Use it when only
+        the credentials have changed and the set of provider *types* is
+        unchanged.
+        """
+        if not self._instances:
+            return
+        self._retired_instances.extend(self._instances.values())
+        self._instances.clear()

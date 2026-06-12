@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import uuid
 from collections.abc import Generator
 from typing import Any, NoReturn
 
@@ -14,6 +15,7 @@ from ..core.errors import (
     ProviderError,
     RateLimitError,
 )
+from ..core.logging import log_debug
 from ..core.types import (
     Message,
     ModelInfo,
@@ -110,7 +112,52 @@ class OpenAIProvider(LLMProvider):
         ]
 
     def _format_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
-        formatted = []
+        """Format messages for the OpenAI Chat Completions API.
+
+        Defensively repairs duplicate or missing ``tool_calls[].id``
+        values before sending the request, because OpenAI rejects
+        requests with ``invalid params, duplicate tool_call id`` and
+        older / restored sessions may already contain duplicates.
+
+        Strategy:
+        - Track every assistant ``tool_calls[].id`` emitted into the
+          outgoing request (across all messages, not just the
+          current one).
+        - If a new ``tc.id`` is empty or collides with an id already
+          used in this request, generate a safe replacement id of
+          the form ``call_dedup_<counter>_<short_uuid>`` that cannot
+          collide with any other rewritten id.
+        - Rewrite the *immediately following* ``Role.TOOL``
+          message's ``tool_results[*].tool_call_id`` values so each
+          tool result still references the (possibly rewritten)
+          assistant tool call id.  Original ids can collide multiple
+          times in pathological histories, so the rewrite uses an
+          ordered queue per original id and pops the first unused
+          replacement.
+
+        The function does not mutate the input ``Message`` objects.
+        """
+        formatted: list[dict[str, Any]] = []
+        # ``used_ids`` are the assistant ``tool_calls[].id`` values
+        # that have already been emitted into ``formatted``.  Used
+        # only to detect duplicates within the *outgoing* request
+        # (we do not need it to track replacements because the
+        # counter suffix makes them unique by construction).
+        used_ids: set[str] = set()
+        # ``pending_rewrites`` maps an *original* tool_call_id to a
+        # queue of replacement ids that the next matching TOOL
+        # result messages must consume, in order.  This handles the
+        # case where the same original id appears multiple times in
+        # the assistant message (we still want each tool result
+        # message to point at a unique replacement).
+        pending_rewrites: dict[str, list[str]] = {}
+        _counter = 0
+
+        def _new_replacement_id() -> str:
+            nonlocal _counter
+            _counter += 1
+            return f"call_dedup_{_counter}_{uuid.uuid4().hex[:8]}"
+
         for msg in messages:
             if msg.role == Role.SYSTEM:
                 formatted.append({"role": "system", "content": msg.content})
@@ -121,24 +168,66 @@ class OpenAIProvider(LLMProvider):
                 if msg.content:
                     d["content"] = msg.content
                 if msg.tool_calls:
-                    d["tool_calls"] = [
-                        {
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.name,
-                                "arguments": json.dumps(tc.arguments),
-                            },
-                        }
-                        for tc in msg.tool_calls
-                    ]
+                    out_tcs: list[dict[str, Any]] = []
+                    for tc in msg.tool_calls:
+                        original = tc.id or ""
+                        if not original or original in used_ids:
+                            # Missing or duplicate within the request:
+                            # synthesize a fresh, unique id.
+                            new_id = _new_replacement_id()
+                        else:
+                            new_id = original
+                        used_ids.add(new_id)
+                        # Remember the rewrite so the matching TOOL
+                        # result(s) can be updated.  Multiple
+                        # duplicates of the *same* original id push
+                        # multiple replacement ids; the next
+                        # matching TOOL result pops them in order.
+                        if not original or new_id != original:
+                            pending_rewrites.setdefault(original, []).append(new_id)
+                        out_tcs.append(
+                            {
+                                "id": new_id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.name,
+                                    "arguments": json.dumps(tc.arguments),
+                                },
+                            }
+                        )
+                    d["tool_calls"] = out_tcs
                 formatted.append(d)
             elif msg.role == Role.TOOL:
                 for tr in msg.tool_results:
+                    tr_id = tr.tool_call_id
+                    rewritten: str | None = None
+                    if pending_rewrites.get(tr_id):
+                        rewritten = pending_rewrites[tr_id].pop(0)
+                    elif tr_id and tr_id in used_ids:
+                        # Id is valid (matches a previous assistant
+                        # tool_call) and unique.  No rewrite needed.
+                        rewritten = None
+                    elif not tr_id:
+                        # Empty tool_call_id: synthesize a fresh one.
+                        rewritten = _new_replacement_id()
+                    else:
+                        # ``tr_id`` does not match any assistant
+                        # tool_call in the request.  This is a
+                        # corrupt / stale history; rewrite to a
+                        # fresh id so the request still parses
+                        # (better than dropping the result, which
+                        # would break tool sequencing).
+                        rewritten = _new_replacement_id()
+                        log_debug(
+                            f"OpenAIProvider._format_messages: tool result "
+                            f"with unknown tool_call_id={tr_id!r} was "
+                            f"rewritten to {rewritten!r}."
+                        )
+                    out_id = rewritten if rewritten is not None else tr_id
                     formatted.append(
                         {
                             "role": "tool",
-                            "tool_call_id": tr.tool_call_id,
+                            "tool_call_id": out_id,
                             "content": tr.content,
                         }
                     )
@@ -285,18 +374,60 @@ class OpenAIProvider(LLMProvider):
           a normal chunk), we yield ``last_usage_seen`` exactly once
           after the stream finishes so the agent loop still records
           the cumulative totals.
+
+        Late-id argument replay
+        -----------------------
+        Some OpenAI-compatible proxies (and the official OpenAI
+        streaming endpoint itself, on rare occasions) emit the first
+        ``tool_calls[].function.arguments`` fragment *before* the
+        non-empty ``tool_calls[].id`` is announced on a later delta.
+        The previous code buffered the early fragment into
+        ``current_tool_calls[idx]["args"]`` but skipped emitting a
+        ``tool_args_delta`` because ``id`` was still empty — the
+        fragment was then permanently lost.
+
+        This implementation tracks ``emitted_args_len`` per index and
+        replays the buffered argument text once the id arrives, so
+        no JSON argument bytes can be silently dropped.
         """
         kwargs["stream"] = True
         kwargs["stream_options"] = {"include_usage": True}
 
-        last_usage_seen: TokenUsage | None = None
-        yielded_final_usage = False
         try:
             stream = client.chat.completions.create(**kwargs)
-            current_tool_calls: dict[int, dict] = {}
+        except Exception as e:
+            self._handle_api_error(e)
+            return
 
-            _in_reasoning = False
+        yield from self._iter_stream_chunks(stream)
 
+    def _iter_stream_chunks(
+        self,
+        stream: Any,
+    ) -> Generator[StreamChunk, None, None]:
+        """Inner streaming loop, factored out for testability.
+
+        See :meth:`_stream_chunks` for the full contract.  Splitting
+        the loop out lets unit tests drive a synthetic iterable of
+        chunk-shaped objects without mocking the
+        ``client.chat.completions.create`` boundary.
+        """
+        last_usage_seen: TokenUsage | None = None
+        yielded_final_usage = False
+        # Track tool-call lifecycle ids so we never emit more than
+        # one ``is_tool_call_start`` and one ``is_tool_call_end`` per
+        # id, even when the upstream stream repeats the same final
+        # state (which is what causes OpenAI's "duplicate tool_call
+        # id" 400 in the next request — duplicate ``ToolCall``
+        # entries get persisted to the session, then the
+        # request-formatter hits the duplicate-id rule).
+        started_tool_call_ids: set[str] = set()
+        emitted_tool_call_end_ids: set[str] = set()
+        last_finish_reason: str | None = None
+        current_tool_calls: dict[int, dict] = {}
+        _in_reasoning = False
+
+        try:
             for chunk in stream:
                 # The official OpenAI final usage-only chunk has
                 # ``choices == []`` and a populated ``usage`` field. Some
@@ -349,35 +480,131 @@ class OpenAIProvider(LLMProvider):
                         if idx not in current_tool_calls:
                             current_tool_calls[idx] = {
                                 "id": tc_delta.id or "",
-                                "name": tc_delta.function.name if tc_delta.function and tc_delta.function.name else "",
+                                "name": (
+                                    tc_delta.function.name
+                                    if tc_delta.function and tc_delta.function.name
+                                    else ""
+                                ),
                                 "args": "",
+                                # How much of the buffered argument
+                                # string has already been emitted as
+                                # a ``tool_args_delta`` chunk.  This
+                                # lets us replay early fragments that
+                                # arrived before the tool-call id
+                                # was known, without ever emitting
+                                # the same fragment twice.
+                                "emitted_args_len": 0,
+                                "started": False,
                             }
-                            if tc_delta.id:
+                            # Only emit a start chunk for a non-empty
+                            # id — an empty id (some proxies defer
+                            # the id to a later delta) cannot
+                            # meaningfully start a tool call yet.
+                            if tc_delta.id and tc_delta.id not in started_tool_call_ids:
+                                current_tool_calls[idx]["started"] = True
+                                started_tool_call_ids.add(tc_delta.id)
                                 yield StreamChunk(
                                     tool_call_id=tc_delta.id,
                                     tool_name=tc_delta.function.name if tc_delta.function else "",
                                     is_tool_call_start=True,
                                 )
+                        else:
+                            # A later delta for an already-known index
+                            # may supply a missing id / name (some
+                            # OpenAI-compatible proxies send the id
+                            # only on the function-arguments delta).
+                            # Update the stored info in place so the
+                            # eventual end event reports the full
+                            # tool call.  When the id was missing on
+                            # the first delta, we now have one and
+                            # can emit a single ``is_tool_call_start``
+                            # chunk — but only once per id.
+                            if not current_tool_calls[idx]["id"] and tc_delta.id:
+                                current_tool_calls[idx]["id"] = tc_delta.id
+                                if tc_delta.id not in started_tool_call_ids:
+                                    current_tool_calls[idx]["started"] = True
+                                    started_tool_call_ids.add(tc_delta.id)
+                                    yield StreamChunk(
+                                        tool_call_id=tc_delta.id,
+                                        tool_name=current_tool_calls[idx]["name"],
+                                        is_tool_call_start=True,
+                                    )
+                                    # Late-id replay: the buffered
+                                    # ``args`` may already hold
+                                    # argument bytes that arrived
+                                    # before the id.  Emit them now
+                                    # so the consumer sees the
+                                    # full argument stream, and
+                                    # update ``emitted_args_len`` so
+                                    # subsequent fragments don't
+                                    # double-emit.
+                                    buffered = current_tool_calls[idx]["args"]
+                                    if buffered:
+                                        yield StreamChunk(
+                                            tool_call_id=current_tool_calls[idx]["id"],
+                                            tool_name=current_tool_calls[idx]["name"],
+                                            tool_args_delta=buffered,
+                                        )
+                                        current_tool_calls[idx]["emitted_args_len"] = len(buffered)
+                            if not current_tool_calls[idx]["name"] and tc_delta.function and tc_delta.function.name:
+                                current_tool_calls[idx]["name"] = tc_delta.function.name
 
                         if tc_delta.function and tc_delta.function.arguments:
                             current_tool_calls[idx]["args"] += tc_delta.function.arguments
-                            yield StreamChunk(
-                                tool_call_id=current_tool_calls[idx]["id"],
-                                tool_name=current_tool_calls[idx]["name"],
-                                tool_args_delta=tc_delta.function.arguments,
-                            )
+                            # If the id is already known, emit only
+                            # the new portion of the argument
+                            # string (anything past
+                            # ``emitted_args_len``).  This is what
+                            # makes late-id replay safe: an early
+                            # fragment buffered before the id is
+                            # emitted exactly once when the id
+                            # arrives, and later fragments continue
+                            # from where we left off.
+                            if current_tool_calls[idx]["id"]:
+                                buffered = current_tool_calls[idx]["args"]
+                                emitted = current_tool_calls[idx]["emitted_args_len"]
+                                if len(buffered) > emitted:
+                                    delta_args = buffered[emitted:]
+                                    current_tool_calls[idx]["emitted_args_len"] = len(buffered)
+                                    yield StreamChunk(
+                                        tool_call_id=current_tool_calls[idx]["id"],
+                                        tool_name=current_tool_calls[idx]["name"],
+                                        tool_args_delta=delta_args,
+                                    )
 
                 if chunk.choices[0].finish_reason:
                     if _in_reasoning:
                         yield StreamChunk(text="</think>\n")
                         _in_reasoning = False
                     for tc_info in current_tool_calls.values():
+                        end_id = tc_info["id"]
+                        # Skip end events for empty / duplicate ids:
+                        # an empty id means the stream never supplied
+                        # a usable tool-call id (broken / non-standard
+                        # endpoint) and a duplicate id means we have
+                        # already emitted the end event for this
+                        # call.  The agent loop guard will also
+                        # dedupe, but filtering at the source keeps
+                        # the session history clean.
+                        if not end_id or end_id in emitted_tool_call_end_ids:
+                            if end_id in emitted_tool_call_end_ids:
+                                log_debug(
+                                    f"OpenAIProvider._stream_chunks: "
+                                    f"skipping duplicate tool_call_end for {end_id!r}"
+                                )
+                            continue
+                        emitted_tool_call_end_ids.add(end_id)
                         yield StreamChunk(
-                            tool_call_id=tc_info["id"],
+                            tool_call_id=end_id,
                             tool_name=tc_info["name"],
                             is_tool_call_end=True,
                         )
-                    yield StreamChunk(finish_reason=chunk.choices[0].finish_reason)
+                    # Also guard against duplicate finish_reason
+                    # emissions (some proxies re-emit the same
+                    # final chunk).
+                    if chunk.choices[0].finish_reason != last_finish_reason:
+                        last_finish_reason = chunk.choices[0].finish_reason
+                        yield StreamChunk(finish_reason=chunk.choices[0].finish_reason)
 
         except Exception as e:
             self._handle_api_error(e)
