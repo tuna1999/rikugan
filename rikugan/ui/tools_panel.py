@@ -1,4 +1,4 @@
-"""Tools panel: container for bulk renamer and agent tree.
+"""Tools panel: container for bulk renamer, agent tree, and A2A bridge.
 
 Can be shown as an independent window (QDialog) or embedded in a layout.
 """
@@ -21,7 +21,7 @@ from .styles import (
 
 
 class ToolsPanel(QWidget):
-    """Standalone tools window containing tabs: Renamer, Agents."""
+    """Standalone tools window containing tabs: Renamer, Agents, A2A, Orchestra."""
 
     def __init__(self, parent: QWidget = None):
         super().__init__(parent)
@@ -52,7 +52,8 @@ class ToolsPanel(QWidget):
         self._tabs = QTabWidget()
         self._tabs.setObjectName("tools_tabs")
 
-        # Placeholder tabs
+        # Placeholder tabs. Real widgets are injected by
+        # ``set_*_widget`` methods called from panel_core.
         self._renamer_placeholder = QLabel("Not loaded")
         self._renamer_placeholder.setStyleSheet(get_placeholder_style())
         self._renamer_placeholder.setWordWrap(True)
@@ -62,6 +63,17 @@ class ToolsPanel(QWidget):
         self._agents_placeholder.setStyleSheet(get_placeholder_style())
         self._agents_placeholder.setWordWrap(True)
         self._tabs.addTab(self._agents_placeholder, "Agents")
+
+        # A2A bridge: new tab (Phase 2). Default to the A2ABridgeWidget
+        # if it's importable so the user gets a working panel even
+        # before panel_core wires it in.
+        try:
+            from .a2a_widget import A2ABridgeWidget
+            self._a2a_widget = A2ABridgeWidget(self)
+        except Exception:
+            self._a2a_widget = QLabel("A2A bridge unavailable")
+            self._a2a_widget.setStyleSheet(get_placeholder_style())
+        self._tabs.addTab(self._a2a_widget, "A2A")
 
         self._orchestra_placeholder = QLabel("Not loaded")
         self._orchestra_placeholder.setStyleSheet(get_placeholder_style())
@@ -75,7 +87,7 @@ class ToolsPanel(QWidget):
         old = self._tabs.widget(index)
         self._tabs.removeTab(index)
         self._tabs.insertTab(index, widget, label)
-        if old is not None:
+        if old is not None and old is not self._a2a_widget:
             old.deleteLater()
 
     def set_renamer_widget(self, widget: QWidget) -> None:
@@ -86,10 +98,22 @@ class ToolsPanel(QWidget):
         """Replace the Agents tab content."""
         self._replace_tab(1, widget, "Agents")
 
+    def set_a2a_widget(self, widget: QWidget) -> None:
+        """Replace the A2A tab content (replaces our default bridge)."""
+        self._replace_tab(2, widget, "A2A")
+
     def set_orchestra_widget(self, widget: QWidget) -> None:
         """Replace the Orchestra tab content."""
-        self._replace_tab(2, widget, "Orchestra")
+        self._replace_tab(3, widget, "Orchestra")
 
     def hide_header(self) -> None:
         """Hide the title bar (used when embedded in a dockable form)."""
         self._header.setVisible(False)
+
+    def shutdown(self) -> None:
+        """Propagate shutdown to the A2A widget so it can cancel in-flight tasks."""
+        if hasattr(self._a2a_widget, "shutdown"):
+            try:
+                self._a2a_widget.shutdown()
+            except Exception:
+                pass

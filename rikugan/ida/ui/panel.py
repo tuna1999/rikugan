@@ -162,6 +162,11 @@ class RikuganPanel(idaapi.PluginForm):
 
     def __init__(self):
         super().__init__()
+        # Theme watcher is started by _apply_ida_theme() if the active
+        # mode is AUTO or IDA_NATIVE (only those modes read QPalette).
+        # DARK/LIGHT modes ship bundled tokens and never poll the host,
+        # so spinning the watcher would be pure overhead.
+        self._theme_watcher: Any = None
         self._form_widget: QWidget | None = None
         self._root: QWidget | None = None
         self._core: RikuganPanelCore | None = None
@@ -415,6 +420,48 @@ class RikuganPanel(idaapi.PluginForm):
         """
         self._core.setStyleSheet(minimal_style)
 
+        # Spin up the IDAThemeWatcher for live palette tracking. Only
+        # AUTO and IDA_NATIVE read QPalette tokens, so the watcher is
+        # a no-op overhead in DARK/LIGHT modes — see the gate in
+        # tests/tools/test_theme_watcher.py::TestPluginWatcherGate.
+        self._maybe_start_theme_watcher(config_theme)
+
+    def _maybe_start_theme_watcher(self, config_theme: str) -> None:
+        """Start IDAThemeWatcher when the active theme mode reads QPalette.
+
+        AUTO and IDA_NATIVE derive tokens from the live QApplication
+        palette, so the watcher is required for them to track user-driven
+        IDA theme switches. DARK and LIGHT return bundled constants and
+        never touch the palette, so starting the watcher there is pure
+        overhead (and risks spurious refresh_from_host calls).
+        """
+        if self._theme_watcher is not None:
+            return  # already started
+        if config_theme not in ("auto", "ida"):
+            return  # bundled-constant mode — no need to poll
+        try:
+            from rikugan.ui.theme.tokens import ThemeMode
+            from rikugan.ui.theme.watcher import IDAThemeWatcher
+
+            manager = ThemeManager.instance()
+            # The manager picks the effective mode; only start if the
+            # resolved mode is one that needs palette polling. This
+            # handles the case where config says "auto" but the manager
+            # has been set to DARK by a user override.
+            current_mode = manager.mode
+            if current_mode not in (ThemeMode.AUTO, ThemeMode.IDA_NATIVE):
+                return
+            self._theme_watcher = IDAThemeWatcher(interval_ms=500)
+            self._theme_watcher.start()
+        except Exception as e:
+            # Watcher is best-effort — never block panel creation on it.
+            import traceback
+
+            ida_kernwin.msg(
+                f"[Rikugan] ThemeWatcher init failed: {type(e).__name__}: {e}\n"
+            )
+            self._theme_watcher = None
+
     def _apply_font_override(self) -> None:
         """Apply custom font settings via stylesheet so it propagates to all children."""
         config = getattr(self._core, "_config", None)
@@ -459,6 +506,17 @@ class RikuganPanel(idaapi.PluginForm):
         self.Close(0)
 
     def shutdown(self) -> None:
+        # Stop the theme watcher first so it can't enqueue more refreshes
+        # while the panel widgets are being torn down. Use getattr with
+        # a default because tests build mock panels that skip __init__
+        # (so the attribute may not exist on the instance).
+        _watcher = getattr(self, "_theme_watcher", None)
+        if _watcher is not None:
+            try:
+                _watcher.stop()
+            except Exception:
+                pass
+            self._theme_watcher = None
         if self._core is not None:
             self._core.shutdown()
             self._core.setParent(None)
