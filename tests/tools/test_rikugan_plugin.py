@@ -36,6 +36,21 @@ import rikugan_plugin as rp  # noqa: E402
 # ---------------------------------------------------------------------------
 
 class TestGuardedImport(unittest.TestCase):
+    def setUp(self):
+        """Ensure the import guard is installed before each test.
+
+        Earlier test files in the full suite (notably test_session_controller)
+        may replace ``builtins.__import__`` with a plain
+        ``importlib.__import__`` for the duration of their tests. If that
+        replacement leaks past their ``try/finally``, our guard is gone
+        and the test below fails. Re-installing in ``setUp`` gives every
+        test in this class a clean baseline.
+        """
+        import builtins
+        current = builtins.__import__
+        if not getattr(current, "_rikugan_guarded", False):
+            builtins.__import__ = rp._guarded_import
+
     def test_marker_attribute_set(self):
         self.assertTrue(getattr(rp._guarded_import, "_rikugan_guarded", False))
 
