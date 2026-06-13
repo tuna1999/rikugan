@@ -50,6 +50,20 @@ def _qt_class(name: str) -> type:
     def _max_h_getter(self):
         return getattr(self, "_max_h", 0)
 
+    class _HeaderStub:
+        """Stub for QHeaderView (returned by QTableWidget.verticalHeader()/.horizontalHeader()).
+
+        Any real Qt method call becomes a no-op. Tests that need to
+        assert header behavior can set sentinel attributes on this
+        stub (e.g. ``header.visible = True``).
+        """
+
+        def setVisible(self, visible: bool) -> None:
+            self.visible = visible
+
+        def setSectionResizeMode(self, *args, **kwargs) -> None:
+            self.resize_mode = args[0] if args else None
+
     attrs = {
         "__init__": _noop,
         # QWidget common
@@ -203,6 +217,31 @@ def _qt_class(name: str) -> type:
         "setItemIndexMethod": _noop,
         "setLayoutMode": _noop,
         "setSizeAdjustPolicy": _noop,
+        # QTableWidget / QListWidget item-model accessors.
+        # These return None so callers that try to introspect a
+        # cell get a falsy value; the widget code is expected to
+        # guard with ``is not None``. We intentionally don't return
+        # a stub item here because most callers just call .text()
+        # or .setText() on the result, which would still fail.
+        # Test for the absence of an item via ``rowCount() == 0``
+        # is more reliable than ``item(...) is None``.
+        "setHorizontalHeaderLabels": _noop,
+        "setColumnCount": _noop,
+        "insertRow": _noop,
+        "currentRow": lambda self: 0,
+        "rowCount": lambda self: 0,
+        "horizontalHeaderItem": lambda self, *a: None,
+        "item": lambda self, *a: None,
+        "clear": _noop,
+        "addItem": _noop,
+        "itemData": lambda self, *a: None,
+        "setSelectionBehavior": _noop,
+        "setEditTriggers": _noop,
+        "isEnabled": lambda self: True,
+        "currentIndex": lambda self: 0,
+        "moveToThread": _noop,
+        "verticalHeader": lambda self: _HeaderStub(),
+        "horizontalHeader": lambda self: _HeaderStub(),
         "setHtml": _noop,
         "setPlainText": _noop,
         "setMarkdown": _noop,
@@ -302,6 +341,16 @@ def _make_qtimer_stub() -> type:
 
         def isActive(self) -> bool:
             return self._active
+
+        @staticmethod
+        def singleShot(ms: int, slot) -> None:
+            """Static class-method used by ``rikugan.ui.theme.watcher``.
+
+            Real PySide6 schedules a one-shot timer. The stub is a no-op
+            so tests can patch this attribute to verify call counts
+            without spinning an event loop.
+            """
+            return None
 
     return _QTimer
 
