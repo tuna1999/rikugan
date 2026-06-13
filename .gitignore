@@ -48,3 +48,6 @@ htmlcov/
 # Binary archives (build artifacts / backups)
 *.rar
 *.7z
+
+# Local scratch / review artifacts
+.scratch/
