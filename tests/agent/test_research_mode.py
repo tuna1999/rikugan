@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from tests.mocks.ida_mock import install_ida_mocks
@@ -16,7 +17,9 @@ from rikugan.agent.modes.research import (
     ResearchNote,
     ResearchState,
     _generate_index,
+    _safe_note_path,
     _slugify,
+    write_and_review_note,
 )
 from rikugan.agent.turn import TurnEvent, TurnEventType
 
@@ -177,6 +180,259 @@ class TestNoteWriting(unittest.TestCase):
                 read_content = f.read()
             self.assertEqual(read_content, content)
             self.assertIn("[[wiki-link]]", read_content)
+
+
+class TestSafeNotePath(unittest.TestCase):
+    """Test _safe_note_path prevents path traversal attacks.
+
+    Genre and slug come from LLM tool calls. Without validation, a
+    malicious prompt could write files outside the notes directory.
+    Defense layers:
+      1. _slugify strips path separators and dot-sequences.
+      2. Null bytes are rejected outright.
+      3. Path.resolve() + relative_to() catches anything that slips past.
+    """
+
+    def test_normal_genre_and_slug(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = _safe_note_path(tmpdir, "networking", "Socket Init")
+            self.assertTrue(path.startswith(str(_resolve(tmpdir))))
+            self.assertTrue(str(path).endswith(os.path.join("networking", "socket-init.md")))
+
+    def test_traversal_in_genre_is_sanitized(self):
+        """../../etc gets sanitized by _slugify into 'etc' — still safe."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = _safe_note_path(tmpdir, "../../etc", "passwd")
+            # Resolved path is under tmpdir/etc/passwd.md — safe
+            self.assertTrue(path.startswith(str(_resolve(tmpdir))))
+            self.assertIn(os.path.join("etc", "passwd.md"), path)
+
+    def test_traversal_in_slug_is_sanitized(self):
+        """../../../sensitive gets sanitized into 'sensitive' — still safe."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = _safe_note_path(tmpdir, "networking", "../../../sensitive")
+            self.assertTrue(path.startswith(str(_resolve(tmpdir))))
+            self.assertIn("sensitive.md", path)
+
+    def test_only_dots_falls_back_to_untitled(self):
+        """A title like '..' or '...' must NOT escape the notes dir."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # _slugify("..") returns "" → "untitled"
+            path = _safe_note_path(tmpdir, "networking", "..")
+            self.assertTrue(path.startswith(str(_resolve(tmpdir))))
+            self.assertIn("untitled.md", path)
+
+    def test_genre_with_dangerous_chars_sanitized(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Slashes and backslashes stripped by _slugify
+            path = _safe_note_path(tmpdir, "net/working\\crypto", "title")
+            self.assertTrue(path.startswith(str(_resolve(tmpdir))))
+            # After tmpdir prefix, no path separators should remain
+            rel = os.path.relpath(path, str(_resolve(tmpdir)))
+            self.assertNotIn("..", rel)
+
+    def test_drive_letter_genre_sanitized(self):
+        """Windows-style 'C:\\Windows' must NOT escape via drive letter.
+
+        _slugify strips non-word characters (including \\, :, .) so the
+        drive letter and path separators are removed. Result is a plain
+        alphanumeric name like 'cwindowssystem32' — still inside notes_dir.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = _safe_note_path(tmpdir, "C:\\Windows\\System32", "evil")
+            self.assertTrue(path.startswith(str(_resolve(tmpdir))))
+            # The full path is `<tmpdir>/cwindowssystem32/evil.md` — safe.
+            self.assertTrue(path.endswith("cwindowssystem32" + os.sep + "evil.md"))
+
+    def test_null_byte_blocked(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(ValueError):
+                _safe_note_path(tmpdir, "networking\x00", "title")
+            with self.assertRaises(ValueError):
+                _safe_note_path(tmpdir, "networking", "title\x00.md")
+
+    def test_symlink_escape_blocked(self):
+        """If notes_dir contains a symlink pointing outside, traversal is blocked.
+
+        Skip on platforms where unprivileged symlink creation fails
+        (Windows requires admin or developer mode).
+        """
+        if not hasattr(os, "symlink"):
+            self.skipTest("symlinks not supported")
+        if sys.platform == "win32":
+            # Windows: unprivileged symlink creation often fails.
+            # Best-effort probe; skip if it doesn't work.
+            test_dir = tempfile.mkdtemp()
+            try:
+                test_link = os.path.join(test_dir, "probe")
+                test_target = tempfile.mkdtemp()
+                try:
+                    os.symlink(test_target, test_link)
+                except (OSError, NotImplementedError):
+                    self.skipTest("symlink creation requires privileges on this Windows install")
+                finally:
+                    import shutil
+                    shutil.rmtree(test_target, ignore_errors=True)
+            finally:
+                import shutil
+                shutil.rmtree(test_dir, ignore_errors=True)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sibling = tempfile.mkdtemp()
+            try:
+                os.symlink(sibling, os.path.join(tmpdir, "escape"))
+                # The symlink name is "escape" — _slugify keeps it.
+                # resolve() follows the symlink to sibling/, which is outside
+                # notes_root. This MUST raise.
+                with self.assertRaises(ValueError):
+                    _safe_note_path(tmpdir, "escape", "foo")
+            finally:
+                import shutil
+                shutil.rmtree(sibling, ignore_errors=True)
+
+
+def _resolve(path: str) -> "os.PathLike[str]":
+    """Resolve a path to its absolute form (helper for assertions)."""
+    import pathlib
+    return pathlib.Path(path).resolve()
+
+
+class TestWriteAndReviewNotePathSafety(unittest.TestCase):
+    """Integration test: write_and_review_note must enforce safe paths.
+
+    Uses a mocked SubagentRunner to avoid LLM calls.
+    """
+
+    def setUp(self):
+        # Stub runner factory — the review pipeline won't actually run
+        # beyond the first yield when the path is invalid (ValueError
+        # is raised eagerly, before the runner is invoked).
+        self.runner = MagicMock()
+        self.runner_factory = MagicMock(return_value=self.runner)
+
+    def _drive_one_step(self, state, genre, title, content):
+        """Call write_and_review_note, advance one generator step.
+
+        Returns (event, exception) where exception is None if successful,
+        a ValueError if path was blocked, or a StopIteration if the
+        generator completed naturally.
+        """
+        gen = write_and_review_note(
+            state=state,
+            genre=genre,
+            title=title,
+            content=content,
+            related_notes=[],
+            runner_factory=self.runner_factory,
+        )
+        try:
+            ev = gen.send(None)
+        except ValueError as exc:
+            return None, exc
+        except StopIteration:
+            return None, None  # generator completed — file was written
+        return ev, None
+
+    def test_traversal_genre_writes_inside_notes_dir(self):
+        """../../etc gets sanitized to 'etc' — file ends up under notes_dir."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state = ResearchState(notes_dir=tmpdir)
+            ev, exc = self._drive_one_step(state, "../../etc", "evil", "content")
+            # Function should NOT raise — the slugify layer sanitized
+            # the input into a safe name.
+            self.assertIsNone(exc)
+            # File should exist somewhere under tmpdir
+            files = []
+            for root, _, fnames in os.walk(tmpdir):
+                for fn in fnames:
+                    files.append(os.path.join(root, fn))
+            self.assertEqual(len(files), 1)
+            self.assertTrue(files[0].endswith(os.path.join("etc", "evil.md")))
+
+    def test_traversal_slug_writes_inside_notes_dir(self):
+        """../../../etc/passwd gets sanitized to 'etcpasswd' — file under notes_dir."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state = ResearchState(notes_dir=tmpdir)
+            ev, exc = self._drive_one_step(state, "networking", "../../../etc/passwd", "content")
+            self.assertIsNone(exc)
+            files = []
+            for root, _, fnames in os.walk(tmpdir):
+                for fn in fnames:
+                    files.append(os.path.join(root, fn))
+            self.assertEqual(len(files), 1)
+            # Slugify stripped '..', '/' → "etcpasswd" becomes the slug
+            self.assertTrue(files[0].endswith(os.path.join("networking", "etcpasswd.md")))
+
+    def test_null_byte_genre_raises_value_error(self):
+        """Null bytes are an unambiguous attack — they must be rejected."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state = ResearchState(notes_dir=tmpdir)
+            ev, exc = self._drive_one_step(state, "networking\x00evil", "title", "content")
+            self.assertIsInstance(exc, ValueError)
+
+    def test_no_file_written_outside_notes_dir(self):
+        """For ANY input, no file must appear outside the notes_dir."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Sibling dir must remain empty regardless of what we pass
+            sibling = tempfile.mkdtemp()
+            try:
+                state = ResearchState(notes_dir=tmpdir)
+                # Drive several malicious inputs
+                malicious = [
+                    ("../../etc", "evil"),
+                    ("networking", "../../../passwd"),
+                    ("net/working", "title"),
+                    ("networking\x00", "title"),
+                ]
+                for genre, title in malicious:
+                    try:
+                        ev, exc = self._drive_one_step(state, genre, title, "x")
+                    except Exception:
+                        pass
+                # Sibling must be empty — no traversal succeeded
+                self.assertEqual(os.listdir(sibling), [])
+            finally:
+                import shutil
+                shutil.rmtree(sibling, ignore_errors=True)
+
+    def test_symlink_escape_blocked(self):
+        """If a symlink inside notes_dir points outside, traversal is blocked.
+
+        Defense-in-depth check: _slugify can't catch this because the
+        symlink name itself is a valid string. resolve() must follow the
+        symlink and the containment check must fire.
+        """
+        if not hasattr(os, "symlink"):
+            self.skipTest("symlinks not supported")
+        if sys.platform == "win32":
+            test_dir = tempfile.mkdtemp()
+            try:
+                test_link = os.path.join(test_dir, "probe")
+                test_target = tempfile.mkdtemp()
+                try:
+                    os.symlink(test_target, test_link)
+                except (OSError, NotImplementedError):
+                    self.skipTest("symlink creation requires privileges on this Windows install")
+                finally:
+                    import shutil
+                    shutil.rmtree(test_target, ignore_errors=True)
+            finally:
+                import shutil
+                shutil.rmtree(test_dir, ignore_errors=True)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sibling = tempfile.mkdtemp()
+            try:
+                os.symlink(sibling, os.path.join(tmpdir, "escape"))
+                state = ResearchState(notes_dir=tmpdir)
+                ev, exc = self._drive_one_step(state, "escape", "foo", "x")
+                self.assertIsInstance(exc, ValueError)
+                self.assertIn("traversal", str(exc).lower())
+                # Sibling must remain empty
+                self.assertEqual(os.listdir(sibling), [])
+            finally:
+                import shutil
+                shutil.rmtree(sibling, ignore_errors=True)
 
 
 if __name__ == "__main__":

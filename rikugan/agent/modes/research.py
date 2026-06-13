@@ -7,6 +7,7 @@ import re
 import unicodedata
 from collections.abc import Callable, Generator
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ...core.logging import log_error, log_info
@@ -75,6 +76,42 @@ def _preview_lines(content: str, n: int = 2) -> str:
     """Return the first *n* non-empty lines as a preview."""
     lines = [ln.strip() for ln in content.splitlines() if ln.strip()]
     return " | ".join(lines[:n])
+
+
+def _safe_note_path(notes_dir: str, genre: str, title: str) -> str:
+    """Build a safe filesystem path for a research note.
+
+    ``genre`` and ``title`` originate from LLM tool-call arguments. Without
+    validation, a malicious prompt could write files outside ``notes_dir``
+    (path traversal). This helper enforces containment.
+
+    Strategy:
+    1. Slugify both inputs (rejects unicode, slashes, null bytes, etc.).
+    2. Resolve the candidate path and verify it is inside ``notes_dir``
+       (defense in depth — even if slugify has a bug, traversal is blocked).
+    3. Reject absolute paths on Windows drive letters and POSIX.
+
+    Raises ``ValueError`` on path traversal attempts.
+    """
+    if "\x00" in genre or "\x00" in title:
+        raise ValueError("Null byte in genre or title")
+
+    safe_genre = _slugify(genre)
+    safe_slug = _slugify(title)
+
+    notes_root = Path(notes_dir).resolve()
+    candidate = (notes_root / safe_genre / f"{safe_slug}.md").resolve()
+
+    # Containment check: the resolved candidate must be inside notes_root.
+    try:
+        candidate.relative_to(notes_root)
+    except ValueError:
+        raise ValueError(
+            f"Path traversal blocked: genre='{genre}', title='{title}' "
+            f"resolves outside notes directory"
+        )
+
+    return str(candidate)
 
 
 # ---------------------------------------------------------------------------
@@ -176,11 +213,18 @@ def write_and_review_note(
     """Write a research note, review it, and rephrase/rewrite as needed.
 
     Returns the final ResearchNote.
+
+    ``genre`` and ``title`` come from the LLM. Path traversal is blocked
+    by :func:`_safe_note_path` which raises ``ValueError`` before any
+    filesystem I/O if the inputs would escape the notes directory.
     """
+    # Validate path first — fail fast before any I/O
+    note_path = _safe_note_path(state.notes_dir, genre, title)
     slug = _slugify(title)
-    genre_dir = os.path.join(state.notes_dir, _slugify(genre))
+
+    # Defense in depth: ensure the genre directory exists
+    genre_dir = os.path.dirname(note_path)
     _ensure_dir(genre_dir)
-    note_path = os.path.join(genre_dir, f"{slug}.md")
 
     # Write draft
     with open(note_path, "w", encoding="utf-8") as f:
