@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from .client import A2AClient
 from .subprocess_bridge import SubprocessBridge
@@ -24,21 +24,69 @@ class ExternalAgentRegistry:
     agents: list[ExternalAgentConfig] = field(default_factory=list)
     _bridge: SubprocessBridge = field(default_factory=SubprocessBridge, init=False)
 
-    def discover(self) -> list[ExternalAgentConfig]:
+    def discover(
+        self,
+        config_a2a_agents: list[dict[str, Any]] | None = None,
+    ) -> list[ExternalAgentConfig]:
         """Discover all available external agents.
 
-        Runs auto-discovery for CLI agents and loads A2A agents from config.
+        Runs auto-discovery for CLI agents and loads A2A agents from
+        config (TOML on disk, plus any explicit entries passed in via
+        ``config_a2a_agents`` — typically from RikuganConfig).
         """
         discovered: list[ExternalAgentConfig] = []
 
         # Auto-detect CLI agents on PATH
         discovered.extend(self._bridge.discover())
 
-        # Load user-configured A2A agents from orchestra.toml
+        # Load user-configured A2A agents: explicit list first, then
+        # orchestra.toml. Either source can be empty; the discovery is
+        # the union.
+        if config_a2a_agents:
+            discovered.extend(self._materialize_a2a_agents(config_a2a_agents))
         discovered.extend(self._load_a2a_agents())
 
         self.agents = discovered
         return discovered
+
+    def _materialize_a2a_agents(
+        self, specs: list[dict[str, Any]]
+    ) -> list[ExternalAgentConfig]:
+        """Build ExternalAgentConfig objects from in-memory spec dicts.
+
+        Each spec must include at minimum ``name`` and ``endpoint``.
+        We attempt a live ``.well-known/agent.json`` lookup; if it
+        fails we still register the agent because the user explicitly
+        listed it (better to surface a runtime error than silently
+        drop the config).
+        """
+        out: list[ExternalAgentConfig] = []
+        for spec in specs:
+            if not isinstance(spec, dict):
+                continue
+            endpoint = spec.get("endpoint", "")
+            if not endpoint:
+                continue
+            try:
+                client = A2AClient(endpoint)
+                cfg = client.discover()
+                if cfg is not None:
+                    cfg.name = spec.get("name", cfg.name)
+                    cfg.model = spec.get("model", cfg.model)
+                    out.append(cfg)
+                    continue
+            except Exception:
+                pass
+            out.append(
+                ExternalAgentConfig(
+                    name=spec.get("name", "unknown"),
+                    transport="a2a",
+                    endpoint=endpoint,
+                    capabilities=spec.get("capabilities", []),
+                    model=spec.get("model", ""),
+                )
+            )
+        return out
 
     def _load_a2a_agents(self) -> list[ExternalAgentConfig]:
         """Load A2A agents from orchestra.toml [[a2a.agents]] sections."""
@@ -58,38 +106,7 @@ class ExternalAgentRegistry:
         if not a2a_config:
             return agents
 
-        for agent_spec in a2a_config.get("agents", []):
-            if not isinstance(agent_spec, dict):
-                continue
-
-            endpoint = agent_spec.get("endpoint", "")
-            if not endpoint:
-                continue
-
-            # Validate endpoint by trying to discover the agent
-            try:
-                client = A2AClient(endpoint)
-                config = client.discover()
-                if config is not None:
-                    # Merge with user config (user config takes priority)
-                    config.name = agent_spec.get("name", config.name)
-                    config.model = agent_spec.get("model", config.model)
-                    agents.append(config)
-                else:
-                    # Agent card not available — trust the config anyway
-                    agents.append(
-                        ExternalAgentConfig(
-                            name=agent_spec.get("name", "unknown"),
-                            transport="a2a",
-                            endpoint=endpoint,
-                            capabilities=agent_spec.get("capabilities", []),
-                            model=agent_spec.get("model", ""),
-                        )
-                    )
-            except Exception:
-                continue
-
-        return agents
+        return self._materialize_a2a_agents(a2a_config.get("agents", []))
 
     def list_agents(self) -> list[ExternalAgentConfig]:
         """Return all discovered agents (runs discover if empty)."""

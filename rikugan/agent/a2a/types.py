@@ -68,3 +68,4 @@ class A2AEvent:
     text: str = ""
     error: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+    done: bool = False  # terminal flag — last event of a stream

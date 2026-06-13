@@ -73,12 +73,18 @@ class A2AClient:
         prompt: str,
         context: str = "",
         event_callback: Any = None,
+        cancel_event: threading.Event | None = None,
     ) -> A2ATask:
         """Send a task to an A2A agent and return immediately.
 
         The task is queued and monitored in a background thread. Events are
         delivered via ``event_callback`` if provided. Check task status via
         ``get_task()``.
+
+        Args:
+            cancel_event: Optional threading.Event. The session polls
+                this between HTTP attempts; if it fires, the task is
+                marked CANCELLED and no more requests are made.
         """
         task = A2ATask(
             id=uuid.uuid4().hex[:12],
@@ -92,6 +98,7 @@ class A2AClient:
             task=task,
             agent=agent,
             config=self._config,
+            cancel_event=cancel_event,
             event_callback=event_callback,
         )
         self._sessions[task.id] = session
@@ -127,12 +134,15 @@ class _A2ASession:
         agent: ExternalAgentConfig,
         config: A2AClientConfig,
         event_callback: Any = None,
+        cancel_event: threading.Event | None = None,
     ) -> None:
         self.task = task
         self._agent = agent
         self._config = config
         self._callback = event_callback
-        self._cancel = threading.Event()
+        # External cancel event (if provided) is observed alongside the
+        # internal cancel. We OR them so either source stops the session.
+        self._cancel = cancel_event if cancel_event is not None else threading.Event()
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
