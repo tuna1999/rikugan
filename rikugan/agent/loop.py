@@ -794,6 +794,16 @@ class AgentLoop:
         else:
             issues.append("No IDB path — persistent memory disabled")
 
+        # Surface missing optional Python deps so users know which
+        # provider features are unavailable. We don't treat these as
+        # "issues" because the plugin can still run; they're warnings.
+        try:
+            from ...core.dependencies import get_missing_dependency_warnings
+            for warning in get_missing_dependency_warnings():
+                issues.append(warning)
+        except Exception:
+            pass
+
         # Format output
         lines = ["**Rikugan Doctor**\n"]
         if ok:
