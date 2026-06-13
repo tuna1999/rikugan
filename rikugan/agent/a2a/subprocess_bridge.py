@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import queue
 import shutil
 import subprocess
+import threading
+import time
 from collections.abc import Generator
 from dataclasses import dataclass
 
@@ -70,6 +73,7 @@ class SubprocessBridge:
         agent: ExternalAgentConfig,
         task: str,
         timeout: int = 300,
+        cancel_event: threading.Event | None = None,
     ) -> Generator[A2AEvent, None, str]:
         """Run a task via CLI subprocess, yielding events.
 
@@ -82,14 +86,46 @@ class SubprocessBridge:
         The ``--`` end-of-options separator prevents the LLM-supplied
         ``task`` from being interpreted as a CLI flag, even if validation
         in ``_build_command`` is bypassed.
+
+        Args:
+            agent: External agent config (claude/codex).
+            task: The user/LLM task text. Validated against argv injection.
+            timeout: Maximum runtime in seconds.
+            cancel_event: If set, polling this each stdout line will
+                terminate the subprocess early. Use to wire to the agent
+                loop's user-cancel Event.
         """
         cmd = self._build_command(agent, task)
         if cmd is None:
-            yield A2AEvent(event_type="error", text=f"No known command for agent: {agent.name}")
+            yield A2AEvent(type="error", text=f"No known command for agent: {agent.name}")
             return
 
         proc: subprocess.Popen[str] | None = None
         result_lines: list[str] = []
+        cancelled = False
+        # Background thread that drains the subprocess's stdout
+        # into ``stdout_queue``. The main thread polls the queue
+        # AND the cancel_event, so cancellation is responsive
+        # even when the subprocess is blocked on I/O and never
+        # produces a line.
+        stdout_queue: queue.Queue[str | None] = queue.Queue()
+        # ``None`` is the sentinel: thread enqueues ``None`` after
+        # stdout closes (process exited) to wake the main loop.
+        def _drain_stdout() -> None:
+            """Read stdout line by line into the queue until EOF."""
+            try:
+                if proc is None or proc.stdout is None:
+                    return
+                for line in proc.stdout:
+                    stdout_queue.put(line)
+            except Exception:
+                # Subprocess pipe may be closed mid-iteration;
+                # the None sentinel handles the wakeup either way.
+                pass
+            finally:
+                stdout_queue.put(None)  # wake the main loop
+
+        reader_thread: threading.Thread | None = None
         try:
             proc = subprocess.Popen(
                 cmd,
@@ -100,24 +136,65 @@ class SubprocessBridge:
                 encoding="utf-8",
             )
 
-            for line in proc.stdout or []:
+            # Spawn the drain thread. ``daemon=True`` so the test
+            # process can exit even if the bridge hangs.
+            reader_thread = threading.Thread(
+                target=_drain_stdout, daemon=True
+            )
+            reader_thread.start()
+
+            deadline = time.monotonic() + timeout
+            while True:
+                if cancel_event is not None and cancel_event.is_set():
+                    cancelled = True
+                    break
+                if time.monotonic() >= deadline:
+                    # Surface a timeout by killing the process;
+                    # the bridge doesn't currently have a separate
+                    # timeout-error event path (the kill itself
+                    # is the recovery).
+                    if proc.poll() is None:
+                        proc.kill()
+                    cancelled = True  # treat timeout as cancellation
+                    yield A2AEvent(
+                        type="error", text=f"Timeout after {timeout}s"
+                    )
+                    break
+                try:
+                    line = stdout_queue.get(timeout=0.1)
+                except queue.Empty:
+                    continue  # re-check cancel and timeout
+                if line is None:
+                    # Stdout closed — process exited (or was
+                    # killed). Break out and finalize.
+                    break
                 if not line.strip():
                     continue
                 result_lines.append(line)
-                yield A2AEvent(event_type="stdout", text=line.rstrip("\n"))
+                yield A2AEvent(type="stdout", text=line.rstrip("\n"))
 
-            proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            if proc and proc.poll() is None:
-                proc.kill()
-            yield A2AEvent(event_type="error", text=f"Timeout after {timeout}s")
-            return
+            # If the process is still alive, wait for it briefly
+            # (shouldn't be needed since the kill path already
+            # handled it, but be defensive).
+            if not cancelled and proc.poll() is None:
+                try:
+                    proc.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
         except Exception as e:
-            yield A2AEvent(event_type="error", text=str(e))
+            yield A2AEvent(type="error", text=str(e))
             return
         finally:
             if proc and proc.poll() is None:
                 proc.kill()
+
+        if cancelled:
+            yield A2AEvent(
+                type="cancelled",
+                text="Task cancelled by user",
+                done=True,
+            )
+            return ""
 
         # Try to parse last line as JSON
         result = ""
@@ -132,7 +209,7 @@ class SubprocessBridge:
             except json.JSONDecodeError:
                 result = line
 
-        yield A2AEvent(event_type="completed", text=result, done=True)
+        yield A2AEvent(type="completed", text=result, done=True)
 
     def _build_command(self, agent: ExternalAgentConfig, task: str) -> list[str] | None:
         name = agent.name.lower()
