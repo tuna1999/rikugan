@@ -3,25 +3,10 @@
 from __future__ import annotations
 
 import importlib
-from collections.abc import Iterable
 from typing import Annotated
 
 from ...tools.base import parse_addr, tool
-
-
-def format_callers_callees(fname: str, start: int, callers: Iterable[str], callees: Iterable[str]) -> str:
-    """Format a function callers/callees summary shared by xref tools."""
-    callers = sorted(callers)
-    callees = sorted(callees)
-    parts = [f"Function: {fname} (0x{start:x})"]
-    parts.append(f"\nCallers ({len(callers)}):")
-    for c in callers:
-        parts.append(f"  {c}")
-    parts.append(f"\nCallees ({len(callees)}):")
-    for c in callees:
-        parts.append(f"  {c}")
-    return "\n".join(parts)
-
+from ...tools.formatting import format_callers_callees
 
 ida_funcs = ida_name = ida_xref = idautils = None  # populated below when IDA is available
 try:

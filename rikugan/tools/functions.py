@@ -7,31 +7,9 @@ from typing import Annotated
 
 from ..core.logging import log_debug
 from .base import parse_addr, tool
+from .formatting import format_function_summary
 
-
-def format_function_summary(
-    name: str,
-    start: int,
-    end: int,
-    size: int,
-    blocks: int,
-    instrs: int,
-    callers: list[str],
-    callees: list[str],
-) -> str:
-    """Format a function info summary string shared by function tools."""
-    parts = [
-        f"Name: {name}",
-        f"Address: 0x{start:x} \u2013 0x{end:x}",
-        f"Size: {size} bytes",
-        f"Basic blocks: {blocks}",
-        f"Instructions: {instrs}",
-    ]
-    if callers:
-        parts.append(f"Callers ({len(callers)}): {', '.join(callers)}")
-    if callees:
-        parts.append(f"Callees ({len(callees)}): {', '.join(callees)}")
-    return "\n".join(parts)
+__all__ = ["format_function_summary"]
 
 
 try:
