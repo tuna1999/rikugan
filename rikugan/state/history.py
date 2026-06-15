@@ -23,6 +23,12 @@ from .session import SessionState
 MANIFEST_FILE = "_session_manifest.json"
 MANIFEST_SCHEMA_VERSION = 1
 
+#: Fork writes a ``{id}.summary.json`` beside each session with ``messages``
+#: as an int count (not a list) for fast listing. MAIN never writes these,
+#: but they linger on disk after a user runs the fork, so directory scans
+#: must skip them rather than treat them as sessions.
+_SUMMARY_SUFFIX = ".summary.json"
+
 
 def _normalize_db_path(path: str) -> str:
     """Return a stable canonical DB path for session filtering."""
@@ -210,6 +216,10 @@ class SessionHistory:
         for fname in sorted(fnames):
             if not fname.endswith(".json") or fname == MANIFEST_FILE:
                 continue
+            # Skip fork summary files: their "messages" is an int count, not a
+            # list, and their id-slice (fname[:-5]) would yield "{id}.summary".
+            if fname.endswith(_SUMMARY_SUFFIX):
+                continue
             path = os.path.join(self._dir, fname)
             try:
                 with open(path) as f:
@@ -353,7 +363,9 @@ class SessionHistory:
                 json_ids = {
                     fname[:-5]
                     for fname in os.listdir(self._dir)
-                    if fname.endswith(".json") and fname != MANIFEST_FILE
+                    if fname.endswith(".json")
+                    and fname != MANIFEST_FILE
+                    and not fname.endswith(_SUMMARY_SUFFIX)
                 }
             except OSError as scan_err:
                 log_warning(f"Failed to scan sessions directory for manifest validation: {scan_err}")

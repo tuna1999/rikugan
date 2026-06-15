@@ -176,6 +176,59 @@ class TestSessionHistory(unittest.TestCase):
         history = SessionHistory(self.config)
         self.assertFalse(history.delete_session("nonexistent"))
 
+    def _write_summary_file(self, session_id: str, messages_count: int) -> None:
+        """Write a fork-format ``{id}.summary.json`` next to the session file.
+
+        The fork writes summaries with ``messages`` as an int count (not a
+        list). MAIN never writes these, but they linger on disk after a user
+        has run the fork, so MAIN must tolerate them rather than crash.
+        """
+        summary = {
+            "id": session_id,
+            "created_at": 1000.0,
+            "provider": "anthropic",
+            "model": "claude",
+            "idb_path": "",
+            "db_instance_id": "",
+            "messages": messages_count,
+            "description": "",
+        }
+        path = os.path.join(self.config.checkpoints_dir, "sessions", f"{session_id}.summary.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(summary, f)
+
+    def test_list_sessions_tolerates_fork_summary_files(self):
+        """Fork .summary.json files (messages as int) must not crash listing.
+
+        Reproduces the TypeError at history.py:234 where
+        ``len(data.get("messages", []))`` hit ``messages: 12`` from a leftover
+        fork summary file.
+        """
+        history = SessionHistory(self.config)
+        s = SessionState(id="abc123", provider_name="anthropic", model_name="claude")
+        s.add_message(Message(role=Role.USER, content="hi"))
+        history.save_session(s)
+        # Drop a fork-format summary file next to it.
+        self._write_summary_file("abc123", messages_count=1)
+
+        sessions = history.list_sessions()
+        ids = {sess["id"] for sess in sessions}
+        self.assertEqual(ids, {"abc123"})
+
+    def test_list_sessions_does_not_treat_summary_as_separate_session(self):
+        """The summary file must not produce a bogus ``{id}.summary`` entry."""
+        history = SessionHistory(self.config)
+        s = SessionState(id="xyz789", provider_name="anthropic", model_name="claude")
+        s.add_message(Message(role=Role.USER, content="hi"))
+        history.save_session(s)
+        self._write_summary_file("xyz789", messages_count=1)
+
+        sessions = history.list_sessions()
+        ids = {sess["id"] for sess in sessions}
+        self.assertIn("xyz789", ids)
+        self.assertNotIn("xyz789.summary", ids)
+
+
 
 if __name__ == "__main__":
     unittest.main()
