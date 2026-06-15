@@ -33,10 +33,54 @@ from .styles import (
     get_tool_approval_header_style,
     get_tool_colors,
 )
+from .theme.manager import ThemeManager
 
 _MAX_ARGS_DISPLAY = 2000
 _MAX_RESULT_DISPLAY = 3000
 _TOOL_PREVIEW_LINES = 3
+
+
+# ---------------------------------------------------------------------------
+# Tool card styling — border/background QSS for ToolCallWidget containers.
+# Ported from the fork so tool calls render as bordered cards (matching the
+# fork's appearance) instead of unbounded frames.
+# ---------------------------------------------------------------------------
+
+
+def _tool_bg(t) -> str:
+    """Card background color for a tool call (alt-base tier)."""
+    return t.alt_base
+
+
+def _tool_border(t) -> str:
+    """Card border color for a tool call (mid tier)."""
+    return t.mid
+
+
+def _tool_card_css(
+    *,
+    accent: str | None = None,
+    background: str | None = None,
+    radius: int = 6,
+    object_name: str = "message_tool",
+) -> str:
+    """Border/background QSS for a tool-call card container.
+
+    Targets the widget's object name (``#message_tool``) so the rule only
+    applies to the card itself, not its child labels. Recomputed on
+    ``themeChanged`` by :meth:`ToolCallWidget._apply_card_style`.
+    """
+    t = ThemeManager.instance().tokens()
+    border = accent or _tool_border(t)
+    bg = background or _tool_bg(t)
+    return (
+        f"QFrame#{object_name} {{"
+        f" background-color: {bg};"
+        f" border: 1px solid {border};"
+        f" border-radius: {radius}px;"
+        f"}}"
+    )
+
 
 # ---------------------------------------------------------------------------
 # MCP prefix stripping — works with any MCP server, not just a specific one
@@ -439,6 +483,15 @@ class ToolCallWidget(QFrame):
         layout.addWidget(self._build_preview())
         layout.addWidget(self._build_detail_section())
 
+        # Bordered card background. Subscribed *after* the header is built
+        # so an early themeChanged signal finds the widget fully constructed.
+        self._apply_card_style()
+        ThemeManager.instance().themeChanged.connect(self._apply_card_style)
+
+    def _apply_card_style(self, _tokens: object = None) -> None:
+        """Re-apply the border/background QSS on theme change."""
+        self.setStyleSheet(_tool_card_css())
+
     def _build_header(self, tool_name: str) -> QHBoxLayout:
         """Build the compact header row: toggle ● name  summary  status."""
         display_name = _strip_mcp_prefix(tool_name)
@@ -615,6 +668,15 @@ class ToolBatchWidget(QFrame):
         layout.addLayout(self._build_header(tool_name))
         layout.addWidget(self._build_preview())
         layout.addWidget(self._build_detail_section())
+
+        # Bordered card background (same as ToolCallWidget). Applied after
+        # the header is built; refreshed on theme change.
+        self._apply_card_style()
+        ThemeManager.instance().themeChanged.connect(self._apply_card_style)
+
+    def _apply_card_style(self, _tokens: object = None) -> None:
+        """Re-apply the border/background QSS on theme change."""
+        self.setStyleSheet(_tool_card_css())
 
     def _build_header(self, tool_name: str) -> QHBoxLayout:
         """Build the compact header row: toggle ● name  count  status."""
