@@ -126,6 +126,25 @@ class TestRefreshAgents(unittest.TestCase):
         last_call = w._send_btn.setEnabled.call_args_list[-1]
         self.assertTrue(last_call.args[0])
 
+    def test_refresh_bails_when_widgets_already_deleted(self) -> None:
+        """A PaletteChange arriving after teardown must not crash.
+
+        Shiboken raises RuntimeError when the C++ QListWidget is already
+        deleted (e.g. the panel was closed between the event being queued
+        and delivered). _refresh_agents should bail out silently rather
+        than propagate the RuntimeError or attempt discover() on dead UI.
+        """
+        w, mocks = _build_widget_with_mocks([_FakeAgent()])
+        # Simulate the list widget's C++ side being gone.
+        w._agent_list.clear.side_effect = RuntimeError(
+            "Internal C++ object (PySide6.QtWidgets.QListWidget) already deleted."
+        )
+        # Must not raise.
+        w._refresh_agents()
+        # Bailed before touching the dispatcher — no discovery on dead UI.
+        mocks["dispatcher"].discover.assert_not_called()
+
+
 
 class TestSendClick(unittest.TestCase):
     def test_send_with_empty_task_does_nothing(self) -> None:

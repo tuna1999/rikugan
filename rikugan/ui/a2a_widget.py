@@ -336,10 +336,18 @@ class A2ABridgeWidget(QWidget):
     # -- Agent list management -----------------------------------------------
 
     def _refresh_agents(self) -> None:
-        """Re-run discovery and rebuild the agent list widgets."""
+        """Re-run discovery and rebuild the agent list widgets.
+
+        Bail out silently if the underlying Qt widgets were already deleted
+        (e.g. a PaletteChange arriving after the panel was torn down) —
+        Shiboken raises ``RuntimeError`` on access to a deleted C++ object.
+        """
+        try:
+            self._agent_list.clear()
+            self._target_combo.clear()
+        except RuntimeError:
+            return
         agents = self._dispatcher.discover()
-        self._agent_list.clear()
-        self._target_combo.clear()
         for agent in agents:
             label = f"{agent.name}  ({agent.transport})"
             list_item = QListWidgetItem(label)
