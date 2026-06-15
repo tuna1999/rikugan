@@ -180,6 +180,18 @@ class InputArea(QPlainTextEdit):
         combined.update(("goal", "plan", "modify", "explore", "research"))
         self._skill_slugs = sorted(combined)
 
+    def focusOutEvent(self, event) -> None:
+        """Dismiss the skill popup whenever the editor loses focus.
+
+        The popup is a top-level ``Qt.ToolTip`` window, so it stays on
+        top of *every* application — including the one the user alt-tabs
+        to — until explicitly hidden. Dismissing it here covers the
+        normal leave paths (click elsewhere, alt-tab, window switch),
+        so the popup never leaks onto another program's window.
+        """
+        self._dismiss_popup()
+        super().focusOutEvent(event)
+
     def keyPressEvent(self, event) -> None:
         # Handle popup navigation when popup is visible
         if self._popup and self._popup.isVisible():
