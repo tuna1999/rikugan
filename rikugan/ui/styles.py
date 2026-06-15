@@ -1492,122 +1492,7 @@ ERR_STATUS_STYLE = {
 }
 
 # Bulk renamer styles moved to ui/theme/widgets_bulk.py
-# Agent tree styles
-AGENT_BTN_STYLE = {
-    "dark": (
-        "QPushButton { background: #2d2d2d; color: #d4d4d4; border: 1px solid #3c3c3c; "
-        "border-radius: 4px; padding: 4px 10px; font-size: inherit; }"
-        "QPushButton:hover { background: #3c3c3c; }"
-        "QPushButton:disabled { color: #555; }"
-    ),
-    "light": (
-        "QPushButton { background: #f0e8e0; color: #2c232e; border: 1px solid #d2c9c4; "
-        "border-radius: 4px; padding: 4px 10px; font-size: inherit; }"
-        "QPushButton:hover { background: #e8e0d8; }"
-        "QPushButton:disabled { color: #92898a; }"
-    ),
-}
-
-AGENT_TREE_STYLE = {
-    "dark": """
-        QTreeWidget {
-            background: #1e1e1e;
-            color: #d4d4d4;
-            border: 1px solid #3c3c3c;
-            font-size: inherit;
-            alternate-background-color: #252525;
-        }
-        QTreeWidget::item {
-            padding: 2px 4px;
-        }
-        QTreeWidget::item:selected {
-            background: #264f78;
-            color: #ffffff;
-        }
-        QTreeWidget::item:hover {
-            background: #2a2d2e;
-        }
-        QHeaderView::section {
-            background: #2d2d2d;
-            color: #d4d4d4;
-            border: 1px solid #3c3c3c;
-            padding: 3px 6px;
-            font-size: inherit;
-        }
-    """,
-    "light": """
-        QTreeWidget {
-            background: #f8efe7;
-            color: #2c232e;
-            border: 1px solid #d2c9c4;
-            font-size: inherit;
-            alternate-background-color: #f0e8e0;
-        }
-        QTreeWidget::item {
-            padding: 2px 4px;
-        }
-        QTreeWidget::item:selected {
-            background: #d7ba7d;
-            color: #2c232e;
-        }
-        QTreeWidget::item:hover {
-            background: #e8e0d8;
-        }
-        QHeaderView::section {
-            background: #e8e0d8;
-            color: #2c232e;
-            border: 1px solid #d2c9c4;
-            padding: 3px 6px;
-            font-size: inherit;
-        }
-    """,
-}
-
-AGENT_COMBO_STYLE = {
-    "dark": (
-        "QComboBox { background: #2d2d2d; color: #d4d4d4; border: 1px solid #3c3c3c; "
-        "border-radius: 4px; padding: 3px 6px; font-size: inherit; }"
-    ),
-    "light": (
-        "QComboBox { background: #f8efe7; color: #2c232e; border: 1px solid #d2c9c4; "
-        "border-radius: 4px; padding: 3px 6px; font-size: inherit; }"
-    ),
-}
-
-AGENT_STATUS_LABEL_STYLE = {
-    "dark": "color: #808080; font-size: inherit;",
-    "light": "color: #92898a; font-size: inherit;",
-}
-
-AGENT_PREVIEW_STYLE = {
-    "dark": (
-        "QTextEdit { background: #252525; color: #d4d4d4; border: 1px solid #3c3c3c; "
-        "font-size: inherit; padding: 4px; }"
-    ),
-    "light": (
-        "QTextEdit { background: #f0e8e0; color: #2c232e; border: 1px solid #d2c9c4; "
-        "font-size: inherit; padding: 4px; }"
-    ),
-}
-
-# Agent status colors
-AGENT_STATUS_COLORS = {
-    "dark": {
-        "PENDING": "#808080",
-        "RUNNING": "#dcdcaa",
-        "COMPLETED": "#4ec9b0",
-        "FAILED": "#f44747",
-        "CANCELLED": "#808080",
-    },
-    "light": {
-        "PENDING": "#92898a",
-        "RUNNING": "#b16803",
-        "COMPLETED": "#218871",
-        "FAILED": "#ce4770",
-        "CANCELLED": "#92898a",
-    },
-}
-
+# Agent-tree styles moved to ui/theme/widgets_agent.py
 # Orchestra panel styles
 ORCHESTRA_PANEL_STYLE = {
     "dark": """
@@ -2161,6 +2046,23 @@ def get_err_status_style() -> str:
 # Bulk-renamer style getters moved to ui/theme/widgets_bulk.py;
 # re-exported here so existing ``from .styles import get_bulk_*`` callers
 # keep working unchanged.
+# Agent-tree style getters moved to ui/theme/widgets_agent.py;
+# re-exported here so existing 'from .styles import get_agent_*' callers
+# keep working unchanged.
+from .theme.widgets_agent import (  # noqa: E402,F401 — re-export
+    AGENT_BTN_STYLE,
+    AGENT_COMBO_STYLE,
+    AGENT_PREVIEW_STYLE,
+    AGENT_STATUS_COLORS,
+    AGENT_STATUS_LABEL_STYLE,
+    AGENT_TREE_STYLE,
+    get_agent_btn_style,
+    get_agent_combo_style,
+    get_agent_preview_style,
+    get_agent_status_colors,
+    get_agent_status_label_style,
+    get_agent_tree_style,
+)
 from .theme.widgets_bulk import (  # noqa: E402,F401 — re-export
     BULK_BTN_STYLE,
     BULK_CHECK_STYLE,
@@ -2189,30 +2091,6 @@ from .theme.widgets_bulk import (  # noqa: E402,F401 — re-export
     get_bulk_stop_btn_style,
     get_bulk_table_style,
 )
-
-
-def get_agent_btn_style() -> str:
-    return _theme_get("AGENT_BTN_STYLE")
-
-
-def get_agent_tree_style() -> str:
-    return _theme_get("AGENT_TREE_STYLE")
-
-
-def get_agent_combo_style() -> str:
-    return _theme_get("AGENT_COMBO_STYLE")
-
-
-def get_agent_status_label_style() -> str:
-    return _theme_get("AGENT_STATUS_LABEL_STYLE")
-
-
-def get_agent_preview_style() -> str:
-    return _theme_get("AGENT_PREVIEW_STYLE")
-
-
-def get_agent_status_colors() -> dict[str, str]:
-    return _theme_get("AGENT_STATUS_COLORS")
 
 
 def get_orchestra_panel_style() -> str:
