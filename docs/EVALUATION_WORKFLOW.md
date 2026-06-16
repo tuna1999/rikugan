@@ -682,6 +682,10 @@ The 4-phase structure works for any project without modification:
 
 ## 9. Worked Example (Rikugan)
 
+> **Note**: §9 là **snapshot minh họa** từ đợt đánh giá 2026-06, KHÔNG phải state hiện hành
+> của project (LOC, số commit ahead, git state có thể đã đổi). Workflow (§1-8) vẫn chính xác
+> và tái sử dụng được.
+
 ### 9.1 Project Context
 
 | Property | Value |
