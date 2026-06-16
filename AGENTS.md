@@ -35,29 +35,38 @@ rikugan/
 │   ├── headless_bootstrap.py # -S script entry point for headless mode
 │   ├── headless_controller.py# HeadlessSessionController (no Qt/UI tools)
 │   ├── session_controller.py # Re-export of ui/session_controller.py
-│   ├── tools/
-│   │   └── registry.py       # IDA create_default_registry() — imports rikugan.tools.*
+│   ├── tools/                     # IDA tool implementations (host-specific)
+│   │   ├── registry.py            # IDA create_default_registry() — imports rikugan.tools.* lazily
+│   │   ├── navigation.py          # IDA navigation tools (cursor, jump, name-at)
+│   │   ├── functions.py           # IDA function tools (list, search, info)
+│   │   ├── strings.py             # IDA string tools
+│   │   ├── database.py            # IDA database tools (segments, imports, exports)
+│   │   ├── disassembly.py         # IDA disassembly tools
+│   │   ├── decompiler.py          # IDA decompiler tools (Hex-Rays)
+│   │   ├── xrefs.py               # IDA xref tools
+│   │   ├── annotations.py         # IDA annotation tools (rename, comment, set type)
+│   │   ├── types_tools.py         # IDA type tools (structs, enums, typedefs, TILs)
+│   │   ├── microcode.py           # IDA Hex-Rays microcode tools
+│   │   ├── microcode_format.py    # Microcode formatting helpers
+│   │   ├── microcode_optim.py     # Microcode optimizer framework
+│   │   └── scripting.py           # IDA execute_python tool
 │   └── ui/
 │       ├── panel.py          # IDA PluginForm wrapper
 │       ├── actions.py        # IDA UI hooks & context menu actions
 │       └── session_controller.py  # IDA SessionController
 │
-├── tools/                    # IDA tool implementations
+├── tools/                    # Shared tool framework (host-agnostic)
 │   ├── base.py               # @tool decorator, ToolDefinition, JSON schema generation
-│   ├── registry.py           # Shared ToolRegistry class
-│   ├── navigation.py         # IDA navigation tools
-│   ├── functions.py          # IDA function tools
-│   ├── strings.py            # IDA string tools
-│   ├── database.py           # IDA database tools (segments, imports, exports)
-│   ├── disassembly.py        # IDA disassembly tools
-│   ├── decompiler.py         # IDA decompiler tools (Hex-Rays)
-│   ├── xrefs.py              # IDA xref tools
-│   ├── annotations.py        # IDA annotation tools (rename, comment, set type)
-│   ├── types_tools.py        # IDA type tools (structs, enums, typedefs, TILs)
-│   ├── microcode.py          # IDA Hex-Rays microcode tools
-│   ├── microcode_format.py   # Microcode formatting helpers
-│   ├── microcode_optim.py    # Microcode optimizer framework
-│   └── scripting.py          # IDA execute_python tool
+│   ├── registry.py           # Shared ToolRegistry class (registration, dispatch, timeout)
+│   ├── coercion.py           # Argument coercion (hex→int, "true"→bool)
+│   ├── cache.py              # Tool-level result caching
+│   ├── formatting.py         # Shared formatting helpers (function summaries, callers/callees)
+│   ├── pagination.py         # Result pagination (page/limit normalization)
+│   ├── value_format.py       # Global value + type hint formatting
+│   ├── script_guard.py       # execute_python blocklist + sandboxed exec()
+│   ├── web.py                # Web tools (web search via MCP)
+│   ├── web_fetch.py          # Web fetch tools
+│   └── xrefs.py              # Shared cross-reference helpers
 │
 ├── hosts/                    # Backward-compat shims → rikugan.ida.ui.*
 │
@@ -92,7 +101,7 @@ rikugan/
 ├── skills/                   # Skill system (host-agnostic)
 │   ├── registry.py           # SkillRegistry — discovery & loading
 │   ├── loader.py             # SKILL.md frontmatter parser (mode field support)
-│   └── builtins/             # 10 built-in skills
+│   └── builtins/             # 12 built-in skills
 │       ├── malware-analysis/
 │       ├── linux-malware/
 │       ├── deobfuscation/
