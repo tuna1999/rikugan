@@ -25,6 +25,7 @@ rikugan/.kilo/
 
 # Local tool output
 .reasonix/
+.codegraph/
 
 UNCOMMITTED_REVIEW_ACTIONS.md
 
@@ -51,3 +52,8 @@ htmlcov/
 
 # Local scratch / review artifacts
 .scratch/
+
+# Local profiling / benchmarking scripts and logs (run inside IDA, not committed)
+profile_*.py
+*_perf.log
+perf.log
