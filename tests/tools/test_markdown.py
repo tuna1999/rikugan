@@ -130,6 +130,110 @@ class TestMdToHtmlFencedCodeBlock(unittest.TestCase):
         self.assertIn("raw code", result)
 
 
+class TestMdToHtmlFencedCodeBlockEmojiStrip(unittest.TestCase):
+    """Regression: code-block content should not contain emoji glyphs
+    that render as tofu boxes in monospace fonts.
+
+    The motivating case was an LLM emitting
+    ```` ```\\n2️⃣ C2 HTTP Connection Orchestrator (sub_180139180)\\n``` ````
+    which rendered as ``[tofu] C2 HTTP Connection Orchestrator (sub_180139180)``
+    in IDA's monospace chat font.
+
+    The fix is two-layered: a system-prompt section tells the LLM not to
+    decorate code blocks, and the renderer strips emoji codepoints as a
+    safety net.  These tests exercise the safety net.
+    """
+
+    @staticmethod
+    def _strip_tags(html: str) -> str:
+        import re as _re
+
+        return _re.sub(r"<[^>]+>", "", html)
+
+    def test_keycap_digit_strips_modifier_only(self):
+        # The motivating input.  The keycap-2 emoji is ``2`` + VS-16
+        # (FE0F) + combining keycap (20E3).  Stripping the modifiers
+        # leaves the digit ``2`` plus the trailing space — the user
+        # sees a normal digit instead of a tofu box.
+        result = md_to_html("```\n2️⃣ C2 HTTP Connection Orchestrator (sub_180139180)\n```")
+        text = self._strip_tags(result)
+        # Modifier codepoints gone — VS-16 + combining keycap.
+        self.assertNotIn("️", text)  # VS-16
+        self.assertNotIn("⃣", text)  # combining keycap
+        # Digit preserved (info > decoration).
+        self.assertIn("2", text)
+        # The function name + address still rendered.
+        self.assertIn("C2 HTTP Connection Orchestrator", text)
+        self.assertIn("sub_180139180", text)
+
+    def test_pictograph_emoji_removed_entirely(self):
+        # Single-codepoint emoji like 🎉 (U+1F389, in the
+        # symbols & pictographs range) gets stripped with no
+        # alphanumeric residue.
+        result = md_to_html("```\n🎉 hello world\n```")
+        text = self._strip_tags(result)
+        self.assertNotIn("🎉", text)
+        # Surrounding content preserved.
+        self.assertIn("hello world", text)
+
+    def test_alphanumeric_content_preserved(self):
+        # No emoji → output unchanged.  Guard against an over-eager
+        # regex that nukes legitimate text.
+        result = md_to_html("```\nxor eax, eax\nret\n```")
+        text = self._strip_tags(result)
+        self.assertIn("xor eax, eax", text)
+        self.assertIn("ret", text)
+
+    def test_inline_code_not_stripped(self):
+        # The strip is scoped to fenced code blocks.  Inline code
+        # (`` `foo` ``) keeps emoji — those use a different style path
+        # and the bug only manifested on fenced blocks.
+        result = md_to_html("press the 🎉 key")
+        self.assertIn("🎉", result)
+
+    def test_emoji_outside_code_block_preserved(self):
+        # Regular paragraphs keep their emoji — we only strip from
+        # inside fenced blocks.
+        result = md_to_html("Analysis complete 🎉\n")
+        text = self._strip_tags(result)
+        self.assertIn("🎉", text)
+
+    def test_legacy_path_strips_emoji(self):
+        # The legacy regex fallback in ``_legacy_md_to_html`` must
+        # also strip emoji — exercised when markdown-it-py is absent.
+        from rikugan.ui.markdown import _legacy_md_to_html
+
+        result = _legacy_md_to_html("```\n2️⃣ hello\n```")
+        text = self._strip_tags(result)
+        self.assertNotIn("⃣", text)
+        self.assertNotIn("️", text)
+        self.assertIn("hello", text)
+
+    def test_indented_code_block_strips_emoji(self):
+        # Regression: ``markdown-it-py`` emits a ``code_block`` token
+        # for 4-space-indented code (separate from the ``fence`` token
+        # for ```fenced``` blocks).  Both paths must strip emoji, or
+        # the user sees tofu boxes for any indented code the LLM emits
+        # (e.g. inside list items, or as a continuation paragraph).
+        result = md_to_html("    2️⃣ C2 HTTP Connection Orchestrator (sub_180139180)\n")
+        text = self._strip_tags(result)
+        self.assertNotIn("⃣", text)
+        self.assertNotIn("️", text)
+        self.assertIn("C2 HTTP Connection Orchestrator", text)
+        self.assertIn("sub_180139180", text)
+
+    def test_fenced_code_block_in_list_item_strips_emoji(self):
+        # Fenced code block nested under a list item — exercises the
+        # ``_render_fence`` path inside a list_item_open /
+        # list_item_close envelope.  Same code path as the standalone
+        # fence test, but routed through the list-item renderer.
+        result = md_to_html("- item\n\n  ```\n  2️⃣ fenced in list\n  ```\n")
+        text = self._strip_tags(result)
+        self.assertNotIn("⃣", text)
+        self.assertNotIn("️", text)
+        self.assertIn("fenced in list", text)
+
+
 class TestMdToHtmlParagraph(unittest.TestCase):
     def test_empty_line_becomes_br(self):
         result = md_to_html("para one\n\npara two")

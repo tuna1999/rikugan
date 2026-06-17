@@ -24,7 +24,52 @@ Public surface used by :mod:`rikugan.ui.markdown`:
 from __future__ import annotations
 
 import html as _html
+import re as _re
 from typing import Any
+
+# Codepoints that turn into tofu boxes in monospace fonts (the default
+# code-block font).  Covers:
+#   - U+20E3 combining enclosing keycap
+#   - U+FE0F variation selector-16 (forces emoji presentation)
+#   - U+200D zero-width joiner (joins multi-codepoint emoji)
+#   - U+1F1E6..U+1F1FF regional indicator symbols (flags)
+#   - U+2600..U+27BF misc symbols + dingbats
+#   - U+1F300..U+1F5FF symbols & pictographs (😀-🗿)
+#   - U+1F600..U+1F64F emoticons
+#   - U+1F680..U+1F6FF transport & map
+#   - U+1F900..U+1F9FF supplemental symbols & pictographs
+#   - U+1FA00..U+1FAFF symbols & pictographs extended-A
+# The keycap-digit sequence ``2️⃣`` reduces to ``2`` (we
+# strip the modifiers, not the digit), while ``🎉`` is removed
+# entirely.  Alphanumerics, punctuation and whitespace are preserved.
+_EMOJI_RE = _re.compile(
+    "["
+    "⃣"
+    "️"
+    "‍"
+    "\U0001f1e6-\U0001f1ff"
+    "☀-➿"
+    "\U0001f300-\U0001f5ff"
+    "\U0001f600-\U0001f64f"
+    "\U0001f680-\U0001f6ff"
+    "\U0001f900-\U0001f9ff"
+    "\U0001fa00-\U0001faff"
+    "]"
+)
+
+
+def _strip_emoji(s: str) -> str:
+    """Remove emoji codepoints that render as tofu in monospace fonts.
+
+    Code blocks use a monospace font (Pygments runs against the same
+    monospace family in Qt).  When the active font lacks a glyph for a
+    keycap / pictograph codepoint, Qt falls back to ``.notdef`` —
+    visually a small square ("ô vuông").  The LLM routinely emits
+    emoji-decorated code blocks (e.g. ``2️⃣ func_name``)
+    when reformatting decompiler output; the renderer strips those
+    decorations so the user sees clean, copy-pasteable code.
+    """
+    return _EMOJI_RE.sub("", s)
 
 
 def _highlight(code: str, language: str) -> str:
@@ -229,9 +274,17 @@ class QtRenderer:
             if ttype == "code_block":
                 # Indented code block. Render as a fenced block
                 # with no language.
+                #
+                # ``_strip_emoji`` mirrors the fenced-block path:
+                # ``markdown-it-py`` parses 4-space-indented code as a
+                # ``code_block`` token (distinct from the ``fence``
+                # token for ```` ``` ```` blocks).  Without the strip,
+                # LLM output like ``    2️⃣ func_name`` inside a list
+                # item or as a continuation paragraph renders as a
+                # tofu box in the monospace chat font.
                 out.append(
                     f'<div style="{_html.escape(styles["block_code_style"], quote=True)}">'
-                    f"{_html.escape(tok.content)}</div>"
+                    f"{_html.escape(_strip_emoji(tok.content))}</div>"
                 )
                 i += 1
                 continue
@@ -307,12 +360,20 @@ class QtRenderer:
         but is NOT rendered into the HTML: an earlier version
         prepended a small label (``asm`` / ``python``) above the
         code body that users misread as the first line of code.
+
+        The code body is passed through :func:`_strip_emoji` to
+        drop emoji / keycap / variation-selector codepoints that
+        render as tofu boxes in the monospace font.  Decompiler
+        output copied into a code block often carries LLM-added
+        decorations (``2️⃣ func_name``); stripping is the
+        safety net for the system-prompt rule that says "no
+        emoji in code blocks".
         """
         lang = ""
         info = (tok.info or "").strip()
         if info:
             lang = info.split()[0]
-        code = tok.content
+        code = _strip_emoji(tok.content)
         if lang:
             body = _highlight(code, lang)
         else:
