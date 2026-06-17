@@ -369,9 +369,7 @@ class UserMessageWidget(QFrame):
                 "border-radius: 10px; padding: 8px 12px; font-size: 13px;",
                 _bubble_css(
                     background=_user_bubble_bg(tokens),
-                    text_color=_pick_contrasting_text(
-                        _user_bubble_bg(tokens), tokens.text, tokens.highlight_text
-                    ),
+                    text_color=_pick_contrasting_text(_user_bubble_bg(tokens), tokens.text, tokens.highlight_text),
                     border=_user_bubble_border(tokens),
                 ),
             )
@@ -385,18 +383,23 @@ class UserMessageWidget(QFrame):
 _THINK_RE = _re.compile(r"<think>(.*?)</think>", _re.DOTALL)
 
 
-def _split_thinking(text: str):
-    """Split text into (thinking_content, visible_content).
+def _extract_thinking_text(text: str) -> str:
+    """Extract the thinking content of *text* (joined, leading/trailing whitespace stripped).
 
-    Handles:
-    - One or more complete ``<think>...</think>`` blocks
-    - An unclosed ``<think>`` during streaming
+    Handles one or more complete ``<think>...</think>`` blocks and an
+    unclosed ``<think>`` during streaming.  The returned string is the
+    joined content of every thinking block with ``"\\n\\n"`` between
+    blocks — what the user actually wants to *see* in the thinking
+    panel.  Visible text outside the thinking blocks is discarded.
+
+    This helper preserves the existing semantics of
+    :func:`_split_thinking`'s thinking side, but is split out so
+    per-chunk streaming code in :class:`ChatView` can fetch the
+    thinking content without paying for the visible-side split.
     """
-    thinking_parts: list = []
-
-    # Extract all complete <think>...</think> blocks
+    thinking_parts: list[str] = []
     last_end = 0
-    visible_parts: list = []
+    visible_parts: list[str] = []
     for m in _THINK_RE.finditer(text):
         visible_parts.append(text[last_end : m.start()])
         thinking_parts.append(m.group(1).strip())
@@ -404,15 +407,76 @@ def _split_thinking(text: str):
     visible_parts.append(text[last_end:])
     remaining = "".join(visible_parts)
 
-    # Check for unclosed <think> (still streaming)
+    # Check for unclosed <think> (still streaming) — the part AFTER
+    # the opening tag is in-progress thinking.
     open_idx = remaining.rfind("<think>")
     if open_idx >= 0:
         partial = remaining[open_idx + 7 :].strip()
         if partial:
             thinking_parts.append(partial)
+
+    return "\n\n".join(thinking_parts)
+
+
+def _extract_visible_text(text: str) -> str:
+    """Extract the visible (non-thinking) portion of *text* WITHOUT stripping.
+
+    The leading and trailing whitespace of the returned string is
+    preserved so per-chunk streaming appends do not lose inter-chunk
+    boundary spaces.  ``<think>...</think>`` blocks are removed the
+    same way as :func:`_split_thinking`; an unclosed ``<think>``
+    causes the text up to (but not including) that opening tag to be
+    returned.
+
+    The HTML rendering later (via :func:`md_to_html`) only collapses
+    *internal* whitespace — leading whitespace of the entire message
+    is already stripped by :func:`_split_thinking` at render time
+    (see :meth:`AssistantMessageWidget._render`).  That means the
+    *inter-chunk* boundary spaces that this helper preserves are
+    exactly the ones that HTML would otherwise keep as a single
+    internal space; without this helper they vanish because each
+    chunk's leading/trailing whitespace is dropped at extraction.
+
+    Use this helper for per-chunk streaming paths
+    (:class:`ChatView`'s text-delta handler, the
+    :class:`BackgroundAgentRunner` coalescing buffer).  Use
+    :func:`_split_thinking` for restore-from-session paths where the
+    full message text is processed and boundary whitespace is
+    irrelevant.
+    """
+    visible_parts: list[str] = []
+    last_end = 0
+    for m in _THINK_RE.finditer(text):
+        visible_parts.append(text[last_end : m.start()])
+        last_end = m.end()
+    visible_parts.append(text[last_end:])
+    remaining = "".join(visible_parts)
+
+    # Unclosed <think> in streaming — the part AFTER it is in-progress
+    # thinking, so the visible slice ends at the opening tag.
+    open_idx = remaining.rfind("<think>")
+    if open_idx >= 0:
         remaining = remaining[:open_idx]
 
-    return "\n\n".join(thinking_parts), remaining.strip()
+    return remaining
+
+
+def _split_thinking(text: str):
+    """Split text into (thinking_content, visible_content).
+
+    Both sides are stripped of leading/trailing whitespace.  Handles:
+    - One or more complete ``<think>...</think>`` blocks
+    - An unclosed ``<think>`` during streaming
+
+    For per-chunk streaming, prefer :func:`_extract_thinking_text` and
+    :func:`_extract_visible_text` directly — the strip on the visible
+    side drops inter-chunk boundary spaces and causes visible text
+    to be concatenated without separators (e.g. "I am " + "thinking"
+    renders as "I amthinking" instead of "I am thinking").
+    """
+    thinking = _extract_thinking_text(text)
+    visible = _extract_visible_text(text).strip()
+    return thinking, visible
 
 
 # ---------------------------------------------------------------------------
@@ -918,9 +982,7 @@ class UserQuestionWidget(QFrame):
             # on a light-blue bg. Pick the higher-contrast side: if
             # ``base`` is darker than the bg, prefer ``text``; else
             # prefer ``highlight_text``.
-            btn_fg = _pick_contrasting_text(
-                btn_bg, tokens.text, tokens.highlight_text
-            )
+            btn_fg = _pick_contrasting_text(btn_bg, tokens.text, tokens.highlight_text)
             btn_border = _blend_hex(tokens.highlight, tokens.mid, 0.5)
             disabled_bg = _blend_hex(tokens.base, tokens.alt_base, 0.5)
             button_css = (
@@ -1176,10 +1238,8 @@ class ResearchNoteWidget(QFrame):
         )
         self._path_label.setStyleSheet(
             host_stylesheet(
-                f"color: {_blend_hex(tokens.text, tokens.mid, 0.3)}; "
-                f"font-family: monospace; font-size: 10px;",
-                f"color: {_blend_hex(tokens.text, tokens.mid, 0.3)}; "
-                f"{_native_text_style(size=10, monospace=True)}",
+                f"color: {_blend_hex(tokens.text, tokens.mid, 0.3)}; font-family: monospace; font-size: 10px;",
+                f"color: {_blend_hex(tokens.text, tokens.mid, 0.3)}; {_native_text_style(size=10, monospace=True)}",
             )
         )
         if self._preview_label is not None:

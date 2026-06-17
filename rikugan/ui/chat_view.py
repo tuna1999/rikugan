@@ -1,4 +1,4 @@
-﻿"""Chat view: scrollable area containing message widgets."""
+"""Chat view: scrollable area containing message widgets."""
 
 from __future__ import annotations
 
@@ -19,6 +19,8 @@ from .message_widgets import (
     ThinkingWidget,
     UserMessageWidget,
     UserQuestionWidget,
+    _extract_thinking_text,
+    _extract_visible_text,
     _split_thinking,
     _ThinkingBlock,
 )
@@ -274,20 +276,14 @@ class RestoreWorker(QThread):
             # normal TOOL message carries only ``tool_results`` —
             # ``tool_calls`` belongs to the preceding ASSISTANT.
             tool_specs = RestoreWorker._collect_tool_specs(msg, next_msg)
-            estimated = _estimate_assistant_height(content) + sum(
-                s.estimated_height for s in tool_specs
-            )
+            estimated = _estimate_assistant_height(content) + sum(s.estimated_height for s in tool_specs)
             # Tolerate ``tool_calls`` being ``None`` on a malformed
             # persisted message (older sessions, manual edits, partial
             # recovery from a corrupt IDB).  ``msg.tool_calls or []``
             # makes the truthiness check robust against ``None``.
             tool_calls = msg.tool_calls or []
             consumed = 0
-            if (
-                tool_calls
-                and next_msg is not None
-                and next_msg.role == Role.TOOL
-            ):
+            if tool_calls and next_msg is not None and next_msg.role == Role.TOOL:
                 consumed = 1
             return (
                 MessageSpec(
@@ -309,16 +305,14 @@ class RestoreWorker(QThread):
             # back to an empty JSON object — this branch only fires
             # if the persisted transcript has a TOOL without a
             # matching ASSISTANT (defensive).
-            results_by_id: dict[str, ToolResult] = {
-                r.tool_call_id: r for r in (msg.tool_results or [])
-            }
+            results_by_id: dict[str, ToolResult] = {r.tool_call_id: r for r in (msg.tool_results or [])}
             tool_specs: list[ToolSpec] = []
             # Pair any ``tool_calls`` with matching ``tool_results``.
             # Iterate over whichever side is present so we always
             # produce a spec for every result, even if the call was
             # dropped from the persisted transcript.
             seen_ids: set[str] = set()
-            for tc in (msg.tool_calls or []):
+            for tc in msg.tool_calls or []:
                 tr = results_by_id.get(tc.id)
                 try:
                     args_json = json.dumps(
@@ -369,9 +363,7 @@ class RestoreWorker(QThread):
         return None, 0
 
     @staticmethod
-    def _collect_tool_specs(
-        msg: Message, next_msg: Message | None
-    ) -> list[ToolSpec]:
+    def _collect_tool_specs(msg: Message, next_msg: Message | None) -> list[ToolSpec]:
         """Build ToolSpec objects pairing ``msg.tool_calls`` with results.
 
         Results are looked up on the immediately-following TOOL
@@ -385,14 +377,12 @@ class RestoreWorker(QThread):
             # ``next_msg.tool_results or []`` — tolerate malformed
             # persisted TOOL messages whose ``tool_results`` is
             # ``None`` instead of an empty list.
-            results_by_id = {
-                r.tool_call_id: r for r in (next_msg.tool_results or [])
-            }
+            results_by_id = {r.tool_call_id: r for r in (next_msg.tool_results or [])}
         specs: list[ToolSpec] = []
         # ``msg.tool_calls or []`` — tolerate ``None`` on malformed
         # ASSISTANT messages so the loop body is unreachable when the
         # field is missing.
-        for tc in (msg.tool_calls or []):
+        for tc in msg.tool_calls or []:
             tr = results_by_id.get(tc.id)
             try:
                 # ``indent=2`` mirrors the sync restore path so the
@@ -754,8 +744,14 @@ class ChatView(QScrollArea):
                 # Buffer text until </think> arrives
                 self._think_buffer += text
                 if "</think>" in text:
-                    # Complete ΓÇö parse accumulated buffer
-                    thinking_text, visible_text = _split_thinking(self._think_buffer)
+                    # Complete — parse accumulated buffer.  Use the
+                    # unstripped visible helper so boundary whitespace
+                    # between the think close and the post-think text
+                    # is preserved across chunks (otherwise
+                    # e.g. "</think>\n" + " Hello" loses the
+                    # implicit space).  See _extract_visible_text.
+                    thinking_text = _extract_thinking_text(self._think_buffer)
+                    visible_text = _extract_visible_text(self._think_buffer)
                     self._waiting_think_close = False
                     if thinking_text:
                         if self._message_thinking is None:
@@ -768,10 +764,16 @@ class ChatView(QScrollArea):
                             self._insert_widget(self._current_assistant)
                         self._current_assistant.append_text(visible_text)
             elif "<think>" in text and "</think>" not in text:
-                # Opening <think> without closing ΓÇö start buffering
+                # Opening <think> without closing — start buffering
                 self._waiting_think_close = True
                 self._think_buffer = text
-                thinking_text, visible_text = _split_thinking(text)
+                # Use the unstripped visible helper for the same
+                # boundary-space reason as the buffer-close branch
+                # above.  Thinking content extraction stays unchanged
+                # (already stripped, which is what the thinking panel
+                # wants).
+                thinking_text = _extract_thinking_text(text)
+                visible_text = _extract_visible_text(text)
                 if thinking_text:
                     if self._message_thinking is None:
                         self._message_thinking = _ThinkingBlock()
@@ -783,8 +785,15 @@ class ChatView(QScrollArea):
                         self._insert_widget(self._current_assistant)
                     self._current_assistant.append_text(visible_text)
             else:
-                # Normal text (no thinking, or complete <think>...</think> in one delta)
-                thinking_text, visible_text = _split_thinking(text)
+                # Normal text (no thinking, or complete <think>...</think>
+                # in one delta).  Use the unstripped visible helper —
+                # this is the most common streaming case and the
+                # boundary-space bug manifested here ("I am " chunk
+                # followed by "thinking" chunk produced "I amthinking"
+                # in the chat because each chunk's whitespace was
+                # dropped at extraction).
+                thinking_text = _extract_thinking_text(text)
+                visible_text = _extract_visible_text(text)
                 if thinking_text:
                     if self._message_thinking is None:
                         self._message_thinking = _ThinkingBlock()
@@ -799,8 +808,13 @@ class ChatView(QScrollArea):
             self._scroll_to_bottom()
         else:  # TEXT_DONE
             if self._current_assistant is not None:
-                # Final render - extract and handle thinking if any
-                thinking_text, visible_text = _split_thinking(event.text)
+                # Final render - extract and handle thinking if any.
+                # The visible is taken from the unstripped helper so
+                # the boundary spaces preserved during streaming are
+                # not clobbered here.  The thinking extraction stays
+                # the same (always stripped).
+                thinking_text = _extract_thinking_text(event.text)
+                visible_text = _extract_visible_text(event.text)
 
                 if thinking_text:
                     # Finalize thinking block
@@ -1413,9 +1427,7 @@ class ChatView(QScrollArea):
 
         msg_start, msg_end = self._message_range_for_restore_window()
         if msg_end > msg_start:
-            self._render_restored_messages(
-                self._restore_messages[msg_start:msg_end]
-            )
+            self._render_restored_messages(self._restore_messages[msg_start:msg_end])
 
         if show_nav:
             bottom_nav = self._make_restore_nav_widget("bottom")
@@ -1599,12 +1611,7 @@ class ChatView(QScrollArea):
             # the scrollbar doesn't jump when the real widgets land.
             est = self._placeholder_height_for(msg)
             consumed = 0
-            if (
-                msg.role == Role.ASSISTANT
-                and msg.tool_calls
-                and i + 1 < n
-                and messages[i + 1].role == Role.TOOL
-            ):
+            if msg.role == Role.ASSISTANT and msg.tool_calls and i + 1 < n and messages[i + 1].role == Role.TOOL:
                 next_msg = messages[i + 1]
                 est += self._tool_results_height_estimate(next_msg.tool_results)
                 consumed = 1
@@ -1620,12 +1627,8 @@ class ChatView(QScrollArea):
         # Start the worker.  Slots capture ``generation`` so they can
         # bail out if a newer restore has superseded us.
         worker = RestoreWorker(messages, parent=self)
-        worker.chunk_ready.connect(
-            lambda chunk, gen=generation: self._on_chunk_ready(chunk, gen)
-        )
-        worker.finished_ok.connect(
-            lambda gen=generation: self._on_restore_finished(gen)
-        )
+        worker.chunk_ready.connect(lambda chunk, gen=generation: self._on_chunk_ready(chunk, gen))
+        worker.finished_ok.connect(lambda gen=generation: self._on_restore_finished(gen))
         # ``finished`` is emitted by QThread when ``run`` returns; use
         # it as a hard cleanup point regardless of ``finished_ok``.
         worker.finished.connect(lambda w=worker: self._on_worker_finished(w))
@@ -1778,9 +1781,7 @@ class ChatView(QScrollArea):
                     pass
         worker.deleteLater()
 
-    def _replace_placeholder_with_widgets(
-        self, placeholder: MessagePlaceholder, widgets: list[QWidget]
-    ) -> None:
+    def _replace_placeholder_with_widgets(self, placeholder: MessagePlaceholder, widgets: list[QWidget]) -> None:
         """Replace *placeholder* with *widgets* in render order.
 
         The widgets are inserted at the placeholder's original layout
@@ -1872,9 +1873,7 @@ class ChatView(QScrollArea):
 
         return []
 
-    def _build_restored_tool_widgets(
-        self, tool_specs: tuple[ToolSpec, ...]
-    ) -> list[QWidget]:
+    def _build_restored_tool_widgets(self, tool_specs: tuple[ToolSpec, ...]) -> list[QWidget]:
         """Build tool widgets from a sequence of ``ToolSpec``.
 
         Restored widgets are marked done and have their result
