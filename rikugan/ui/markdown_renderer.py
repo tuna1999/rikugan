@@ -64,23 +64,13 @@ def _build_theme_styles(source: Any = None) -> dict[str, str]:
         # enough CSS for code spans and links.
         return {
             "inline_code_style": "font-family:monospace;",
-            "block_code_style": (
-                "font-family:monospace; white-space:pre-wrap; "
-                "padding:6px; border-radius:3px;"
-            ),
+            "block_code_style": ("font-family:monospace; white-space:pre-wrap; padding:6px; border-radius:3px;"),
             "link_style": "text-decoration: underline;",
             "hr_style": "",
             "heading_style": "font-weight:bold;",
-            "lang_tag_style": "font-size:10px;",
-            "blockquote_style": (
-                "border-left:3px solid #888; padding-left:8px; "
-                "margin:4px 0; color:#666;"
-            ),
+            "blockquote_style": ("border-left:3px solid #888; padding-left:8px; margin:4px 0; color:#666;"),
             "table_style": "border-collapse:collapse;",
-            "th_style": (
-                "border:1px solid #888; padding:4px 6px; "
-                "font-weight:bold; text-align:left;"
-            ),
+            "th_style": ("border:1px solid #888; padding:4px 6px; font-weight:bold; text-align:left;"),
             "td_style": "border:1px solid #888; padding:4px 6px;",
             "strikethrough_style": "text-decoration:line-through;",
         }
@@ -107,15 +97,10 @@ def _build_theme_styles(source: Any = None) -> dict[str, str]:
         "link_style": f"color:{tokens.highlight};",
         "hr_style": f"border:1px solid {border};",
         "heading_style": f"color:{heading}; font-weight:bold;",
-        "lang_tag_style": f"color:{muted_text};font-size:10px;",
-        "blockquote_style": (
-            f"border-left:3px solid {border}; padding-left:8px; "
-            f"margin:4px 0; color:{muted_text};"
-        ),
+        "blockquote_style": (f"border-left:3px solid {border}; padding-left:8px; margin:4px 0; color:{muted_text};"),
         "table_style": "border-collapse:collapse;",
         "th_style": (
-            f"border:1px solid {border}; padding:4px 6px; "
-            f"font-weight:bold; text-align:left; color:{heading};"
+            f"border:1px solid {border}; padding:4px 6px; font-weight:bold; text-align:left; color:{heading};"
         ),
         "td_style": f"border:1px solid {border}; padding:4px 6px;",
         "strikethrough_style": "text-decoration:line-through;",
@@ -202,14 +187,8 @@ class QtRenderer:
                 close_tok = tokens[i + 2]
                 inner = self._render_inline(inline_tok.children or [])
                 size = {1: 18, 2: 16, 3: 14, 4: 13, 5: 12, 6: 11}.get(level, 13)
-                heading_style = (
-                    f'{styles["heading_style"]}font-size:{size}px;'
-                    "margin:6px 0 2px 0;"
-                )
-                out.append(
-                    f'<div style="{_html.escape(heading_style, quote=True)}">'
-                    f"{inner}</div>"
-                )
+                heading_style = f"{styles['heading_style']}font-size:{size}px;margin:6px 0 2px 0;"
+                out.append(f'<div style="{_html.escape(heading_style, quote=True)}">{inner}</div>')
                 del close_tok  # structural; verified by parser
                 i += 3
                 continue
@@ -226,55 +205,25 @@ class QtRenderer:
                 i += 3  # paragraph_open, inline, paragraph_close
                 continue
             if ttype == "bullet_list_open":
-                end = self._find_close(
-                    tokens, i, "bullet_list_open", "bullet_list_close"
-                )
+                end = self._find_close(tokens, i, "bullet_list_open", "bullet_list_close")
                 inner = self._render_list_items(tokens[i + 1 : end])
-                out.append(
-                    f"<ul style='margin:2px 0 2px 16px;'>{inner}</ul>"
-                )
+                out.append(f"<ul style='margin:2px 0 2px 16px;'>{inner}</ul>")
                 i = end + 1
                 continue
             if ttype == "ordered_list_open":
-                end = self._find_close(
-                    tokens, i, "ordered_list_open", "ordered_list_close"
-                )
+                end = self._find_close(tokens, i, "ordered_list_open", "ordered_list_close")
                 inner = self._render_list_items(tokens[i + 1 : end])
-                out.append(
-                    f"<ol style='margin:2px 0 2px 16px;'>{inner}</ol>"
-                )
+                out.append(f"<ol style='margin:2px 0 2px 16px;'>{inner}</ol>")
                 i = end + 1
                 continue
             if ttype == "blockquote_open":
-                end = self._find_close(
-                    tokens, i, "blockquote_open", "blockquote_close"
-                )
+                end = self._find_close(tokens, i, "blockquote_open", "blockquote_close")
                 inner = self._render_blocks(tokens[i + 1 : end])
-                out.append(
-                    f'<div style="{_html.escape(styles["blockquote_style"], quote=True)}">'
-                    f"{inner}</div>"
-                )
+                out.append(f'<div style="{_html.escape(styles["blockquote_style"], quote=True)}">{inner}</div>')
                 i = end + 1
                 continue
             if ttype == "fence":
-                lang = ""
-                info = (tok.info or "").strip()
-                if info:
-                    lang = info.split()[0]
-                code = tok.content
-                if lang:
-                    body = _highlight(code, lang)
-                    lang_tag = (
-                        f'<div style="{_html.escape(styles["lang_tag_style"], quote=True)}">'
-                        f"{_html.escape(lang)}</div>"
-                    )
-                else:
-                    body = _html.escape(code)
-                    lang_tag = ""
-                out.append(
-                    f'<div style="{_html.escape(styles["block_code_style"], quote=True)}">'
-                    f"{lang_tag}{body}</div>"
-                )
+                out.append(self._render_fence(tok, styles))
                 i += 1
                 continue
             if ttype == "code_block":
@@ -288,11 +237,7 @@ class QtRenderer:
                 continue
             if ttype == "hr":
                 hr_style = styles.get("hr_style", "")
-                style_attr = (
-                    f' style="{_html.escape(hr_style, quote=True)}"'
-                    if hr_style
-                    else ""
-                )
+                style_attr = f' style="{_html.escape(hr_style, quote=True)}"' if hr_style else ""
                 out.append(f"<hr{style_attr}>")
                 i += 1
                 continue
@@ -350,6 +295,30 @@ class QtRenderer:
         # Reuse the public entry point with the current styles.
         return self.render_with_styles(tokens, None, {}, self._styles)
 
+    def _render_fence(self, tok: Any, styles: dict[str, str]) -> str:
+        """Render a fenced code block token to Qt-compatible HTML.
+
+        Centralised so the top-level and nested-in-list-item
+        call sites stay in lock-step.  ``tok.info`` may be
+        ``None`` or an empty string (e.g. for ```` ``` ```` with
+        no language) — in that case we skip Pygments highlighting.
+
+        The language name is used internally to pick a lexer
+        but is NOT rendered into the HTML: an earlier version
+        prepended a small label (``asm`` / ``python``) above the
+        code body that users misread as the first line of code.
+        """
+        lang = ""
+        info = (tok.info or "").strip()
+        if info:
+            lang = info.split()[0]
+        code = tok.content
+        if lang:
+            body = _highlight(code, lang)
+        else:
+            body = _html.escape(code)
+        return f'<div style="{_html.escape(styles["block_code_style"], quote=True)}">{body}</div>'
+
     def _render_list_items(self, tokens: list[Any]) -> str:
         out: list[str] = []
         i = 0
@@ -357,9 +326,7 @@ class QtRenderer:
         while i < n:
             tok = tokens[i]
             if tok.type == "list_item_open":
-                end = self._find_close(
-                    tokens, i, "list_item_open", "list_item_close"
-                )
+                end = self._find_close(tokens, i, "list_item_open", "list_item_close")
                 inner = self._render_list_item_body(tokens[i + 1 : end])
                 out.append(f"<li>{inner}</li>")
                 i = end + 1
@@ -386,41 +353,19 @@ class QtRenderer:
                 i += 3  # paragraph_open, inline, paragraph_close
                 continue
             if ttype == "bullet_list_open":
-                end = self._find_close(
-                    tokens, i, "bullet_list_open", "bullet_list_close"
-                )
+                end = self._find_close(tokens, i, "bullet_list_open", "bullet_list_close")
                 inner = self._render_list_items(tokens[i + 1 : end])
-                out.append(
-                    f"<ul style='margin:2px 0 2px 16px;'>{inner}</ul>"
-                )
+                out.append(f"<ul style='margin:2px 0 2px 16px;'>{inner}</ul>")
                 i = end + 1
                 continue
             if ttype == "ordered_list_open":
-                end = self._find_close(
-                    tokens, i, "ordered_list_open", "ordered_list_close"
-                )
+                end = self._find_close(tokens, i, "ordered_list_open", "ordered_list_close")
                 inner = self._render_list_items(tokens[i + 1 : end])
-                out.append(
-                    f"<ol style='margin:2px 0 2px 16px;'>{inner}</ol>"
-                )
+                out.append(f"<ol style='margin:2px 0 2px 16px;'>{inner}</ol>")
                 i = end + 1
                 continue
             if ttype == "fence":
-                lang = (tok.info or "").strip().split()[0]
-                code = tok.content
-                if lang:
-                    body = _highlight(code, lang)
-                    lang_tag = (
-                        f'<div style="{_html.escape(styles["lang_tag_style"], quote=True)}">'
-                        f"{_html.escape(lang)}</div>"
-                    )
-                else:
-                    body = _html.escape(code)
-                    lang_tag = ""
-                out.append(
-                    f'<div style="{_html.escape(styles["block_code_style"], quote=True)}">'
-                    f"{lang_tag}{body}</div>"
-                )
+                out.append(self._render_fence(tok, styles))
                 i += 1
                 continue
             if getattr(tok, "children", None):
@@ -453,17 +398,13 @@ class QtRenderer:
             if ttype == "th_open":
                 inline_tok = tokens[i + 1]
                 inner = self._render_inline(inline_tok.children or [])
-                out.append(
-                    f'<th style="{_html.escape(styles["th_style"], quote=True)}">{inner}</th>'
-                )
+                out.append(f'<th style="{_html.escape(styles["th_style"], quote=True)}">{inner}</th>')
                 i += 3  # th_open, inline, th_close
                 continue
             if ttype == "td_open":
                 inline_tok = tokens[i + 1]
                 inner = self._render_inline(inline_tok.children or [])
-                out.append(
-                    f'<td style="{_html.escape(styles["td_style"], quote=True)}">{inner}</td>'
-                )
+                out.append(f'<td style="{_html.escape(styles["td_style"], quote=True)}">{inner}</td>')
                 i += 3  # td_open, inline, td_close
                 continue
             # thead_open / tbody_open / etc — Qt drops these, skip.
@@ -535,9 +476,7 @@ class QtRenderer:
             elif ttype == self._S_OPEN:
                 # Qt does not render ``<s>`` reliably; use a
                 # styled span.
-                out.append(
-                    f'<span style="{_html.escape(styles["strikethrough_style"], quote=True)}">'
-                )
+                out.append(f'<span style="{_html.escape(styles["strikethrough_style"], quote=True)}">')
                 stack.append("</span>")
             elif ttype == self._S_CLOSE:
                 if stack and stack[-1] == "</span>":
@@ -545,9 +484,7 @@ class QtRenderer:
             elif ttype == self._LINK_OPEN:
                 href = _attr(tok, "href")
                 title = _attr(tok, "title")
-                title_attr = (
-                    f' title="{_html.escape(title)}"' if title else ""
-                )
+                title_attr = f' title="{_html.escape(title)}"' if title else ""
                 opener = (
                     f'<a style="{_html.escape(styles["link_style"], quote=True)}" '
                     f'href="{_html.escape(href, quote=True)}"{title_attr}>'
@@ -563,9 +500,7 @@ class QtRenderer:
                 # sees the intent.
                 src = _attr(tok, "src")
                 alt = tok.content
-                out.append(
-                    f"[image: {_html.escape(alt or src)}]"
-                )
+                out.append(f"[image: {_html.escape(alt or src)}]")
             elif ttype == self._HTML_INLINE:
                 out.append(tok.content)
             else:

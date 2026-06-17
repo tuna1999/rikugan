@@ -58,11 +58,7 @@ def _resolve_markdown_it() -> tuple | None:
     except ImportError:
         _markdown_it_failed = True
         return None
-    md = (
-        MarkdownIt("commonmark")
-        .enable("table")
-        .enable("strikethrough")
-    )
+    md = MarkdownIt("commonmark").enable("table").enable("strikethrough")
     renderer = QtRenderer(md)
     _md_instance, _qt_renderer = md, renderer
     return md, renderer
@@ -102,7 +98,6 @@ def _legacy_theme_styles(source=None) -> dict[str, str]:
             "link_style": "text-decoration: underline;",
             "hr_style": "",
             "heading_style": "font-weight:bold;",
-            "lang_tag_style": "font-size:10px;",
         }
 
     tokens = ThemeManager.instance().tokens()
@@ -111,7 +106,6 @@ def _legacy_theme_styles(source=None) -> dict[str, str]:
     border = _CODE_BLOCK_OVERRIDES.get("border") or _blend_hex(tokens.mid, tokens.window, 0.35)
     text_color = _CODE_BLOCK_OVERRIDES.get("text") or tokens.text
     heading = _blend_hex(tokens.highlight, tokens.text, 0.15)
-    muted_text = _blend_hex(tokens.text, tokens.window, 0.45)
     return {
         "inline_code_style": (
             f"background-color:{code_bg}; color:{inline_fg}; "
@@ -126,7 +120,6 @@ def _legacy_theme_styles(source=None) -> dict[str, str]:
         "link_style": f"color:{tokens.highlight};",
         "hr_style": f"border:1px solid {border};",
         "heading_style": f"color:{heading}; font-weight:bold;",
-        "lang_tag_style": f"color:{muted_text};font-size:10px;",
     }
 
 
@@ -151,10 +144,13 @@ def _legacy_md_to_html(text: str, source=None) -> str:
     blocks: list[str] = []
 
     def _stash_block(m: _re.Match) -> str:
-        lang = m.group(1) or ""
+        # ``lang`` is captured only for symmetry with the markdown-it
+        # path; the language name is used to pick a Pygments lexer in
+        # the markdown-it renderer but is NOT rendered into the HTML.
+        # Earlier versions emitted it as a small label above the code
+        # body that users misread as the first line of code.
         code = _html.escape(m.group(2).strip("\n"))
-        lang_tag = f'<span style="{theme["lang_tag_style"]}">{_html.escape(lang)}</span><br>' if lang else ""
-        block_html = f'<div style="{theme["block_code_style"]}">{lang_tag}{code}</div>'
+        block_html = f'<div style="{theme["block_code_style"]}">{code}</div>'
         blocks.append(block_html)
         return f"\x00BLOCK{len(blocks) - 1}\x00"
 
@@ -362,6 +358,7 @@ def _on_theme_changed(_tokens) -> None:
 # fresh HTML for the new palette.
 try:
     from .theme.manager import ThemeManager
+
     ThemeManager.instance().themeChanged.connect(_on_theme_changed)
 except Exception:  # host may not be ready; safe to ignore.
     pass
@@ -377,6 +374,7 @@ except Exception:  # host may not be ready; safe to ignore.
 # code-block colours used by the markdown renderer.  The new theme
 # pipeline routes the same intent through ``ThemeManager`` instead, so
 # we expose thin wrappers that keep the old call sites working.
+
 
 def set_code_block_theme(bg: str | None = None, border: str | None = None, text: str | None = None) -> None:
     """Compatibility shim — record IDA host code-block colours.

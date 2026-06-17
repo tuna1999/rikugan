@@ -85,13 +85,28 @@ class TestMdToHtmlFencedCodeBlock(unittest.TestCase):
         # confirm the code text is present and that preformatted styling
         # is applied.
         import re as _re
+
         text_only = _re.sub(r"<[^>]+>", "", result)
         self.assertIn("x = 1", text_only)
         self.assertIn("white-space:pre", result)
 
-    def test_code_block_with_lang_tag(self):
+    def test_code_block_lang_not_displayed(self):
+        # Regression: the language name from the fence info string
+        # (e.g. ``python``) is used internally to pick a Pygments
+        # lexer, but must NOT appear in the rendered HTML. Earlier
+        # versions prepended a small "python" / "asm" label above
+        # the code body which users misread as the first line of code.
         result = md_to_html("```python\ncode\n```")
-        self.assertIn("python", result)
+        self.assertNotIn(">python<", result)
+        # The actual code is still rendered.
+        self.assertIn("code", result)
+
+    def test_code_block_asm_lang_not_displayed(self):
+        # The motivating bug: ```asm\nxor eax, eax\n``` used to
+        # show "asm" as the first line of the code block.
+        result = md_to_html("```asm\nxor eax, eax\n```")
+        self.assertNotIn(">asm<", result)
+        self.assertIn("xor", result)
 
     def test_code_block_without_lang(self):
         result = md_to_html("```\nraw code\n```")
@@ -105,6 +120,14 @@ class TestMdToHtmlFencedCodeBlock(unittest.TestCase):
     def test_code_block_not_processed_for_inline(self):
         result = md_to_html("```\n**not bold**\n```")
         self.assertNotIn("<b>not bold</b>", result)
+
+    def test_code_block_without_lang_in_list_item(self):
+        # Regression: an empty fence info string inside a list item
+        # used to crash the nested fence handler with IndexError
+        # because the code did ``"".strip().split()[0]`` without
+        # guarding against an empty split result.
+        result = md_to_html("- item\n\n  ```\n  raw code\n  ```\n")
+        self.assertIn("raw code", result)
 
 
 class TestMdToHtmlParagraph(unittest.TestCase):
@@ -137,7 +160,7 @@ class TestInlineFormatting(unittest.TestCase):
 
     def test_link(self):
         result = _inline_formatting("[text](http://example.com)")
-        self.assertIn('<a', result)
+        self.assertIn("<a", result)
         self.assertIn("href", result)
         self.assertIn("text", result)
         self.assertIn("http://example.com", result)
