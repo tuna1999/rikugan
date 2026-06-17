@@ -415,15 +415,16 @@ rikugan/agent/prompts/
 
 ```
 feat/my-thing  ─┐
-fix/some-bug   ─┤──► dev ──► main
+fix/some-bug   ─┤──► master
 chore/deps     ─┘
 ```
 
-- **`main`** — always releasable. Never push here directly.
-- **`dev`** — integration branch. Push freely here — no CI gate.
-- **`feat/*`, `fix/*`, `chore/*`, `refactor/*`** — short-lived branches off `dev`. One logical change per branch.
+> **Lưu ý fork:** Fork này dùng `master` làm branch chính. Upstream (`tuna-main` remote, `tuna1999/Rikugan`) dùng mô hình `dev → main`. Nếu port/đồng bộ với upstream, branch của nó là `dev`/`main`, không phải `master`.
 
-Direct pushes to `main` are blocked by branch protection. `dev` is open for direct pushes.
+- **`master`** — branch chính của fork. Tích hợp trực tiếp.
+- **`feat/*`, `fix/*`, `chore/*`, `refactor/*`** — branch ngắn hạn off `master`. One logical change per branch.
+
+**CI trigger drift:** `.github/workflows/ci.yml` vẫn trigger trên `branches: [main, dev]` (kế thừa từ upstream) — push lên `master` của fork **không** kích GitHub Actions. Luôn chạy `./ci-local.sh` trước khi push.
 
 ### Before You Push — Run ci-local.sh
 
@@ -453,13 +454,13 @@ CI does **not** run `desloppify review` (the LLM-powered subjective scoring) —
 
 ### Release Flow
 
-1. Merge `dev` → `main` via PR (CI must pass)
+1. Bump `version` trong `ida-plugin.json` (trên `master`)
 2. Push tag: `git tag v0.x.x && git push origin v0.x.x`
-3. GitHub Actions creates the GitHub Release
+3. GitHub Actions creates the GitHub Release (trigger trên tag `v*`)
 
 ### Workflow Files
 
-- `.github/workflows/ci.yml` — lint, typecheck, test, quality gate (triggers on PR to `dev`/`main`)
+- `.github/workflows/ci.yml` — lint, typecheck, test, quality gate (triggers on PR to `main`/`dev` — **không** trigger trên `master` của fork; xem "CI trigger drift" ở trên)
 - `.github/workflows/release.yml` — version validation + GitHub Release (triggers on `v*` tag)
 
 ## Development Standards

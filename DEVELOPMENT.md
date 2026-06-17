@@ -54,22 +54,24 @@ pip install ruff mypy pytest desloppify
 
 ```
 feat/my-thing  ─┐
-fix/some-bug   ─┤──► dev ──► main
+fix/some-bug   ─┤──► master
 chore/deps     ─┘
 ```
 
-1. Branch off `dev` using a descriptive prefix:
+> **Lưu ý fork:** Fork này dùng `master` làm branch chính. Upstream (`tuna-main` remote) dùng mô hình `dev → main`. Khi port từ upstream, branch của nó là `dev`/`main`.
+
+1. Branch off `master` using a descriptive prefix:
    - `feat/` — new feature
    - `fix/` — bug fix
    - `refactor/` — code restructure, no behavior change
    - `chore/` — deps, tooling, docs
 2. Make your changes in small, focused commits
 3. Run the local CI script (see below) before pushing
-4. Open a PR targeting `dev`
-5. Once reviewed and CI passes, it gets merged to `dev`
-6. Releases go from `dev` → `main` with a version tag
+4. Open a PR targeting `master`
+5. Once reviewed, it gets merged to `master`
+6. Releases are cut from `master` with a version tag
 
-**Direct pushes to `main` are not allowed** — must go through a PR. `dev` accepts direct pushes.
+**Lưu ý CI trigger:** `.github/workflows/ci.yml` trigger trên `branches: [main, dev]` (từ upstream) — push/PR lên `master` **không** kích CI. Luôn chạy `./ci-local.sh` trước.
 
 ---
 
@@ -155,9 +157,8 @@ Format: `type(scope): short description`
 
 ## Release Process
 
-1. Merge `dev` → `main` via PR
-2. Bump `version` in `ida-plugin.json`
-3. Tag and push:
+1. Bump `version` in `ida-plugin.json` (trên `master`)
+2. Tag and push:
    ```bash
    git tag v0.x.x
    git push origin v0.x.x
