@@ -26,6 +26,41 @@ from .styles import is_host_theme
 from .theme.manager import ThemeManager, _blend_hex
 
 # ---------------------------------------------------------------------------
+# Emoji stripping (shared with markdown_renderer.py) — used by the
+# legacy regex fallback so it stays in lock-step with the markdown-it
+# path.  See :func:`rikugan.ui.markdown_renderer._strip_emoji` for the
+# rationale (monospace fonts lack glyphs for keycap / pictograph
+# codepoints; LLM output commonly decorates code with ``2️⃣``
+# prefixes that render as tofu boxes).
+# ---------------------------------------------------------------------------
+_EMOJI_RE = _re.compile(
+    "["
+    "⃣"
+    "️"
+    "‍"
+    "\U0001f1e6-\U0001f1ff"
+    "☀-➿"
+    "\U0001f300-\U0001f5ff"
+    "\U0001f600-\U0001f64f"
+    "\U0001f680-\U0001f6ff"
+    "\U0001f900-\U0001f9ff"
+    "\U0001fa00-\U0001faff"
+    "]"
+)
+
+
+def _strip_emoji(s: str) -> str:
+    """Drop emoji / keycap / variation-selector codepoints from *s*.
+
+    Mirrors the helper in :mod:`rikugan.ui.markdown_renderer` so the
+    legacy fallback and the markdown-it path produce identical output
+    for code blocks.  See that module for the codepoint list and the
+    reason this exists.
+    """
+    return _EMOJI_RE.sub("", s)
+
+
+# ---------------------------------------------------------------------------
 # markdown-it-py integration (preferred path) — lazy
 # ---------------------------------------------------------------------------
 
@@ -149,7 +184,12 @@ def _legacy_md_to_html(text: str, source=None) -> str:
         # the markdown-it renderer but is NOT rendered into the HTML.
         # Earlier versions emitted it as a small label above the code
         # body that users misread as the first line of code.
-        code = _html.escape(m.group(2).strip("\n"))
+        #
+        # ``_strip_emoji`` mirrors the markdown-it path: code blocks
+        # in a monospace font can't render keycap / pictograph glyphs,
+        # and LLM output frequently decorates decompiler dumps with
+        # ``2️⃣ func_name`` style prefixes.
+        code = _html.escape(_strip_emoji(m.group(2).strip("\n")))
         block_html = f'<div style="{theme["block_code_style"]}">{code}</div>'
         blocks.append(block_html)
         return f"\x00BLOCK{len(blocks) - 1}\x00"
