@@ -3,15 +3,98 @@ name: Release
 on:
   push:
     tags:
-      - "v*"
+      - 'v*'
+      - '[0-9]*.[0-9]*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag name to re-release (vd: v1.2 hoặc 1.2.3)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
 
 jobs:
-  validate-and-release:
-    name: Validate & Publish
+  verify:
+    name: Verify (tag + version + tests)
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+      is_prerelease: ${{ steps.meta.outputs.is_prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dev tools
+        run: pip install ruff mypy pytest tomli desloppify
+
+      - name: Parse tag, version, pre-release flag
+        id: meta
+        run: |
+          set -e
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+
+          VERSION="${TAG#v}"
+
+          PLUGIN_VERSION=$(python -c "import json; print(json.load(open('ida-plugin.json'))['plugin']['version'])")
+          if [ "$VERSION" != "$PLUGIN_VERSION" ]; then
+            echo "::error::Tag '$TAG' (→ version '$VERSION') does not match ida-plugin.json '$PLUGIN_VERSION'"
+            exit 1
+          fi
+
+          if [[ "$TAG" =~ -(rc|alpha|beta|pre|dev)[0-9]*$ ]]; then
+            IS_PRERELEASE="true"
+          else
+            IS_PRERELEASE="false"
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "::notice::Parsed: tag=$TAG, version=$VERSION, is_prerelease=$IS_PRERELEASE"
+
+      - name: Re-run CI checks (inline)
+        run: |
+          set -e
+          echo "── ruff format check ──"
+          python -m ruff format --check rikugan/
+
+          echo "── ruff lint ──"
+          python -m ruff check rikugan/
+
+          echo "── mypy ──"
+          python -m mypy rikugan/core rikugan/providers
+
+          echo "── pytest ──"
+          python -m pytest tests/ --tb=short -q
+
+          echo "── desloppify (objective score) ──"
+          desloppify scan --profile objective --no-badge
+          SCORE=$(python -c "import json; print(json.load(open('.desloppify/query.json')).get('objective_score', 0))")
+          BASELINE=89.0
+          python -c "
+          import sys
+          s = float('$SCORE')
+          if s < $BASELINE - 0.5:
+              sys.exit(f'score {s} < baseline {$BASELINE} - 0.5')
+          print(f'OK — score {s}')
+          "
+
+  build:
+    name: Build + validate artifacts
+    needs: verify
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -19,17 +102,49 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Validate tag matches ida-plugin.json version
+      - name: Run build_release.py
         run: |
-          TAG=${GITHUB_REF#refs/tags/v}
-          VERSION=$(python -c "import json; print(json.load(open('ida-plugin.json'))['plugin']['version'])")
-          echo "Tag: $TAG  |  ida-plugin.json: $VERSION"
-          if [ "$TAG" != "$VERSION" ]; then
-            echo "ERROR: tag v$TAG does not match ida-plugin.json version $VERSION"
-            exit 1
+          python scripts/build_release.py \
+            --version "${{ needs.verify.outputs.version }}" \
+            --out-dir dist
+
+      - name: HCLI packaging validation (shim fallback)
+        run: |
+          # Prefer hcli plugin lint if available; else run the Python shim.
+          if command -v hcli >/dev/null 2>&1; then
+            echo "hcli found — running 'hcli plugin lint'"
+            hcli plugin lint "dist/rikugan-v${{ needs.verify.outputs.version }}.zip"
+          else
+            echo "hcli not found — running structural shim"
+            python scripts/validate_archive.py "dist/rikugan-v${{ needs.verify.outputs.version }}.zip"
           fi
 
-      - name: Create GitHub Release
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-artifacts
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: [verify, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-artifacts
+          path: dist/
+
+      - name: Create or update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ needs.verify.outputs.tag }}
+          name: "Rikugan ${{ needs.verify.outputs.version }}"
+          prerelease: ${{ needs.verify.outputs.is_prerelease == 'true' }}
           generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/rikugan-${{ needs.verify.outputs.version }}.zip
+            dist/SHA256SUMS
