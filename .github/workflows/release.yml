@@ -149,5 +149,5 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
-            dist/rikugan-${{ needs.verify.outputs.version }}.zip
+            dist/rikugan-v${{ needs.verify.outputs.version }}.zip
             dist/SHA256SUMS
