@@ -9,10 +9,80 @@ import io
 from collections.abc import Callable
 from typing import Any
 
-# Modules that must never be imported (directly or via __import__).
-_BLOCKED_MODULES = frozenset({"subprocess", "shlex", "pty", "commands"})
+# Modules that must never be imported (directly or via `from X import ...`).
+# These provide the "control plane" of Python — process spawning, filesystem,
+# network, dynamic code loading, native FFI, and known RCE deserialization
+# vectors. Blocking them at import time means user code can still freely
+# import pure-compute / data-plane libraries that are essential for malware
+# analysis (Crypto.Cipher, struct, binascii, hashlib, math, re, numpy, ...).
+_BLOCKED_MODULES = frozenset(
+    {
+        # Process / shell execution
+        "subprocess",
+        "shlex",
+        "pty",
+        "commands",
+        "multiprocessing",
+        # Filesystem / OS access (env vars, cwd, file IO via module attrs)
+        "os",
+        "sys",
+        "shutil",
+        "pathlib",
+        "glob",
+        "fnmatch",
+        "tempfile",
+        "fileinput",
+        "filecmp",
+        # Network access
+        "socket",
+        "ssl",
+        "select",
+        "selectors",
+        "asyncio",
+        "http",
+        "urllib",
+        "urllib2",
+        "urllib3",
+        "httplib",
+        "ftplib",
+        "telnetlib",
+        "smtplib",
+        "poplib",
+        "imaplib",
+        "xmlrpc",
+        "xmlrpc.client",
+        "xmlrpc.server",
+        "socketserver",
+        # Native FFI (can call C functions, bypass sandbox)
+        "ctypes",
+        "cffi",
+        # Dynamic code loading (can import arbitrary code from anywhere)
+        "importlib",
+        "pkgutil",
+        "zipimport",
+        "runpy",
+        "modulefinder",
+        "code",
+        "codeop",
+        "idlelib",
+        # Deserialization RCE vectors
+        "pickle",
+        "cPickle",
+        "marshal",
+        "shelve",
+        # Process side effects (signals, resource limits, terminal control)
+        "signal",
+        "fcntl",
+        "resource",
+        "termios",
+        "tty",
+    }
+)
 
-# Built-in calls that must never appear.
+# Built-in calls that must never appear. `__import__` is included because
+# even though we restore it to the builtins (so users can write
+# `import Crypto.Cipher`), calling it directly is the canonical reflective
+# bypass — agents have no reason to call it themselves.
 _BLOCKED_CALLS = frozenset({"exec", "eval", "compile", "__import__"})
 
 # Attribute calls that must never appear (module.func patterns).
@@ -40,10 +110,12 @@ _BLOCKED_ATTRS = frozenset(
 )
 
 # Builtins that must be removed from the execution namespace to prevent
-# reflective bypasses (e.g. __builtins__['__import__'], eval("os.system")).
+# reflective bypasses (e.g. `eval("os.system")`, `exec(compile(...))`).
+# Note: `__import__` is intentionally kept here so user code can use
+# `import` statements for safe modules. Direct `__import__("...")` calls
+# are still rejected by the AST check via _BLOCKED_CALLS.
 _REMOVED_BUILTINS = frozenset(
     {
-        "__import__",
         "exec",
         "eval",
         "compile",
