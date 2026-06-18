@@ -32,8 +32,11 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dev tools
-        run: pip install ruff mypy pytest tomli desloppify
+      - name: Install dev tools + runtime deps
+        run: |
+          pip install ruff mypy pytest tomli desloppify
+          pip install -r requirements.txt
+          pip install PySide6
 
       - name: Parse tag, version, pre-release flag
         id: meta
