@@ -274,8 +274,26 @@ class RikuganPanel(idaapi.PluginForm):
             text=_rgb_to_hex(c["code_text"]),
         )
 
+        self._reapply_minimal_style()
+
+        # Spin up the IDAThemeWatcher for live palette tracking. Only
+        # AUTO and IDA_NATIVE read QPalette tokens, so the watcher is
+        # a no-op overhead in DARK/LIGHT modes — see the gate in
+        # tests/tools/test_theme_watcher.py::TestPluginWatcherGate.
+        self._maybe_start_theme_watcher(config_theme)
+
+    def _reapply_minimal_style(self) -> None:
+        """Rebuild and re-apply the host-scoped minimal QSS.
+
+        Called once at construction and again on every theme change so the
+        message/input/button objects pick up the new palette. The QSS is
+        object-name-scoped (QFrame#thinking_block etc.) so it never bleeds
+        into the host (IDA) UI.
+        """
         # Apply a minimal targeted stylesheet — only Rikugan's custom widgets.
         # Everything else inherits IDA's Qt stylesheet.
+        c = _get_ida_theme_colors()
+        is_dark = bool(c.get("is_dark", False))
         surface = _rgb_to_hex(c["surface"])
         surface_variant = _rgb_to_hex(c["surface_variant"])
         border = _rgb_to_hex(c["border"])
@@ -414,13 +432,8 @@ class RikuganPanel(idaapi.PluginForm):
             border-color: {border};
         }}
         """
-        self._core.setStyleSheet(minimal_style)
-
-        # Spin up the IDAThemeWatcher for live palette tracking. Only
-        # AUTO and IDA_NATIVE read QPalette tokens, so the watcher is
-        # a no-op overhead in DARK/LIGHT modes — see the gate in
-        # tests/tools/test_theme_watcher.py::TestPluginWatcherGate.
-        self._maybe_start_theme_watcher(config_theme)
+        if self._core is not None:
+            self._core.setStyleSheet(minimal_style)
 
     def _maybe_start_theme_watcher(self, config_theme: str) -> None:
         """Start IDAThemeWatcher when the active theme mode reads QPalette.
