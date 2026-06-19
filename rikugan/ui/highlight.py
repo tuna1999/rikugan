@@ -54,6 +54,18 @@ def _get_pygments_imports() -> tuple | None:
 # Cached formatters per style name (lazy singletons)
 _formatter_cache: dict[str, object | None] = {}
 
+# Cached highlight output keyed by (code, language, style_name).
+#
+# Pygments' lex + format is the dominant cost of markdown re-render when the
+# user switches theme (~14 message widgets each re-running md_to_html). The
+# output HTML has theme-specific colors baked in (noclasses=True inline
+# styles), so the cache key includes the style name — a dark output and a
+# light output are distinct entries. Flipping the theme back reuses the
+# previously-rendered output with no re-lex/re-format. Bounded to 256 entries
+# so it cannot grow without limit across a long session.
+_OUTPUT_CACHE: dict[tuple[str, str, str], str] = {}
+_OUTPUT_CACHE_MAX = 256
+
 
 def _pygments_style_for_tokens(tokens) -> str:
     """Return the pygments style name for a given token set.
@@ -125,6 +137,16 @@ def highlight_code(code: str, language: str, is_dark: bool | None = None) -> str
         is_dark = is_dark_tokens(ThemeManager.instance().tokens())
 
     style_name = "monokai" if is_dark else "default"
+
+    # Output cache hit: reuse a previously-rendered result for this exact
+    # (code, language, style) triple. The key includes the style name so dark
+    # and light outputs live in separate entries; flipping the theme back
+    # reuses the earlier render with no re-lex/re-format.
+    cache_key = (code, language, style_name)
+    cached = _OUTPUT_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
     formatter = _get_formatter(style_name)
     if formatter is None:
         return _plain_code(code)
@@ -151,6 +173,12 @@ def highlight_code(code: str, language: str, is_dark: bool | None = None) -> str
             return _plain_code(code)
 
     highlighted = _pygments_highlight(code, lexer, formatter)
+    # Bounded insert: drop the oldest half when the cap is reached so the
+    # cache cannot grow without limit across a long session.
+    if len(_OUTPUT_CACHE) >= _OUTPUT_CACHE_MAX:
+        for _k in list(_OUTPUT_CACHE.keys())[: _OUTPUT_CACHE_MAX // 2]:
+            _OUTPUT_CACHE.pop(_k, None)
+    _OUTPUT_CACHE[cache_key] = highlighted
     return highlighted
 
 
