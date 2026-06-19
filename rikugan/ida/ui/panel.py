@@ -275,6 +275,9 @@ class RikuganPanel(idaapi.PluginForm):
         )
 
         self._reapply_minimal_style()
+        # Subscribe AFTER the first apply so theme switches repaint the
+        # host-scoped minimal_style (message/input/button objects).
+        self._subscribe_theme_changes()
 
         # Spin up the IDAThemeWatcher for live palette tracking. Only
         # AUTO and IDA_NATIVE read QPalette tokens, so the watcher is
@@ -435,6 +438,48 @@ class RikuganPanel(idaapi.PluginForm):
         if self._core is not None:
             self._core.setStyleSheet(minimal_style)
 
+    def _subscribe_theme_changes(self) -> None:
+        """Connect _on_theme_changed to ThemeManager.themeChanged.
+
+        Unlike panel_core (host-agnostic), this wrapper owns the host-scoped
+        minimal_style QSS for message/input/button objects. It must rebuild
+        that QSS on every theme switch or those objects keep the old palette.
+        """
+        try:
+            from rikugan.ui.theme.manager import ThemeManager
+
+            ThemeManager.instance().themeChanged.connect(self._on_theme_changed)
+        except Exception as e:
+            try:
+                import ida_kernwin
+
+                ida_kernwin.msg(f"[Rikugan] themeChanged subscribe failed: {type(e).__name__}: {e}\n")
+            except Exception:
+                pass  # best-effort; never block panel creation on the subscription.
+
+    def _unsubscribe_theme_changes(self) -> None:
+        """Disconnect _on_theme_changed from ThemeManager.themeChanged.
+
+        Called from shutdown() so a themeChanged firing after _core is torn
+        down (set to None) does not dereference a stale core.
+        """
+        try:
+            from rikugan.ui.theme.manager import ThemeManager
+
+            ThemeManager.instance().themeChanged.disconnect(self._on_theme_changed)
+        except Exception:
+            pass  # best-effort; Qt removes connections on widget destruction anyway.
+
+    def _on_theme_changed(self, _tokens) -> None:
+        """Adapter slot for ThemeManager.themeChanged (carries new tokens).
+
+        themeChanged emits with one argument (the new ThemeTokens); this slot
+        ignores it and rebuilds the host-scoped minimal_style from the live
+        IDA palette. Mirrors panel_core._on_theme_changed's signature so the
+        same signal can fan out to both layers.
+        """
+        self._reapply_minimal_style()
+
     def _maybe_start_theme_watcher(self, config_theme: str) -> None:
         """Start IDAThemeWatcher when the active theme mode reads QPalette.
 
@@ -525,6 +570,9 @@ class RikuganPanel(idaapi.PluginForm):
             except Exception:
                 pass
             self._theme_watcher = None
+        # Disconnect the theme-changed slot so an emit during/after teardown
+        # does not dereference _core (set to None below).
+        self._unsubscribe_theme_changes()
         if self._core is not None:
             self._core.shutdown()
             self._core.setParent(None)
