@@ -130,6 +130,25 @@ class SessionControllerBase:
 
         self._runner: BackgroundAgentRunner | None = None
         self._pending_messages: list[str] = []
+        # Snapshot of the skill-relevant config fields so ``update_settings``
+        # can skip the expensive ``_reload_skills`` filesystem rescan when
+        # only non-skill config (provider/model/theme) changed. Theme-only
+        # and provider-only edits used to pay the full discovery cost.
+        self._skill_config_signature = self._compute_skill_config_signature()
+
+    def _compute_skill_config_signature(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Return an order-insensitive snapshot of the skill-relevant config.
+
+        These two fields are what :meth:`_reload_skills` feeds into
+        :meth:`SkillRegistry.load_external_skills`, so they are the only
+        fields whose change requires a reload. Comparing the signature
+        before/after a Settings round-trip lets us skip the filesystem
+        scan when the user only flipped the theme or the model.
+        """
+        return (
+            tuple(sorted(self.config.enabled_external_skills)),
+            tuple(sorted(self.config.disabled_skills)),
+        )
 
     def _initialize_runtime(self) -> None:
         """Load heavy runtime components off the UI path."""
@@ -614,8 +633,15 @@ class SessionControllerBase:
         # retry state.  Resetting the flag makes the next prompt retry
         # the host-provided ``ensure_tools_ready`` path.
         self.reset_deferred_tools()
-        # Reload skills so newly enabled/disabled external skills take effect
-        self._reload_skills()
+        # Reload skills ONLY when the skill-relevant config changed.
+        # ``_reload_skills`` does a filesystem rescan (``SkillRegistry.discover``)
+        # which is the dominant cost of a Settings round-trip; theme-only and
+        # provider/model-only edits must not pay it. Compare the signature of
+        # the two fields _reload_skills consumes before doing the work.
+        new_skill_signature = self._compute_skill_config_signature()
+        if new_skill_signature != self._skill_config_signature:
+            self._skill_config_signature = new_skill_signature
+            self._reload_skills()
 
     def _reload_skills(self) -> None:
         """Re-discover skills and apply current config for enabled/disabled state.

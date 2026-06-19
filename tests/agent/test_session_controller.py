@@ -246,6 +246,7 @@ class TestEnsureAdvancedToolsReady(unittest.TestCase):
 
     def test_returns_true_when_callback_returns_truthy(self):
         """A successful callback marks the controller as registered."""
+
         class _OkResult:
             ok: bool = True
             registered: int = 7
@@ -435,6 +436,58 @@ class TestIdaFunctionEnumerationImportFailures(unittest.TestCase):
                 ctrl.next_function_chunk(limit=10)
         self.assertIsNone(ctrl._funcs_iter)
         self.addCleanup(ctrl.shutdown)
+
+
+class TestUpdateSettingsSkillReload(unittest.TestCase):
+    """Perf regression: ``update_settings`` must not reload skills when only
+    non-skill config changed.
+
+    Root cause: ``update_settings`` called ``_reload_skills`` (filesystem
+    scan via ``SkillRegistry.discover``) unconditionally on every Settings
+    OK — including theme-only and provider-only changes. Switching the
+    theme or model therefore paid the full skill-discovery cost for no
+    reason. The fix tracks a signature of the skill-relevant config
+    fields (``enabled_external_skills``, ``disabled_skills``) and skips
+    the reload when they are unchanged.
+    """
+
+    def setUp(self):
+        from unittest.mock import patch
+
+        self._patch = patch
+        self.cfg = RikuganConfig()
+        self.cfg._config_dir = tempfile.mkdtemp()
+        self.ctrl = IdaSessionController(self.cfg)
+        # Wait for the background runtime-init thread to finish its own
+        # discover() call so the patched discover is the only source of
+        # count changes during the test.
+        self.ctrl._runtime_init_done.wait(timeout=10)
+
+    def tearDown(self):
+        self.ctrl.shutdown()
+
+    def test_provider_only_change_does_not_reload_skills(self):
+        # Changing only provider/model/theme must NOT trigger a skill
+        # filesystem rescan.
+        self.cfg.provider.name = "different_provider"
+        self.cfg.provider.model = "different_model"
+        self.cfg.theme = "dark"
+
+        with self._patch.object(self.ctrl._skill_registry, "discover") as mock_discover:
+            self.ctrl.update_settings()
+
+        mock_discover.assert_not_called()
+
+    def test_skill_field_change_reloads_skills(self):
+        # Changing enabled_external_skills (a skill-relevant field) must
+        # still trigger the reload so newly enabled external skills
+        # appear without an IDA restart.
+        self.cfg.enabled_external_skills = ["claude:some-skill"]
+
+        with self._patch.object(self.ctrl._skill_registry, "discover") as mock_discover:
+            self.ctrl.update_settings()
+
+        mock_discover.assert_called_once()
 
 
 if __name__ == "__main__":
