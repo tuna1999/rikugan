@@ -1,12 +1,25 @@
-"""Common UI widget style dicts + getters.
+"""Common UI widget style builders + getters (token-driven).
 
-Extracted verbatim from ``rikugan/ui/styles.py`` to shrink that
-mega-module without touching any QSS byte. Each dict carries both its
-``dark`` and ``light`` branches; getters select on the live theme flag
-read lazily from ``styles`` to avoid an import cycle.
+Each builder renders a QSS string from the live :class:`ThemeTokens`
+resolved via :class:`ThemeManager`, so a theme switch (or the
+host-inherited IDA-native palette) flows through to every widget. The
+public getter signatures are unchanged from the legacy ``{dark, light}``
+dict version so the ~40 call sites in ``panel_core`` / ``message_widgets``
+/etc. keep working.
+
+Color-only status dicts (``TOOL_COLORS``) remain branch-keyed dicts:
+they return several related colors at once and are consumed as a mapping,
+so a builder would add friction without value.
 """
 
 from __future__ import annotations
+
+
+def _tokens():
+    """Return the live ThemeTokens (lazy import to avoid a cycle)."""
+    from .manager import ThemeManager
+
+    return ThemeManager.instance().tokens()
 
 
 def _branch() -> str:
@@ -16,7 +29,7 @@ def _branch() -> str:
     return "dark" if is_dark_theme() else "light"
 
 
-# Tool call widget colors
+# Tool call widget colors — branch-keyed dict (consumed as a mapping).
 TOOL_COLORS = {
     "dark": {
         "bullet": "#dcdcaa",
@@ -36,349 +49,315 @@ TOOL_COLORS = {
     },
 }
 
-# Small button style (Send, New, Export, Settings, Tools)
-SMALL_BTN_STYLE = {
-    "dark": (
-        "QPushButton { background: #2d2d2d; color: #d4d4d4; border: 1px solid #3c3c3c; "
-        "border-radius: 6px; padding: 4px; font-size: inherit; }"
-        "QPushButton:hover { background: #3c3c3c; }"
-    ),
-    "light": (
-        "QPushButton { background: #f0e8e0; color: #2c232e; border: 1px solid #d2c9c4; "
-        "border-radius: 6px; padding: 4px; font-size: inherit; }"
-        "QPushButton:hover { background: #e8e0d8; }"
-    ),
-}
 
-# Cancel button style
-CANCEL_BTN_STYLE = {
-    "dark": (
-        "QPushButton { background: #2d2d2d; color: #c42b1c; border: 1px solid #3c3c3c; "
-        "border-radius: 6px; padding: 4px; font-size: inherit; }"
-        "QPushButton:hover { background: #3c3c3c; }"
-    ),
-    "light": (
-        "QPushButton { background: #f0e8e0; color: #c0392b; border: 1px solid #d2c9c4; "
-        "border-radius: 6px; padding: 4px; font-size: inherit; }"
-        "QPushButton:hover { background: #e8e0d8; }"
-    ),
-}
+# === Button builders (all gain :focus + :pressed) ===========================
+#
+# Every interactive button now carries a visible ``:focus`` ring (border =
+# accent token) and a ``:pressed`` tactile feedback, satisfying the
+# focus-states + state-clarity rules. The border on hover nudges toward the
+# accent so keyboard focus and hover read distinctly.
 
-# Mode bar style (Chat | Tools tabs)
-MODE_BAR_STYLE = {
-    "dark": (
-        "QTabBar { background: #2d2d2d; border: none; border-bottom: 1px solid #3c3c3c; }"
-        "QTabBar::tab { background: #2d2d2d; color: #808080; padding: 4px 16px; "
-        "border: none; border-bottom: 2px solid transparent; font-size: inherit; }"
-        "QTabBar::tab:selected { color: #d4d4d4; border-bottom: 2px solid #4ec9b0; }"
-        "QTabBar::tab:hover:!selected { color: #d4d4d4; }"
-    ),
-    "light": (
-        "QTabBar { background: #e8e0d8; border: none; border-bottom: 1px solid #d2c9c4; }"
-        "QTabBar::tab { background: #e8e0d8; color: #92898a; padding: 4px 16px; "
-        "border: none; border-bottom: 2px solid transparent; font-size: inherit; }"
-        "QTabBar::tab:selected { color: #2c232e; border-bottom: 2px solid #218871; }"
-        "QTabBar::tab:hover:!selected { color: #2c232e; }"
-    ),
-}
 
-# Tab widget style for chat tabs
-TAB_WIDGET_STYLE = {
-    "dark": (
-        "QTabWidget::pane { border: none; }"
-        "QTabBar { background: #1e1e1e; border: none; }"
-        "QTabBar::tab { background: #252526; color: #cccccc; padding: 2px 8px; "
-        "border: none; border-right: 1px solid #3c3c3c; "
-        "font-size: inherit; max-width: 140px; }"
-        "QTabBar::tab:selected { background: #1e1e1e; color: #ffffff; }"
-        "QTabBar::tab:hover { background: #2d2d2d; }"
-        "QTabBar::close-button { image: none; border: none; padding: 1px; }"
-        "QTabBar::close-button:hover { background: #c42b1c; border-radius: 2px; }"
-    ),
-    "light": (
-        "QTabWidget::pane { border: none; }"
-        "QTabBar { background: #f8efe7; border: none; }"
-        "QTabBar::tab { background: #f0e8e0; color: #72696d; padding: 2px 8px; "
-        "border: none; border-right: 1px solid #d2c9c4; "
-        "font-size: inherit; max-width: 140px; }"
-        "QTabBar::tab:selected { background: #f8efe7; color: #2c232e; }"
-        "QTabBar::tab:hover { background: #e8e0d8; }"
-        "QTabBar::close-button { image: none; border: none; padding: 1px; }"
-        "QTabBar::close-button:hover { background: #c0392b; border-radius: 2px; }"
-    ),
-}
+def _button_qss(t, hover_bg: str, *, object_name: str | None = None) -> str:
+    """Shared small-button QSS: button/alt_base/mid/accent tokens.
 
-# Tools panel header style
-TOOLS_PANEL_HEADER_STYLE = {
-    "dark": "color: #d4d4d4; font-weight: bold; font-size: inherit;",
-    "light": "color: #2c232e; font-weight: bold; font-size: inherit;",
-}
+    ``object_name`` optionally scopes the selectors (e.g. ``#history_nav_btn``)
+    so a widget-local stylesheet does not leak to sibling buttons.
+    """
+    sel = f"QPushButton#{object_name}" if object_name else "QPushButton"
+    return (
+        f"{sel} {{ background: {t.button}; color: {t.button_text}; "
+        f"border: 1px solid {t.mid}; border-radius: 6px; padding: 4px; "
+        f"font-size: inherit; }}"
+        f"{sel}:hover {{ background: {hover_bg}; border-color: {t.accent}; }}"
+        f"{sel}:pressed {{ background: {t.mid}; }}"
+        f"{sel}:focus {{ border: 1px solid {t.accent}; }}"
+    )
 
-# Placeholder label style (for "Not loaded" labels in tools panel)
-PLACEHOLDER_STYLE = {
-    "dark": "color: #808080; padding: 20px;",
-    "light": "color: #92898a; padding: 20px;",
-}
 
-# Tools panel button style
-TOOLS_PANEL_BTN_STYLE = {
-    "dark": (
-        "QPushButton { background: #2d2d2d; color: #d4d4d4; border: 1px solid #3c3c3c; "
-        "border-radius: 4px; padding: 2px 8px; font-size: inherit; }"
-        "QPushButton:hover { background: #3c3c3c; }"
-    ),
-    "light": (
-        "QPushButton { background: #f0e8e0; color: #2c232e; border: 1px solid #d2c9c4; "
-        "border-radius: 4px; padding: 2px 8px; font-size: inherit; }"
-        "QPushButton:hover { background: #e8e0d8; }"
-    ),
-}
+def _small_btn_style() -> str:
+    t = _tokens()
+    return _button_qss(t, t.alt_base)
 
-# Tools panel stylesheet
-TOOLS_PANEL_STYLE = {
-    "dark": """
-        QWidget#tools_panel {
-            background: #1e1e1e;
-        }
-        QTabWidget::pane {
+
+def _cancel_btn_style() -> str:
+    """Danger variant: error-colored text so destructive actions read."""
+    t = _tokens()
+    return (
+        f"QPushButton {{ background: {t.button}; color: {t.error}; "
+        f"border: 1px solid {t.mid}; border-radius: 6px; padding: 4px; "
+        f"font-size: inherit; }}"
+        f"QPushButton:hover {{ background: {t.alt_base}; border-color: {t.error}; }}"
+        f"QPushButton:pressed {{ background: {t.mid}; }}"
+        f"QPushButton:focus {{ border: 1px solid {t.accent}; }}"
+    )
+
+
+# Mode bar (Chat | Tools tabs) — accent underline on the active tab
+def _mode_bar_style() -> str:
+    t = _tokens()
+    return (
+        f"QTabBar {{ background: {t.button}; border: none; border-bottom: 1px solid {t.mid}; }}"
+        f"QTabBar::tab {{ background: {t.button}; color: {t.muted_text}; padding: 4px 16px; "
+        f"border: none; border-bottom: 2px solid transparent; font-size: inherit; }}"
+        f"QTabBar::tab:selected {{ color: {t.text}; border-bottom: 2px solid {t.accent}; }}"
+        f"QTabBar::tab:hover:!selected {{ color: {t.text}; }}"
+    )
+
+
+# Tab widget (chat tabs) — selected tab uses selection token
+def _tab_widget_style() -> str:
+    t = _tokens()
+    return (
+        f"QTabWidget::pane {{ border: none; }}"
+        f"QTabBar {{ background: {t.window}; border: none; }}"
+        f"QTabBar::tab {{ background: {t.alt_base}; color: {t.muted_text}; padding: 2px 8px; "
+        f"border: none; border-right: 1px solid {t.mid}; font-size: inherit; max-width: 140px; }}"
+        f"QTabBar::tab:selected {{ background: {t.base}; color: {t.highlight_text}; }}"
+        f"QTabBar::tab:hover {{ background: {t.button}; }}"
+        f"QTabBar::close-button {{ image: none; border: none; padding: 1px; }}"
+        f"QTabBar::close-button:hover {{ background: {t.error}; border-radius: 2px; }}"
+    )
+
+
+# Header / placeholder labels (text + muted_text tokens)
+def _tools_panel_header_style() -> str:
+    t = _tokens()
+    return f"color: {t.text}; font-weight: bold; font-size: inherit;"
+
+
+def _placeholder_style() -> str:
+    t = _tokens()
+    return f"color: {t.muted_text}; padding: 20px;"
+
+
+# Tools panel button — radius 4, accent focus
+def _tools_panel_btn_style() -> str:
+    t = _tokens()
+    return (
+        f"QPushButton {{ background: {t.button}; color: {t.button_text}; border: 1px solid {t.mid}; "
+        f"border-radius: 4px; padding: 2px 8px; font-size: inherit; }}"
+        f"QPushButton:hover {{ background: {t.alt_base}; border-color: {t.accent}; }}"
+        f"QPushButton:pressed {{ background: {t.mid}; }}"
+        f"QPushButton:focus {{ border: 1px solid {t.accent}; }}"
+    )
+
+
+# Tools panel container — accent underline on selected tab
+def _tools_panel_style() -> str:
+    t = _tokens()
+    return f"""
+        QWidget#tools_panel {{
+            background: {t.window};
+        }}
+        QTabWidget::pane {{
             border: none;
-            background: #1e1e1e;
-        }
-        QTabBar::tab {
-            background: #2d2d2d;
-            color: #808080;
-            border: 1px solid #3c3c3c;
+            background: {t.window};
+        }}
+        QTabBar::tab {{
+            background: {t.button};
+            color: {t.muted_text};
+            border: 1px solid {t.mid};
             border-bottom: none;
             padding: 5px 14px;
             font-size: inherit;
             min-width: 60px;
-        }
-        QTabBar::tab:selected {
-            background: #1e1e1e;
-            color: #d4d4d4;
-            border-bottom: 2px solid #4ec9b0;
-        }
-        QTabBar::tab:hover:!selected {
-            background: #353535;
-            color: #d4d4d4;
-        }
-    """,
-    "light": """
-        QWidget#tools_panel {
-            background: #f8efe7;
-        }
-        QTabWidget::pane {
-            border: none;
-            background: #f8efe7;
-        }
-        QTabBar::tab {
-            background: #f0e8e0;
-            color: #72696d;
-            border: 1px solid #d2c9c4;
-            border-bottom: none;
-            padding: 5px 14px;
-            font-size: inherit;
-            min-width: 60px;
-        }
-        QTabBar::tab:selected {
-            background: #f8efe7;
-            color: #2c232e;
-            border-bottom: 2px solid #218871;
-        }
-        QTabBar::tab:hover:!selected {
-            background: #e8e0d8;
-            color: #2c232e;
-        }
-    """,
-}
+        }}
+        QTabBar::tab:selected {{
+            background: {t.base};
+            color: {t.text};
+            border-bottom: 2px solid {t.accent};
+        }}
+        QTabBar::tab:hover:!selected {{
+            background: {t.alt_base};
+            color: {t.text};
+        }}
+    """
 
-# Add button style for tab bar
-ADD_TAB_BTN_STYLE = {
-    "dark": (
-        "QToolButton { color: #d4d4d4; font-size: inherit; font-weight: bold; "
-        "border: none; background: transparent; }"
-        "QToolButton:hover { background: #3c3c3c; border-radius: 3px; }"
-    ),
-    "light": (
-        "QToolButton { color: #2c232e; font-size: inherit; font-weight: bold; "
-        "border: none; background: transparent; }"
-        "QToolButton:hover { background: #e8e0d8; border-radius: 3px; }"
-    ),
-}
 
-# Splitter handle style
-SPLITTER_HANDLE_STYLE = {
-    "dark": "QSplitter::handle { background: #3c3c3c; }",
-    "light": "QSplitter::handle { background: #d2c9c4; }",
-}
+# Add-tab button (QToolButton) in the chat tab bar
+def _add_tab_btn_style() -> str:
+    t = _tokens()
+    return (
+        f"QToolButton {{ color: {t.text}; font-size: inherit; font-weight: bold; "
+        f"border: none; background: transparent; }}"
+        f"QToolButton:hover {{ background: {t.alt_base}; border-radius: 3px; }}"
+        f"QToolButton:focus {{ border: 1px solid {t.accent}; border-radius: 3px; }}"
+    )
 
-# Message dialog style for new chat confirmation
-MESSAGE_DIALOG_STYLE = {
-    "dark": (
-        "QMessageBox { background: #1e1e1e; color: #d4d4d4; }"
-        "QPushButton { background: #2d2d2d; color: #d4d4d4; border: 1px solid #3c3c3c; "
-        "border-radius: 4px; padding: 6px 16px; font-size: inherit; min-width: 80px; }"
-        "QPushButton:hover { background: #3c3c3c; }"
-    ),
-    "light": (
-        "QMessageBox { background: #f8efe7; color: #2c232e; }"
-        "QPushButton { background: #f0e8e0; color: #2c232e; border: 1px solid #d2c9c4; "
-        "border-radius: 4px; padding: 6px 16px; font-size: inherit; min-width: 80px; }"
-        "QPushButton:hover { background: #e8e0d8; }"
-    ),
-}
 
-# Error label style
-ERROR_LABEL_STYLE = {
-    "dark": "color: #f44747;",
-    "light": "color: #ce4770;",
-}
+# Splitter handle
+def _splitter_handle_style() -> str:
+    t = _tokens()
+    return f"QSplitter::handle {{ background: {t.mid}; }}"
 
-# Status label styles
-OK_STATUS_STYLE = {
-    "dark": "color: #4ec9b0; font-weight: bold;",
-    "light": "color: #218871; font-weight: bold;",
-}
 
-HINT_STATUS_STYLE = {
-    "dark": "color: #808080;",
-    "light": "color: #92898a;",
-}
+# Message dialog (new-chat confirmation) — token-driven, accent focus
+def _message_dialog_style() -> str:
+    t = _tokens()
+    return (
+        f"QMessageBox {{ background: {t.window}; color: {t.text}; }}"
+        f"QPushButton {{ background: {t.button}; color: {t.button_text}; border: 1px solid {t.mid}; "
+        f"border-radius: 4px; padding: 6px 16px; font-size: inherit; min-width: 80px; }}"
+        f"QPushButton:hover {{ background: {t.alt_base}; border-color: {t.accent}; }}"
+        f"QPushButton:pressed {{ background: {t.mid}; }}"
+        f"QPushButton:focus {{ border: 1px solid {t.accent}; }}"
+    )
 
-ERR_STATUS_STYLE = {
-    "dark": "color: #f44747;",
-    "light": "color: #ce4770;",
-}
 
-# Bulk renamer styles moved to ui/theme/widgets_bulk.py
-# Agent-tree styles moved to ui/theme/widgets_agent.py
-# Orchestra/delegation/profiles styles moved to ui/theme/widgets_orchestra.py
-# Mutation/tool-approval styles moved to ui/theme/widgets_mutation.py
-# History navigation strip styles (used by paginated restore in chat_view)
-HISTORY_NAV_FRAME_STYLE = {
-    "dark": (
-        "QFrame#history_nav { background: #252526; border: 1px solid #3c3c3c; border-radius: 4px; padding: 2px 4px; }"
-    ),
-    "light": (
-        "QFrame#history_nav { background: #e8e0d8; border: 1px solid #d2c9c4; border-radius: 4px; padding: 2px 4px; }"
-    ),
-}
+# Error / status labels — semantic tokens
+def _error_label_style() -> str:
+    t = _tokens()
+    return f"color: {t.error};"
 
-HISTORY_NAV_BTN_STYLE = {
-    "dark": (
-        "QPushButton#history_nav_btn { background: #2d2d2d; color: #d4d4d4; "
-        "border: 1px solid #3c3c3c; border-radius: 3px; padding: 2px 10px; "
-        "font-size: inherit; }"
-        "QPushButton#history_nav_btn:hover { background: #3c3c3c; }"
-        "QPushButton#history_nav_btn:pressed { background: #1e1e1e; }"
-        "QPushButton#history_nav_btn:disabled { color: #555; "
-        "background: #252526; border-color: #3c3c3c; }"
-    ),
-    "light": (
-        "QPushButton#history_nav_btn { background: #f0e8e0; color: #2c232e; "
-        "border: 1px solid #d2c9c4; border-radius: 3px; padding: 2px 10px; "
-        "font-size: inherit; }"
-        "QPushButton#history_nav_btn:hover { background: #e8e0d8; }"
-        "QPushButton#history_nav_btn:pressed { background: #d2c9c4; }"
-        "QPushButton#history_nav_btn:disabled { color: #92898a; "
-        "background: #e8e0d8; border-color: #d2c9c4; }"
-    ),
-}
 
-HISTORY_NAV_LABEL_STYLE = {
-    "dark": "color: #808080; font-size: inherit; padding: 0 6px;",
-    "light": "color: #72696d; font-size: inherit; padding: 0 6px;",
-}
+def _ok_status_style() -> str:
+    t = _tokens()
+    return f"color: {t.success}; font-weight: bold;"
 
-# Settings dialog styles
-SETTINGS_BTN_STYLE = {
-    "dark": (
-        "QPushButton { background: #2d2d2d; color: #d4d4d4; border: 1px solid #3c3c3c; "
-        "border-radius: 4px; font-weight: bold; }"
-        "QPushButton:hover { background: #3c3c3c; }"
-    ),
-    "light": (
-        "QPushButton { background: #f0e8e0; color: #2c232e; border: 1px solid #d2c9c4; "
-        "border-radius: 4px; font-weight: bold; }"
-        "QPushButton:hover { background: #e8e0d8; }"
-    ),
-}
+
+def _hint_status_style() -> str:
+    t = _tokens()
+    return f"color: {t.muted_text};"
+
+
+def _err_status_style() -> str:
+    t = _tokens()
+    return f"color: {t.error};"
+
+
+# History navigation strip (paginated restore)
+def _history_nav_frame_style() -> str:
+    t = _tokens()
+    return (
+        f"QFrame#history_nav {{ background: {t.alt_base}; border: 1px solid {t.mid}; "
+        f"border-radius: 4px; padding: 2px 4px; }}"
+    )
+
+
+def _history_nav_button_style() -> str:
+    t = _tokens()
+    return _button_qss(t, t.alt_base, object_name="history_nav_btn") + (
+        f"QPushButton#history_nav_btn:disabled {{ color: {t.muted_text}; "
+        f"background: {t.alt_base}; border-color: {t.mid}; }}"
+    )
+
+
+def _history_nav_label_style() -> str:
+    t = _tokens()
+    return f"color: {t.muted_text}; font-size: inherit; padding: 0 6px;"
+
+
+# Settings button (bold, accent focus)
+def _settings_btn_style() -> str:
+    t = _tokens()
+    return (
+        f"QPushButton {{ background: {t.button}; color: {t.button_text}; border: 1px solid {t.mid}; "
+        f"border-radius: 4px; font-weight: bold; }}"
+        f"QPushButton:hover {{ background: {t.alt_base}; border-color: {t.accent}; }}"
+        f"QPushButton:pressed {{ background: {t.mid}; }}"
+        f"QPushButton:focus {{ border: 1px solid {t.accent}; }}"
+    )
+
+
+# === Public getters (signatures unchanged from the legacy dict version) =====
+
+
+SMALL_BTN_STYLE = {"dark": "", "light": ""}  # legacy shape kept for re-export
+CANCEL_BTN_STYLE = {"dark": "", "light": ""}  # legacy shape kept for re-export
+MODE_BAR_STYLE = {"dark": "", "light": ""}
+TAB_WIDGET_STYLE = {"dark": "", "light": ""}
+TOOLS_PANEL_HEADER_STYLE = {"dark": "", "light": ""}
+PLACEHOLDER_STYLE = {"dark": "", "light": ""}
+TOOLS_PANEL_BTN_STYLE = {"dark": "", "light": ""}
+TOOLS_PANEL_STYLE = {"dark": "", "light": ""}
+ADD_TAB_BTN_STYLE = {"dark": "", "light": ""}
+SPLITTER_HANDLE_STYLE = {"dark": "", "light": ""}
+MESSAGE_DIALOG_STYLE = {"dark": "", "light": ""}
+ERROR_LABEL_STYLE = {"dark": "", "light": ""}
+OK_STATUS_STYLE = {"dark": "", "light": ""}
+HINT_STATUS_STYLE = {"dark": "", "light": ""}
+ERR_STATUS_STYLE = {"dark": "", "light": ""}
+HISTORY_NAV_FRAME_STYLE = {"dark": "", "light": ""}
+HISTORY_NAV_BTN_STYLE = {"dark": "", "light": ""}
+HISTORY_NAV_LABEL_STYLE = {"dark": "", "light": ""}
+SETTINGS_BTN_STYLE = {"dark": "", "light": ""}
 
 
 def get_small_btn_style() -> str:
-    return SMALL_BTN_STYLE[_branch()]
+    return _small_btn_style()
 
 
 def get_cancel_btn_style() -> str:
-    return CANCEL_BTN_STYLE[_branch()]
+    return _cancel_btn_style()
 
 
 def get_mode_bar_style() -> str:
-    return MODE_BAR_STYLE[_branch()]
+    return _mode_bar_style()
 
 
 def get_tab_widget_style() -> str:
-    return TAB_WIDGET_STYLE[_branch()]
+    return _tab_widget_style()
 
 
 def get_tools_panel_header_style() -> str:
-    return TOOLS_PANEL_HEADER_STYLE[_branch()]
+    return _tools_panel_header_style()
 
 
 def get_placeholder_style() -> str:
-    return PLACEHOLDER_STYLE[_branch()]
+    return _placeholder_style()
 
 
 def get_tools_panel_btn_style() -> str:
-    return TOOLS_PANEL_BTN_STYLE[_branch()]
+    return _tools_panel_btn_style()
 
 
 def get_tools_panel_style() -> str:
-    return TOOLS_PANEL_STYLE[_branch()]
+    return _tools_panel_style()
 
 
 def get_add_tab_btn_style() -> str:
-    return ADD_TAB_BTN_STYLE[_branch()]
+    return _add_tab_btn_style()
 
 
 def get_splitter_handle_style() -> str:
-    return SPLITTER_HANDLE_STYLE[_branch()]
+    return _splitter_handle_style()
 
 
 def get_message_dialog_style() -> str:
-    return MESSAGE_DIALOG_STYLE[_branch()]
+    return _message_dialog_style()
 
 
 def get_error_label_style() -> str:
-    return ERROR_LABEL_STYLE[_branch()]
+    return _error_label_style()
 
 
 def get_ok_status_style() -> str:
-    return OK_STATUS_STYLE[_branch()]
+    return _ok_status_style()
 
 
 def get_hint_status_style() -> str:
-    return HINT_STATUS_STYLE[_branch()]
+    return _hint_status_style()
 
 
 def get_err_status_style() -> str:
-    return ERR_STATUS_STYLE[_branch()]
+    return _err_status_style()
 
 
 def get_settings_btn_style() -> str:
-    return SETTINGS_BTN_STYLE[_branch()]
+    return _settings_btn_style()
 
 
 def get_history_nav_frame_style() -> str:
-    return HISTORY_NAV_FRAME_STYLE[_branch()]
+    return _history_nav_frame_style()
 
 
 def get_history_nav_button_style() -> str:
-    return HISTORY_NAV_BTN_STYLE[_branch()]
+    return _history_nav_button_style()
 
 
 def get_history_nav_label_style() -> str:
-    return HISTORY_NAV_LABEL_STYLE[_branch()]
+    return _history_nav_label_style()
 
 
 def get_tool_colors() -> dict[str, str]:

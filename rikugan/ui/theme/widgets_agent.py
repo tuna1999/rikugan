@@ -1,12 +1,19 @@
-"""Agent-tree widget style dicts + getters.
+"""Agent-tree widget style builders + getters (token-driven).
 
-Extracted verbatim from ``rikugan/ui/styles.py`` to shrink that
-mega-module without touching any QSS byte. Each dict carries both its
-``dark`` and ``light`` branches; getters select on the live theme flag
-read lazily from ``styles`` to avoid an import cycle.
+Each builder renders QSS from the live :class:`ThemeTokens` resolved via
+:class:`ThemeManager`. Public getter signatures are unchanged from the
+legacy ``{dark, light}`` dict version. ``AGENT_STATUS_COLORS`` remains a
+branch-keyed dict (consumed as a mapping of status → color).
 """
 
 from __future__ import annotations
+
+
+def _tokens():
+    """Return the live ThemeTokens (lazy import to avoid a cycle)."""
+    from .manager import ThemeManager
+
+    return ThemeManager.instance().tokens()
 
 
 def _branch() -> str:
@@ -16,143 +23,119 @@ def _branch() -> str:
     return "dark" if is_dark_theme() else "light"
 
 
-# Agent tree styles
-AGENT_BTN_STYLE = {
-    "dark": (
-        "QPushButton { background: #2d2d2d; color: #d4d4d4; border: 1px solid #3c3c3c; "
-        "border-radius: 4px; padding: 4px 10px; font-size: inherit; }"
-        "QPushButton:hover { background: #3c3c3c; }"
-        "QPushButton:disabled { color: #555; }"
-    ),
-    "light": (
-        "QPushButton { background: #f0e8e0; color: #2c232e; border: 1px solid #d2c9c4; "
-        "border-radius: 4px; padding: 4px 10px; font-size: inherit; }"
-        "QPushButton:hover { background: #e8e0d8; }"
-        "QPushButton:disabled { color: #92898a; }"
-    ),
-}
+# Agent button
+def _agent_btn_style() -> str:
+    t = _tokens()
+    return (
+        f"QPushButton {{ background: {t.button}; color: {t.button_text}; border: 1px solid {t.mid}; "
+        f"border-radius: 4px; padding: 4px 10px; font-size: inherit; }}"
+        f"QPushButton:hover {{ background: {t.alt_base}; border-color: {t.accent}; }}"
+        f"QPushButton:pressed {{ background: {t.mid}; }}"
+        f"QPushButton:focus {{ border: 1px solid {t.accent}; }}"
+        f"QPushButton:disabled {{ color: {t.muted_text}; }}"
+    )
 
-AGENT_TREE_STYLE = {
-    "dark": """
-        QTreeWidget {
-            background: #1e1e1e;
-            color: #d4d4d4;
-            border: 1px solid #3c3c3c;
+
+# Agent tree — selection token unifies list highlight
+def _agent_tree_style() -> str:
+    t = _tokens()
+    return f"""
+        QTreeWidget {{
+            background: {t.base};
+            color: {t.text};
+            border: 1px solid {t.mid};
             font-size: inherit;
-            alternate-background-color: #252525;
-        }
-        QTreeWidget::item {
+            alternate-background-color: {t.alt_base};
+        }}
+        QTreeWidget::item {{
             padding: 2px 4px;
-        }
-        QTreeWidget::item:selected {
-            background: #264f78;
-            color: #ffffff;
-        }
-        QTreeWidget::item:hover {
-            background: #2a2d2e;
-        }
-        QHeaderView::section {
-            background: #2d2d2d;
-            color: #d4d4d4;
-            border: 1px solid #3c3c3c;
+        }}
+        QTreeWidget::item:selected {{
+            background: {t.selection};
+            color: {t.highlight_text};
+        }}
+        QTreeWidget::item:hover {{
+            background: {t.alt_base};
+        }}
+        QHeaderView::section {{
+            background: {t.button};
+            color: {t.text};
+            border: 1px solid {t.mid};
             padding: 3px 6px;
             font-size: inherit;
-        }
-    """,
-    "light": """
-        QTreeWidget {
-            background: #f8efe7;
-            color: #2c232e;
-            border: 1px solid #d2c9c4;
-            font-size: inherit;
-            alternate-background-color: #f0e8e0;
-        }
-        QTreeWidget::item {
-            padding: 2px 4px;
-        }
-        QTreeWidget::item:selected {
-            background: #d7ba7d;
-            color: #2c232e;
-        }
-        QTreeWidget::item:hover {
-            background: #e8e0d8;
-        }
-        QHeaderView::section {
-            background: #e8e0d8;
-            color: #2c232e;
-            border: 1px solid #d2c9c4;
-            padding: 3px 6px;
-            font-size: inherit;
-        }
-    """,
-}
+        }}
+    """
 
-AGENT_COMBO_STYLE = {
-    "dark": (
-        "QComboBox { background: #2d2d2d; color: #d4d4d4; border: 1px solid #3c3c3c; "
-        "border-radius: 4px; padding: 3px 6px; font-size: inherit; }"
-    ),
-    "light": (
-        "QComboBox { background: #f8efe7; color: #2c232e; border: 1px solid #d2c9c4; "
-        "border-radius: 4px; padding: 3px 6px; font-size: inherit; }"
-    ),
-}
 
-AGENT_STATUS_LABEL_STYLE = {
-    "dark": "color: #808080; font-size: inherit;",
-    "light": "color: #92898a; font-size: inherit;",
-}
+def _agent_combo_style() -> str:
+    t = _tokens()
+    return (
+        f"QComboBox {{ background: {t.button}; color: {t.button_text}; border: 1px solid {t.mid}; "
+        f"border-radius: 4px; padding: 3px 6px; font-size: inherit; }}"
+        f"QComboBox:focus {{ border-color: {t.accent}; }}"
+    )
 
-AGENT_PREVIEW_STYLE = {
-    "dark": (
-        "QTextEdit { background: #252525; color: #d4d4d4; border: 1px solid #3c3c3c; "
-        "font-size: inherit; padding: 4px; }"
-    ),
-    "light": (
-        "QTextEdit { background: #f0e8e0; color: #2c232e; border: 1px solid #d2c9c4; "
-        "font-size: inherit; padding: 4px; }"
-    ),
-}
 
-# Agent status colors
+def _agent_status_label_style() -> str:
+    t = _tokens()
+    return f"color: {t.muted_text}; font-size: inherit;"
+
+
+def _agent_preview_style() -> str:
+    t = _tokens()
+    return (
+        f"QTextEdit {{ background: {t.alt_base}; color: {t.text}; border: 1px solid {t.mid}; "
+        f"font-size: inherit; padding: 4px; }}"
+    )
+
+
+# Agent status colors — branch-keyed dict (consumed as a mapping).
 AGENT_STATUS_COLORS = {
     "dark": {
-        "PENDING": "#808080",
+        "PENDING": "#9d9d9d",
         "RUNNING": "#dcdcaa",
         "COMPLETED": "#4ec9b0",
         "FAILED": "#f44747",
-        "CANCELLED": "#808080",
+        "CANCELLED": "#9d9d9d",
     },
     "light": {
-        "PENDING": "#92898a",
-        "RUNNING": "#b16803",
+        "PENDING": "#6e6e6e",
+        "RUNNING": "#9e6a00",
         "COMPLETED": "#218871",
-        "FAILED": "#ce4770",
-        "CANCELLED": "#92898a",
+        "FAILED": "#c42b1c",
+        "CANCELLED": "#6e6e6e",
     },
 }
 
-# Orchestra panel styles
+# Orchestra panel styles moved to ui/theme/widgets_orchestra.py
+
+
+# Legacy dict shapes kept (empty) for re-export compatibility.
+AGENT_BTN_STYLE = {"dark": "", "light": ""}
+AGENT_TREE_STYLE = {"dark": "", "light": ""}
+AGENT_COMBO_STYLE = {"dark": "", "light": ""}
+AGENT_STATUS_LABEL_STYLE = {"dark": "", "light": ""}
+AGENT_PREVIEW_STYLE = {"dark": "", "light": ""}
 
 
 def get_agent_btn_style() -> str:
-    return AGENT_BTN_STYLE[_branch()]
+    return _agent_btn_style()
 
 
 def get_agent_tree_style() -> str:
-    return AGENT_TREE_STYLE[_branch()]
+    return _agent_tree_style()
 
 
 def get_agent_combo_style() -> str:
-    return AGENT_COMBO_STYLE[_branch()]
+    return _agent_combo_style()
 
 
 def get_agent_status_label_style() -> str:
-    return AGENT_STATUS_LABEL_STYLE[_branch()]
+    return _agent_status_label_style()
 
 
 def get_agent_preview_style() -> str:
-    return AGENT_PREVIEW_STYLE[_branch()]
+    return _agent_preview_style()
 
 
 def get_agent_status_colors() -> dict[str, str]:

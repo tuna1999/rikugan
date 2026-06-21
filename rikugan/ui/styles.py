@@ -265,13 +265,13 @@ def maybe_host_stylesheet(css: str, fallback: str = "") -> str:
 
 
 def build_small_button_stylesheet(widget: object, danger: bool = False) -> str:
-    """Build a small-button stylesheet; delegates to the constants above.
+    """Build a small-button stylesheet; delegates to the token-driven getters.
 
     When ``danger=True`` the cancel/remove color palette is used so destructive
     actions (e.g. "Undo All") are visually distinct from regular buttons.
     """
     if danger:
-        return CANCEL_BTN_STYLE["dark" if is_dark_theme() else "light"]
+        return get_cancel_btn_style()
     return get_small_btn_style()
 
 

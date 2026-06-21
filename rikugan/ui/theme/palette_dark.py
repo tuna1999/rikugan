@@ -24,4 +24,10 @@ DARK_TOKENS = ThemeTokens(
     error="#f48771",
     code_text="#d4d4d4",
     code_bg="#1a1a1a",
+    # Interaction (3) — accent navigates/focuses, selection unifies list
+    # highlight (was scattered across #264f78/#2d4a4a/#0e639c), muted_text
+    # is the secondary text tone (was ad-hoc #808080).
+    accent="#569cd6",
+    selection="#264f78",
+    muted_text="#9d9d9d",
 )

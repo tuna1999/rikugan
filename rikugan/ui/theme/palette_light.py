@@ -5,7 +5,7 @@ from __future__ import annotations
 from .tokens import ThemeTokens
 
 LIGHT_TOKENS = ThemeTokens(
-    # QPalette-aligned (12)
+    # QPalette-aligned (12) — cool-neutral (VS Code Light+)
     window="#ffffff",
     window_text="#1e1e1e",
     base="#ffffff",
@@ -24,4 +24,10 @@ LIGHT_TOKENS = ThemeTokens(
     error="#c42b1c",
     code_text="#1e1e1e",
     code_bg="#f3f3f3",
+    # Interaction (3) — accent matches highlight for light (nav/focus),
+    # selection unifies list highlight (was ad-hoc #d7ba7d), muted_text is
+    # the secondary tone (was ad-hoc #92898a which failed 2.81:1 on warm bg).
+    accent="#0066cc",
+    selection="#cce4ff",
+    muted_text="#6e6e6e",
 )

@@ -1,10 +1,14 @@
-"""ThemeMode enum and ThemeTokens dataclass — 17 semantic color keys.
+"""ThemeMode enum and ThemeTokens dataclass — 20 semantic color keys.
 
 The 12 QPalette-aligned keys (window, window_text, base, alt_base, text,
 button, button_text, highlight, highlight_text, mid, light, dark) are
 derived from QPalette in IDA_NATIVE mode and hardcoded in DARK/LIGHT
 modes. The 5 semantic keys (success, warning, error, code_text, code_bg)
-are derived per-theme (no QPalette equivalent).
+are derived per-theme (no QPalette equivalent). The 3 interaction keys
+(accent, selection, muted_text) are widget-facing: accent drives
+navigation/focus affordances (tab underline, focus borders), selection
+unifies list-item highlight backgrounds, and muted_text is the secondary
+text tone for hints/counts/stats.
 """
 
 from __future__ import annotations
@@ -53,7 +57,7 @@ class ThemeMode(str, Enum):
 
 @dataclass(frozen=True)
 class ThemeTokens:
-    """17 semantic color tokens, immutable."""
+    """20 semantic color tokens, immutable."""
 
     # QPalette-aligned (12)
     window: str
@@ -74,6 +78,10 @@ class ThemeTokens:
     error: str
     code_text: str
     code_bg: str
+    # Interaction (3) — widget-facing, unified across widget QSS
+    accent: str
+    selection: str
+    muted_text: str
 
 
 def is_dark_tokens(tokens: ThemeTokens) -> bool:

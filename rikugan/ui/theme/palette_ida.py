@@ -24,6 +24,10 @@ from .tokens import ThemeTokens
 _SUCCESS_BASE = "#4ec9b0"
 _WARNING_BASE = "#dcdcaa"
 _ERROR_BASE = "#f48771"
+# Interaction reference hues — blended toward text like semantic tokens.
+_ACCENT_BASE = "#569cd6"
+_MUTED_DARK = "#9d9d9d"
+_MUTED_LIGHT = "#6e6e6e"
 
 _ROLE_KEYS: list[tuple[Any, str]] = []
 if _HAS_QT and QPalette is not None:
@@ -70,8 +74,36 @@ def _derive_semantic_tokens(qp_colors: dict[str, str]) -> dict[str, str]:
     }
 
 
+def _derive_interaction_tokens(qp_colors: dict[str, str]) -> dict[str, str]:
+    """Derive the 3 interaction tokens from the host QPalette.
+
+    accent: navigation/focus affordance — blend the fixed accent hue toward
+        text so it tracks host luminance (bright host → darker accent).
+    selection: list-item highlight background — use the host Highlight role
+        for dark palettes (already high-contrast) or a tinted blend of the
+        accent toward the window color for light palettes (Highlight is
+        often too saturated for large list areas in light hosts).
+    muted_text: secondary text tone — pick a dark/light reference and blend
+        toward text so it stays readable on both window and alt_base.
+    """
+    text = qp_colors.get("text", "#000000")
+    window = qp_colors.get("window", "#ffffff")
+    highlight = qp_colors.get("highlight", "#0e639c")
+    is_dark = _hex_luminance(window) < 0.5
+
+    muted_ref = _MUTED_DARK if is_dark else _MUTED_LIGHT
+    selection = highlight if is_dark else _blend_hex(_ACCENT_BASE, window, 0.78)
+
+    return {
+        "accent": _blend_hex(_ACCENT_BASE, text, 0.15 if is_dark else 0.35),
+        "selection": selection,
+        "muted_text": _blend_hex(muted_ref, text, 0.2),
+    }
+
+
 def derive_ida_tokens(source: Any) -> ThemeTokens:
     """Build a full ThemeTokens from a QApplication-like `source`."""
     qp = _read_qpalette_colors(source)
     semantic = _derive_semantic_tokens(qp)
-    return ThemeTokens(**qp, **semantic)
+    interaction = _derive_interaction_tokens(qp)
+    return ThemeTokens(**qp, **semantic, **interaction)

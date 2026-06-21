@@ -102,7 +102,7 @@ def _blend_hex(h1: str, h2: str, t: float) -> str:
 
 
 def asdict_fields() -> list[str]:
-    """Return the 17 ThemeTokens field names in declaration order."""
+    """Return the 20 ThemeTokens field names in declaration order."""
     return [
         "window",
         "window_text",
@@ -121,6 +121,9 @@ def asdict_fields() -> list[str]:
         "error",
         "code_text",
         "code_bg",
+        "accent",
+        "selection",
+        "muted_text",
     ]
 
 

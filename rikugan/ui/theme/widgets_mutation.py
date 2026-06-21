@@ -1,12 +1,24 @@
-"""Mutation-log + tool-approval widget style dicts + getters.
+"""Mutation-log + tool-approval widget style builders (token-driven).
 
-Extracted verbatim from ``rikugan/ui/styles.py`` to shrink that
-mega-module without touching any QSS byte. Each dict carries both its
-``dark`` and ``light`` branches; getters select on the live theme flag
-read lazily from ``styles`` to avoid an import cycle.
+Each builder renders QSS from the live :class:`ThemeTokens` resolved via
+:class:`ThemeManager`. Public getter signatures are unchanged from the
+legacy ``{dark, light}`` dict version.
+
+Contrast fixes carried over from the audit:
+- ``TOOL_APPROVAL_DISABLED_BTN_STYLE`` previously used ``#1a5c2d`` bg +
+  ``#808080``/``#92898a`` text (1.87-2.36:1). Disabled state now uses
+  reduced-opacity fill + muted_text, conveying disabled via both color
+  and luminance (not color alone).
 """
 
 from __future__ import annotations
+
+
+def _tokens():
+    """Return the live ThemeTokens (lazy import to avoid a cycle)."""
+    from .manager import ThemeManager
+
+    return ThemeManager.instance().tokens()
 
 
 def _branch() -> str:
@@ -16,191 +28,203 @@ def _branch() -> str:
     return "dark" if is_dark_theme() else "light"
 
 
-MUTATION_INDICATOR_STYLE = {
-    "dark": {
-        "reversible": "color: #4ec9b0; font-size: inherit;",
-        "irreversible": "color: #808080; font-size: inherit;",
-    },
-    "light": {
-        "reversible": "color: #218871; font-size: inherit;",
-        "irreversible": "color: #92898a; font-size: inherit;",
-    },
-}
+# === Mutation log ===========================================================
 
-MUTATION_DESC_STYLE = {
-    "dark": "color: #d4d4d4; font-size: inherit;",
-    "light": "color: #2c232e; font-size: inherit;",
-}
 
-MUTATION_BADGE_STYLE = {
-    "dark": "color: #808080; font-size: inherit; padding: 1px 4px; background: #2d2d2d; border-radius: 3px;",
-    "light": "color: #92898a; font-size: inherit; padding: 1px 4px; background: #e8e0d8; border-radius: 3px;",
-}
+def _mutation_indicator_style(reversible: bool) -> str:
+    t = _tokens()
+    color = t.success if reversible else t.muted_text
+    return f"color: {color}; font-size: inherit;"
 
-MUTATION_UNDO_BTN_STYLE = {
-    "dark": (
-        "QPushButton { color: #4ec9b0; background: #2d2d2d; "
-        "border: 1px solid #4ec9b0; border-radius: 3px; "
-        "padding: 3px 10px; font-size: inherit; }"
-        "QPushButton:hover { background: #3d3d3d; }"
-        "QPushButton:disabled { color: #555; border-color: #555; }"
-    ),
-    "light": (
-        "QPushButton { color: #218871; background: #f8efe7; "
-        "border: 1px solid #218871; border-radius: 3px; "
-        "padding: 3px 10px; font-size: inherit; }"
-        "QPushButton:hover { background: #e8e0d8; }"
-        "QPushButton:disabled { color: #92898a; border-color: #92898a; }"
-    ),
-}
 
-MUTATION_TITLE_STYLE = {
-    "dark": "color: #d4d4d4; font-weight: bold; font-size: inherit;",
-    "light": "color: #2c232e; font-weight: bold; font-size: inherit;",
-}
+def _mutation_desc_style() -> str:
+    t = _tokens()
+    return f"color: {t.text}; font-size: inherit;"
 
-MUTATION_COUNT_STYLE = {
-    "dark": "color: #808080; font-size: inherit;",
-    "light": "color: #92898a; font-size: inherit;",
-}
 
-# Tool approval widget styles
-TOOL_APPROVAL_FRAME_STYLE = {
-    "dark": "QFrame#message_question { border: 1px solid #dcdcaa; border-radius: 6px; background: #2d2d1e; }",
-    "light": "QFrame#message_question { border: 1px solid #b16803; border-radius: 6px; background: #f0e8e0; }",
-}
+def _mutation_badge_style() -> str:
+    t = _tokens()
+    return f"color: {t.muted_text}; font-size: inherit; padding: 1px 4px; background: {t.button}; border-radius: 3px;"
 
-TOOL_APPROVAL_HEADER_STYLE = {
-    "dark": "color: #dcdcaa; font-weight: bold; font-size: inherit;",
-    "light": "color: #b16803; font-weight: bold; font-size: inherit;",
-}
 
-TOOL_APPROVAL_CODE_EDITOR_STYLE = {
-    "dark": (
-        "QPlainTextEdit { "
-        "  color: #d4d4d4; background: #1e1e2e; "
-        "  font-size: inherit; border: 1px solid #3c3c3c; border-radius: 4px; "
-        "  padding: 4px; "
-        "}"
-        "QScrollBar:vertical { width: 8px; background: #1e1e2e; }"
-        "QScrollBar::handle:vertical { background: #3c3c3c; border-radius: 4px; }"
-        "QScrollBar:horizontal { height: 8px; background: #1e1e2e; }"
-        "QScrollBar::handle:horizontal { background: #3c3c3c; border-radius: 4px; }"
-    ),
-    "light": (
-        "QPlainTextEdit { "
-        "  color: #2c232e; background: #f8efe7; "
-        "  font-size: inherit; border: 1px solid #d2c9c4; border-radius: 4px; "
-        "  padding: 4px; "
-        "}"
-        "QScrollBar:vertical { width: 8px; background: #f8efe7; }"
-        "QScrollBar::handle:vertical { background: #d2c9c4; border-radius: 4px; }"
-        "QScrollBar:horizontal { height: 8px; background: #f8efe7; }"
-        "QScrollBar::handle:horizontal { background: #d2c9c4; border-radius: 4px; }"
-    ),
-}
+def _mutation_undo_btn_style() -> str:
+    """Undo button: success outline, accent focus, muted disabled."""
+    t = _tokens()
+    return (
+        f"QPushButton {{ color: {t.success}; background: {t.button}; "
+        f"border: 1px solid {t.success}; border-radius: 3px; "
+        f"padding: 3px 10px; font-size: inherit; }}"
+        f"QPushButton:hover {{ background: {t.alt_base}; }}"
+        f"QPushButton:pressed {{ background: {t.mid}; }}"
+        f"QPushButton:focus {{ border: 1px solid {t.accent}; }}"
+        f"QPushButton:disabled {{ color: {t.muted_text}; border-color: {t.mid}; }}"
+    )
 
-TOOL_APPROVAL_ALLOW_BTN_STYLE = {
-    "dark": (
-        "QToolButton { background: #2ea043; color: #ffffff; border: none; "
-        "border-radius: 4px; padding: 4px 16px; font-size: inherit; font-weight: bold; }"
-        "QToolButton:hover { background: #3fb950; }"
-    ),
-    "light": (
-        "QToolButton { background: #218871; color: #ffffff; border: none; "
-        "border-radius: 4px; padding: 4px 16px; font-size: inherit; font-weight: bold; }"
-        "QToolButton:hover { background: #2ea58a; }"
-    ),
-}
 
-TOOL_APPROVAL_ALWAYS_BTN_STYLE = {
-    "dark": (
-        "QToolButton { background: #1a5c2d; color: #ffffff; border: none; "
-        "border-radius: 4px; padding: 4px 16px; font-size: inherit; font-weight: bold; }"
-        "QToolButton:hover { background: #2ea043; }"
-    ),
-    "light": (
-        "QToolButton { background: #1a5c2d; color: #ffffff; border: none; "
-        "border-radius: 4px; padding: 4px 16px; font-size: inherit; font-weight: bold; }"
-        "QToolButton:hover { background: #218871; }"
-    ),
-}
+def _mutation_title_style() -> str:
+    t = _tokens()
+    return f"color: {t.text}; font-weight: bold; font-size: inherit;"
 
-TOOL_APPROVAL_DENY_BTN_STYLE = {
-    "dark": (
-        "QToolButton { background: #c42b1c; color: #ffffff; border: none; "
-        "border-radius: 4px; padding: 4px 16px; font-size: inherit; font-weight: bold; }"
-        "QToolButton:hover { background: #e04030; }"
-    ),
-    "light": (
-        "QToolButton { background: #c0392b; color: #ffffff; border: none; "
-        "border-radius: 4px; padding: 4px 16px; font-size: inherit; font-weight: bold; }"
-        "QToolButton:hover { background: #d64a3a; }"
-    ),
-}
 
-TOOL_APPROVAL_DISABLED_BTN_STYLE = {
-    "dark": (
-        "QToolButton { background: #1a5c2d; color: #808080; border: none; "
-        "border-radius: 4px; padding: 4px 16px; font-size: inherit; }"
-    ),
-    "light": (
-        "QToolButton { background: #1a5c2d; color: #92898a; border: none; "
-        "border-radius: 4px; padding: 4px 16px; font-size: inherit; }"
-    ),
+def _mutation_count_style() -> str:
+    t = _tokens()
+    return f"color: {t.muted_text}; font-size: inherit;"
+
+
+# === Tool approval ==========================================================
+
+
+def _tool_approval_frame_style() -> str:
+    t = _tokens()
+    return f"QFrame#message_question {{ border: 1px solid {t.warning}; border-radius: 6px; background: {t.code_bg}; }}"
+
+
+def _tool_approval_header_style() -> str:
+    t = _tokens()
+    return f"color: {t.warning}; font-weight: bold; font-size: inherit;"
+
+
+def _tool_approval_code_editor_style() -> str:
+    t = _tokens()
+    return (
+        f"QPlainTextEdit {{ "
+        f"  color: {t.code_text}; background: {t.code_bg}; "
+        f"  font-size: inherit; border: 1px solid {t.mid}; border-radius: 4px; "
+        f"  padding: 4px; "
+        f"}}"
+        f"QScrollBar:vertical {{ width: 8px; background: {t.code_bg}; }}"
+        f"QScrollBar::handle:vertical {{ background: {t.mid}; border-radius: 4px; }}"
+        f"QScrollBar:horizontal {{ height: 8px; background: {t.code_bg}; }}"
+        f"QScrollBar::handle:horizontal {{ background: {t.mid}; border-radius: 4px; }}"
+    )
+
+
+def _tool_approval_allow_btn_style() -> str:
+    t = _tokens()
+    return (
+        f"QToolButton {{ background: {t.success}; color: #ffffff; border: none; "
+        f"border-radius: 4px; padding: 4px 16px; font-size: inherit; font-weight: bold; }}"
+        f"QToolButton:hover {{ background: {t.success}; border: 1px solid {t.accent}; }}"
+        f"QToolButton:pressed {{ background: {t.mid}; color: {t.text}; }}"
+        f"QToolButton:focus {{ border: 1px solid {t.accent}; }}"
+    )
+
+
+def _tool_approval_always_btn_style() -> str:
+    """Always-allow: deeper success tone (a shade darker than Allow) so
+    the two green approval buttons are visually distinct, not a misclick trap."""
+    t = _tokens()
+    # Blend success toward dark for a deeper green that still reads as "allow".
+    from .manager import _blend_hex
+
+    always_bg = _blend_hex(t.success, t.dark, 0.45)
+    return (
+        f"QToolButton {{ background: {always_bg}; color: #ffffff; border: none; "
+        f"border-radius: 4px; padding: 4px 16px; font-size: inherit; font-weight: bold; }}"
+        f"QToolButton:hover {{ background: {t.success}; }}"
+        f"QToolButton:pressed {{ background: {t.mid}; color: {t.text}; }}"
+        f"QToolButton:focus {{ border: 1px solid {t.accent}; }}"
+    )
+
+
+def _tool_approval_deny_btn_style() -> str:
+    t = _tokens()
+    return (
+        f"QToolButton {{ background: {t.error}; color: #ffffff; border: none; "
+        f"border-radius: 4px; padding: 4px 16px; font-size: inherit; font-weight: bold; }}"
+        f"QToolButton:hover {{ background: {t.error}; border: 1px solid {t.accent}; }}"
+        f"QToolButton:pressed {{ background: {t.mid}; color: {t.text}; }}"
+        f"QToolButton:focus {{ border: 1px solid {t.accent}; }}"
+    )
+
+
+def _tool_approval_disabled_btn_style() -> str:
+    """Disabled approval button — reduced-opacity fill + muted text.
+
+    Previously ``#1a5c2d`` bg + ``#808080`` text failed contrast (2.04:1)
+    AND conveyed disabled via color alone. Now: the disabled state is
+    carried by the ``:disabled`` selector (Qt also drops opacity), and the
+    text uses ``muted_text`` so it still reads as "not actionable" without
+    relying on a near-invisible dim green.
+    """
+    t = _tokens()
+    return (
+        f"QToolButton {{ background: {t.button}; color: {t.muted_text}; border: none; "
+        f"border-radius: 4px; padding: 4px 16px; font-size: inherit; }}"
+        f"QToolButton:disabled {{ background: {t.alt_base}; color: {t.muted_text}; "
+        f"border: 1px solid {t.mid}; }}"
+    )
+
+
+# === Public getters (signatures unchanged) ==================================
+
+
+# Legacy dict shapes kept (empty) for re-export compatibility.
+MUTATION_INDICATOR_STYLE: dict = {
+    "dark": {"reversible": "", "irreversible": ""},
+    "light": {"reversible": "", "irreversible": ""},
 }
+MUTATION_DESC_STYLE = {"dark": "", "light": ""}
+MUTATION_BADGE_STYLE = {"dark": "", "light": ""}
+MUTATION_UNDO_BTN_STYLE = {"dark": "", "light": ""}
+MUTATION_TITLE_STYLE = {"dark": "", "light": ""}
+MUTATION_COUNT_STYLE = {"dark": "", "light": ""}
+TOOL_APPROVAL_FRAME_STYLE = {"dark": "", "light": ""}
+TOOL_APPROVAL_HEADER_STYLE = {"dark": "", "light": ""}
+TOOL_APPROVAL_CODE_EDITOR_STYLE = {"dark": "", "light": ""}
+TOOL_APPROVAL_ALLOW_BTN_STYLE = {"dark": "", "light": ""}
+TOOL_APPROVAL_ALWAYS_BTN_STYLE = {"dark": "", "light": ""}
+TOOL_APPROVAL_DENY_BTN_STYLE = {"dark": "", "light": ""}
+TOOL_APPROVAL_DISABLED_BTN_STYLE = {"dark": "", "light": ""}
 
 
 def get_mutation_indicator_style(reversible: bool) -> str:
-    """Mutation indicator style for the current theme + reversibility."""
-    theme = _branch()
-    key = "reversible" if reversible else "irreversible"
-    return MUTATION_INDICATOR_STYLE[theme][key]
+    return _mutation_indicator_style(reversible)
 
 
 def get_mutation_desc_style() -> str:
-    return MUTATION_DESC_STYLE[_branch()]
+    return _mutation_desc_style()
 
 
 def get_mutation_badge_style() -> str:
-    return MUTATION_BADGE_STYLE[_branch()]
+    return _mutation_badge_style()
 
 
 def get_mutation_undo_btn_style() -> str:
-    return MUTATION_UNDO_BTN_STYLE[_branch()]
+    return _mutation_undo_btn_style()
 
 
 def get_mutation_title_style() -> str:
-    return MUTATION_TITLE_STYLE[_branch()]
+    return _mutation_title_style()
 
 
 def get_mutation_count_style() -> str:
-    return MUTATION_COUNT_STYLE[_branch()]
+    return _mutation_count_style()
 
 
 def get_tool_approval_frame_style() -> str:
-    return TOOL_APPROVAL_FRAME_STYLE[_branch()]
+    return _tool_approval_frame_style()
 
 
 def get_tool_approval_header_style() -> str:
-    return TOOL_APPROVAL_HEADER_STYLE[_branch()]
+    return _tool_approval_header_style()
 
 
 def get_tool_approval_code_editor_style() -> str:
-    return TOOL_APPROVAL_CODE_EDITOR_STYLE[_branch()]
+    return _tool_approval_code_editor_style()
 
 
 def get_tool_approval_allow_btn_style() -> str:
-    return TOOL_APPROVAL_ALLOW_BTN_STYLE[_branch()]
+    return _tool_approval_allow_btn_style()
 
 
 def get_tool_approval_always_btn_style() -> str:
-    return TOOL_APPROVAL_ALWAYS_BTN_STYLE[_branch()]
+    return _tool_approval_always_btn_style()
 
 
 def get_tool_approval_deny_btn_style() -> str:
-    return TOOL_APPROVAL_DENY_BTN_STYLE[_branch()]
+    return _tool_approval_deny_btn_style()
 
 
 def get_tool_approval_disabled_btn_style() -> str:
-    return TOOL_APPROVAL_DISABLED_BTN_STYLE[_branch()]
+    return _tool_approval_disabled_btn_style()
