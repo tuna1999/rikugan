@@ -67,7 +67,7 @@ class ExternalAgentRegistry:
                 continue
             try:
                 client = A2AClient(endpoint)
-                cfg = client.discover()
+                cfg = client.discover(endpoint)
                 if cfg is not None:
                     cfg.name = spec.get("name", cfg.name)
                     cfg.model = spec.get("model", cfg.model)
