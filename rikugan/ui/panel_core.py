@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import re
 import threading
 import time
 from collections.abc import Callable
@@ -93,7 +92,6 @@ def _cancel_btn_style() -> str:
         f"border-radius: 6px; padding: 4px; font-size: 11px; }}"
         f"QPushButton:hover {{ background: {danger_hover}; }}"
     )
-
 
 
 class _AddButtonTabBar(QTabBar):
