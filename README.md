@@ -1,10 +1,13 @@
 # Rikugan (六眼)
 
+![Version](https://img.shields.io/badge/version-1.4.0-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+
 A reverse-engineering agent for **IDA Pro** that integrates a multi-provider LLM directly into your analysis UI. This project was vibecoded together with my friend, Claude Code.
 
 ![alt text](assets/ida_showcase.png)
 
-[Documentation](https://rikugan.reversing.codes/docs.html) | [Architecture](https://rikugan.reversing.codes/ARCHITECTURE.html) | [Issues](https://github.com/buzzer-re/Rikugan/issues)
+[Documentation](https://rikugan.reversing.codes/docs.html) | [Architecture](https://rikugan.reversing.codes/ARCHITECTURE.html) | [Changelog](CHANGELOG.md) | [Issues](https://github.com/buzzer-re/Rikugan/issues)
 
 ## Install
 
