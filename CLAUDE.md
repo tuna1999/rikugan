@@ -8,6 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 > - [AGENTS.md](AGENTS.md) — quy tắc phát triển, cách thêm tools/skills, IDA API notes
 > - [ARCHITECTURE.md](ARCHITECTURE.md) — sơ đồ luồng dữ liệu, TurnEvent system, subagent model
 > - [DEVELOPMENT.md](DEVELOPMENT.md) — hướng dẫn cho người đóng góp, branch workflow
+> - [CHANGELOG.md](CHANGELOG.md) — release notes theo từng version (khi debug regression)
 > - [llms.txt](llms.txt) — bản tóm tắt tối giản phù hợp làm context cho LLM khác
 
 ---
@@ -126,6 +127,7 @@ Fork này dùng `master` làm branch chính (không có `dev`/`main` như upstre
 - **`core/`** chứa config, errors, sanitization, thread-safety helpers, host context
 - **`providers/`** — Anthropic, OpenAI, Gemini, Ollama, MiniMax, Codex, OpenAI-compat; mọi provider implement `LLMProvider` ABC
 - **`headless/`** + **`control/`** — utilities cho headless execution, HTTP control server (stdlib `ThreadingHTTPServer`)
+- **`agent/pseudo_tool_schemas.py`** + **`agent/orchestra/`** — synthetic tool schemas + multi-agent orchestration pipeline (khi trace tool dispatch cho subagent)
 
 ### TurnEvent stream (huyết mạch giao tiếp)
 
@@ -247,7 +249,7 @@ def my_tool(address: Annotated[str, "Target address (hex)"]) -> str:
     return f"Jumped to 0x{ea:x}"
 ```
 
-Rồi thêm module vào `_TOOL_MODULES` trong `rikugan/ida/tools/registry.py`. Nếu `mutating=True`, **bắt buộc** thêm `build_reverse_record` + `capture_pre_state` vào `rikugan/agent/mutation.py`.
+Rồi thêm module vào `_BOOT_TOOL_MODULES` trong `rikugan/ida/tools/registry.py`. Nếu `mutating=True`, **bắt buộc** thêm `build_reverse_record` + `capture_pre_state` vào `rikugan/agent/mutation.py`.
 
 ### Skill mới
 
