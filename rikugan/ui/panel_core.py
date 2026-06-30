@@ -1054,6 +1054,17 @@ class RikuganPanelCore(QWidget):
             if self._ui_hooks:
                 self._ui_hooks.unhook()
                 self._ui_hooks = None
+            # Propagate shutdown to the tools panel BEFORE hiding/deleting/
+            # closing it, so its child widgets (e.g. A2ABridgeWidget) get
+            # a chance to cancel in-flight background threads and break
+            # queue / timer references while Python state is still
+            # coherent.  Without this, runners keep running across
+            # teardown and may dereference disposed widgets.
+            if tools_panel is not None and hasattr(tools_panel, "shutdown"):
+                try:
+                    tools_panel.shutdown()
+                except Exception as e:  # defensive — never block teardown
+                    log_debug(f"tools panel shutdown skipped: {e}")
             if tools_form is not None:
                 tools_form.hide()
                 # In IDA mode, hide() orphans the tools widget via

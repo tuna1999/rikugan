@@ -202,24 +202,37 @@ class A2ADispatcher:
             for event in self._get_subprocess_bridge().run_task(
                 agent, task, timeout=self._timeout, cancel_event=cancel_event
             ):
+                # Terminal error events from the bridge — surface as a
+                # single TurnEvent.error_event and stop. We must NOT
+                # fall through to ``_translate_subprocess_event`` and
+                # silently keep the previous ``last_text`` as the
+                # return value, because that path was the original bug
+                # that hid subprocess failures from the caller.
+                if event.type == "error":
+                    yield TurnEvent.error_event(event.text or "External agent error")
+                    return ""
+                if event.type == "cancelled":
+                    msg = event.text or "Task cancelled by user"
+                    yield TurnEvent.error_event(msg)
+                    return ""
+
                 translated = self._translate_subprocess_event(agent, event)
-                # ``_translate_subprocess_event`` returns "" for
-                # events the caller has already turned into an
-                # error message (cancelled / error). Don't overwrite
-                # ``last_text`` with "" in that case — the previous
-                # completed-event text is the correct return value.
-                if translated:
-                    last_text = translated
-                    yield TurnEvent(
-                        type=TurnEventType.TEXT_DELTA,
-                        text=translated,
-                        tool_name="delegate_external_task",
-                        metadata={
-                            "agent": agent.name,
-                            "transport": agent.transport,
-                            "event_type": event.type,
-                        },
-                    )
+                if translated is None:
+                    # Unknown event type — ignore it but keep the loop
+                    # running so we still observe the final ``completed``
+                    # marker from the bridge.
+                    continue
+                last_text = translated
+                yield TurnEvent(
+                    type=TurnEventType.TEXT_DELTA,
+                    text=translated,
+                    tool_name="delegate_external_task",
+                    metadata={
+                        "agent": agent.name,
+                        "transport": agent.transport,
+                        "event_type": event.type,
+                    },
+                )
         except ValueError as e:
             # _validate_task in _build_command raises ValueError on
             # argv-injection-shaped tasks. Surface as a clear error
@@ -302,19 +315,20 @@ class A2ADispatcher:
 
     @staticmethod
     def _translate_subprocess_event(agent: ExternalAgentConfig, event: A2AEvent) -> str | None:
-        """Map a SubprocessBridge event to user-facing text.
+        """Map a SubprocessBridge stdout/completed event to user-facing text.
 
-        Returns None for events that should not be surfaced (cancelled
-        and error events are translated by the caller into a single
-        error TurnEvent).
+        Returns ``None`` for event types that the caller does not want
+        surfaced as a ``TEXT_DELTA`` (currently just unknown types).
+        ``"error"`` and ``"cancelled"`` events are intercepted directly
+        in ``_run_subprocess`` and converted to ``TurnEvent.error_event``
+        calls — they never reach this helper, so this function does
+        not need a special case for them anymore.
         """
         if event.type == "stdout":
             return event.text
         if event.type == "completed":
             return event.text  # JSON-parsed result line
-        # 'error' and 'cancelled' are handled by the caller — the
-        # SubprocessBridge already yielded the final state to stdout,
-        # so re-emitting would double up.
+        # Unknown event type — let the caller decide what to do.
         return None
 
     @staticmethod
