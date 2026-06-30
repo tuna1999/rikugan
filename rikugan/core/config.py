@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from .profile import AnalysisProfile
 
 from ..constants import (
+    CACHE_DIR_NAME,
     CONFIG_DIR_NAME,
     CONFIG_FILE_NAME,
     CONFIG_SCHEMA_VERSION,
@@ -136,6 +137,11 @@ class RikuganConfig:
     @property
     def mcp_config_path(self) -> str:
         return os.path.join(self._config_dir, MCP_CONFIG_FILE)
+
+    @property
+    def cache_dir(self) -> str:
+        """Directory for Rikugan-managed persistent caches (e.g. raw string cache)."""
+        return os.path.join(self._config_dir, CACHE_DIR_NAME)
 
     def validate(self) -> list[str]:
         """Validate config values. Returns list of error messages (empty = valid)."""

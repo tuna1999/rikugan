@@ -14,6 +14,9 @@ PLUGIN_COMMENT = "Intelligent Reverse-engineering Integrated System"
 CONFIG_DIR_NAME = "rikugan"
 CONFIG_FILE_NAME = "config.json"
 CHECKPOINTS_DIR_NAME = "checkpoints"
+CACHE_DIR_NAME = "cache"
+STRING_CACHE_SCHEMA_VERSION = 1
+STRING_CACHE_BUILD_TIMEOUT = 300.0  # seconds — first-build budget for huge binaries
 
 DEFAULT_MAX_TOKENS = 16384
 DEFAULT_TEMPERATURE = 0.2
