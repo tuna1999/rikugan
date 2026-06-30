@@ -16,6 +16,91 @@ from collections.abc import Callable
 from .host import get_user_config_base_dir
 
 # ---------------------------------------------------------------------------
+# Log-level mapping
+# ---------------------------------------------------------------------------
+
+# Sentinel value used to suppress host output entirely.  Setting a
+# handler's level to ``logging.CRITICAL + 1`` filters out every record
+# (including CRITICAL), while still keeping the handler attached so
+# runtime calls to ``set_host_log_level()`` can re-enable it.
+_OFF_LEVEL = logging.CRITICAL + 1
+
+#: Valid config strings and the ``logging`` levels they map to.
+_LOG_LEVEL_NAMES: dict[str, int] = {
+    "debug": logging.DEBUG,
+    "info": logging.INFO,
+    "warning": logging.WARNING,
+    "error": logging.ERROR,
+    "critical": logging.CRITICAL,
+    "off": _OFF_LEVEL,
+}
+
+#: User-facing labels used by the Settings dialog combo box.  Order is
+#: preserved — first entry is the default.
+LOG_LEVEL_LABELS: list[str] = ["Debug", "Info", "Warning", "Error", "Critical", "Off"]
+
+#: Map combo label → backing config string (all lowercase).
+LOG_LEVEL_LABEL_TO_VALUE: dict[str, str] = {
+    "Debug": "debug",
+    "Info": "info",
+    "Warning": "warning",
+    "Error": "error",
+    "Critical": "critical",
+    "Off": "off",
+}
+
+#: Reverse map used by the Settings dialog to preselect the current value.
+LOG_LEVEL_VALUE_TO_LABEL: dict[str, str] = {v: k for k, v in LOG_LEVEL_LABEL_TO_VALUE.items()}
+
+
+def resolve_log_level(name: str) -> int:
+    """Map a config string (``"warning"``, ``"off"``, …) to a ``logging`` level.
+
+    Unknown / empty values fall back to ``logging.WARNING`` — the safe
+    default that suppresses INFO/DEBUG host spam while still surfacing
+    user-actionable warnings and errors in the Output window.
+    """
+    if not isinstance(name, str):
+        return logging.WARNING
+    return _LOG_LEVEL_NAMES.get(name.strip().lower(), logging.WARNING)
+
+
+def _read_configured_host_level() -> int:
+    """Read ``ida_output_log_level`` from the saved config without
+    forcing an import cycle through ``core.logging`` → ``core.config``.
+
+    ``core.config`` imports ``log_error`` from ``core.logging``, so we
+    defer the import to here and fall back to ``WARNING`` on any failure.
+    """
+    try:
+        from .config import RikuganConfig
+    except Exception:
+        return logging.WARNING
+    try:
+        cfg = RikuganConfig.load_or_create()
+    except Exception:
+        return logging.WARNING
+    return resolve_log_level(getattr(cfg, "ida_output_log_level", "warning"))
+
+
+def set_host_log_level(level_name: str) -> int:
+    """Apply *level_name* to every ``HostOutputHandler`` already attached
+    to the ``Rikugan`` logger.  Returns the resolved ``logging`` level.
+
+    Safe to call before ``get_logger()`` has been invoked — the change is
+    then applied lazily on the next ``get_logger()`` call.
+    """
+    level = resolve_log_level(level_name)
+    try:
+        logger = logging.getLogger("Rikugan")
+        for h in logger.handlers:
+            if isinstance(h, HostOutputHandler):
+                h.setLevel(level)
+    except Exception:
+        pass
+    return level
+
+# ---------------------------------------------------------------------------
 # Host sink registration
 # ---------------------------------------------------------------------------
 

@@ -89,8 +89,14 @@ class RikuganPlugmod(idaapi.plugmod_t):
         # plugin module itself does NOT import rikugan.* at load time.
         from rikugan.core.startup_timing import (
             complete as _complete_timing,
+        )
+        from rikugan.core.startup_timing import (
             end as _end_phase,
+        )
+        from rikugan.core.startup_timing import (
             flush as _flush_timing,
+        )
+        from rikugan.core.startup_timing import (
             start as _start_phase,
         )
 
@@ -112,6 +118,7 @@ class RikuganPlugmod(idaapi.plugmod_t):
 
                 t_bulk = _start_phase("toggle.bulk_import_all")
                 import pkgutil
+
                 import rikugan
 
                 _imported = 0
@@ -202,7 +209,13 @@ class RikuganPlugin(idaapi.plugin_t):
 
 
 def _log(msg: str) -> None:
-    """Best-effort log to IDA output and debug file.
+    """Best-effort log to the debug file via ``log_trace``.
+
+    Routine bootstrap trace messages are routed through the standard
+    logging subsystem (debug file + JSONL); they do **not** echo into
+    IDA's Output window.  Set ``RIKUGAN_BOOTSTRAP_VERBOSE=1`` to force
+    every bootstrap call to also write to the Output window — useful
+    when debugging plugin-load failures.
 
     Caches the ``log_trace`` callable after the first successful import so
     that repeated ``importlib`` calls are avoided during the tight bootstrap
@@ -210,7 +223,12 @@ def _log(msg: str) -> None:
     suppress further attempts — the import is retried on every call until it
     succeeds.  Only a successful import is cached.
     """
-    idaapi.msg(f"[Rikugan] {msg}\n")
+    verbose = os.environ.get("RIKUGAN_BOOTSTRAP_VERBOSE", "") in ("1", "yes", "true")
+    if verbose:
+        try:
+            idaapi.msg(f"[Rikugan] {msg}\n")
+        except Exception:
+            pass
     cached = getattr(_log, "_cached_log_trace", None)
     if cached is not None:
         try:
@@ -228,5 +246,5 @@ def _log(msg: str) -> None:
         sys.stderr.write(f"[Rikugan] log_trace unavailable during bootstrap: {e}\n")
 
 
-def PLUGIN_ENTRY():  # noqa: N802
+def PLUGIN_ENTRY():
     return RikuganPlugin()

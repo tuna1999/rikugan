@@ -9,6 +9,7 @@ from collections.abc import Callable
 from typing import Any
 
 from ..core.config import RikuganConfig
+from ..core.log_sinks import set_host_log_level
 from ..core.logging import log_debug, log_error
 from ..core.types import ModelInfo
 from ..providers.auth_cache import resolve_auth_cached
@@ -565,6 +566,30 @@ class SettingsDialog(QDialog):
             else "Requires the 'cryptography' package (pip install cryptography)."
         )
         behavior_form.addRow(self._encrypt_keys_cb)
+
+        # --- IDA Output window verbosity ---
+        # Controls which log records appear in IDA's Output window.
+        # Routine INFO/DEBUG chatter is suppressed by default; file and
+        # JSONL logs continue to receive everything (see
+        # ``rikugan_debug.log``).
+        from ..core.log_sinks import LOG_LEVEL_LABELS, LOG_LEVEL_VALUE_TO_LABEL
+
+        self._ida_output_log_combo = QComboBox()
+        self._ida_output_log_combo.setEditable(False)
+        self._ida_output_log_combo.addItems(LOG_LEVEL_LABELS)
+        current_label = LOG_LEVEL_VALUE_TO_LABEL.get(
+            self._config.ida_output_log_level, "Warning"
+        )
+        idx = self._ida_output_log_combo.findText(current_label)
+        if idx >= 0:
+            self._ida_output_log_combo.setCurrentIndex(idx)
+        self._ida_output_log_combo.setToolTip(
+            "Minimum severity shown in IDA's Output window.\n"
+            "'Off' silences Rikugan entirely; full DEBUG output is always "
+            "available in 'rikugan_debug.log' under the Rikugan config "
+            "directory regardless of this setting."
+        )
+        behavior_form.addRow("IDA Output verbosity:", self._ida_output_log_combo)
 
         return behavior_group
 
@@ -1317,6 +1342,21 @@ class SettingsDialog(QDialog):
 
         self._config.encrypt_api_keys = wants_encrypt
         self.encryption_password = password  # consumed by caller's save()
+
+        # --- IDA Output verbosity ---
+        # Apply the live setting so the change takes effect without an
+        # IDA restart.  Config file persistence happens via the caller
+        # (``save()``) after this method returns.
+        if hasattr(self, "_ida_output_log_combo"):
+            from ..core.log_sinks import LOG_LEVEL_LABEL_TO_VALUE
+
+            self._config.ida_output_log_level = LOG_LEVEL_LABEL_TO_VALUE.get(
+                self._ida_output_log_combo.currentText(), "warning"
+            )
+            try:
+                set_host_log_level(self._config.ida_output_log_level)
+            except Exception as e:
+                log_debug(f"set_host_log_level failed: {e}")
 
         # Apply new tab settings — but only for tabs that were
         # actually loaded. The Skills / MCP / Profiles tabs are

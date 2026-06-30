@@ -25,7 +25,10 @@ from .log_sinks import (  # noqa: F401 — re-exported for tests
     _FlushFileHandler,
     _JSONFormatter,
     _log_file_path,
+    _read_configured_host_level,
     register_host_sink,
+    resolve_log_level,
+    set_host_log_level,
 )
 
 _logger: logging.Logger | None = None
@@ -43,9 +46,13 @@ def get_logger() -> logging.Logger:
         datefmt="%H:%M:%S",
     )
 
-    # Host output handler (INFO and above to avoid spamming)
+    # Host output handler — default level is read from the user's
+    # ``ida_output_log_level`` setting (falls back to WARNING so routine
+    # INFO/DEBUG chatter does not spam IDA's Output window).  File and
+    # JSONL handlers below remain at DEBUG/INFO regardless of this setting
+    # so the full diagnostic stream is always recoverable from disk.
     host_handler = HostOutputHandler()
-    host_handler.setLevel(logging.INFO)
+    host_handler.setLevel(_read_configured_host_level())
     host_handler.setFormatter(logging.Formatter("[Rikugan] %(levelname)s: %(message)s"))
     _logger.addHandler(host_handler)
 
