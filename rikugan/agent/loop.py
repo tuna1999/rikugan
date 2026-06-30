@@ -1097,7 +1097,10 @@ class AgentLoop:
         from .modes.research import write_and_review_note
 
         state = self._research_state
-        assert state is not None  # caller ensures state via _ensure_research_state()
+        if state is None:
+            # Invariant: callers route research_note only after _ensure_research_state().
+            # Use an explicit raise instead of assert so the check survives `python -O`.
+            raise RuntimeError("research_note tool called without an active research state")
         genre = tc.arguments.get("genre", "general")
         title = tc.arguments.get("title", "untitled")
         content = tc.arguments.get("content", "")
@@ -1226,12 +1229,12 @@ class AgentLoop:
                         cur = self.tools.execute("get_current_function", {})
                         if cur:
                             ctx_lines.append(f"\n# Current function\n\n{cur}")
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        log_debug(f"research_note current_function context failed: {exc}")
                     context_prefix = "\n\n".join(ctx_lines)
-            except Exception:
+            except Exception as exc:
                 # Context lookup is best-effort — fall back to bare task.
-                pass
+                log_debug(f"research_note context enrichment failed: {exc}")
 
         # Use the agent loop's existing cancel event so a user cancel
         # propagates cleanly into subprocesses and HTTP retry loops.
