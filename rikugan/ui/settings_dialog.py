@@ -567,6 +567,23 @@ class SettingsDialog(QDialog):
         )
         behavior_form.addRow(self._encrypt_keys_cb)
 
+        # --- IDAPython docs-review gate ---
+        self._docs_gate_cb = QCheckBox("Require IDA docs review for complex scripts")
+        self._docs_gate_cb.setChecked(
+            getattr(self._config, "require_ida_docs_for_complex_scripts", True)
+        )
+        self._docs_gate_cb.setToolTip(
+            "When enabled, complex `execute_python` scripts (multi-module, "
+            "mutating, Hex-Rays / types / frames / UI / domain APIs, or any "
+            "script that fails the IDAPython validator) are routed through a "
+            "docs-reviewer subagent before you are asked to approve them. "
+            "The reviewer consults the bundled `ida-scripting` skill and the "
+            "official Hex-Rays docs, and blocks scripts that rely on "
+            "hallucinated APIs. Disable to skip the gate and use the legacy "
+            "fast path."
+        )
+        behavior_form.addRow(self._docs_gate_cb)
+
         # --- IDA Output window verbosity ---
         # Controls which log records appear in IDA's Output window.
         # Routine INFO/DEBUG chatter is suppressed by default; file and
@@ -1305,6 +1322,8 @@ class SettingsDialog(QDialog):
         self._config.font_size_override = self._font_size_spin.value()
         self._config.preserve_context = self._preserve_context_cb.isChecked()
         self._config.oauth_consent_accepted = self._oauth_cb.isChecked()
+        if hasattr(self, "_docs_gate_cb"):
+            self._config.require_ida_docs_for_complex_scripts = self._docs_gate_cb.isChecked()
         # Persist the selected theme.  ``_on_theme_changed`` already
         # wrote it when the user changed the combo, but we re-write
         # here so even users who accepted the dialog without touching
