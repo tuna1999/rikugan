@@ -12,6 +12,7 @@ import traceback
 from collections.abc import Generator
 from typing import Any
 
+from .. import constants
 from ..core.config import RikuganConfig
 from ..core.errors import (
     CancellationError,
@@ -913,7 +914,7 @@ class AgentLoop:
     @staticmethod
     def _describe_tool_call(name: str, args: dict[str, Any]) -> str:
         """Generate a brief human-readable description of what a tool will do."""
-        if name == "execute_python":
+        if name == constants.EXECUTE_PYTHON_TOOL_NAME:
             code = args.get("code", args.get("script", ""))
             lines = code.strip().splitlines()
             if len(lines) <= 3:
@@ -1403,7 +1404,7 @@ class AgentLoop:
             return tr
 
         # execute_python always requires explicit approval
-        if tc.name == "execute_python":
+        if tc.name == constants.EXECUTE_PYTHON_TOOL_NAME:
             approved = yield from self._wait_for_approval(tc)
             if not approved:
                 content = "Tool execution denied by user."
