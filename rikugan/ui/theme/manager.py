@@ -216,7 +216,7 @@ class ThemeManager(QObject):  # type: ignore[misc, valid-type]
         # whose ``connect`` is a no-op, replaced per-instance in
         # ``__init__`` (see below) so that :func:`reset` produces
         # a clean listener list.
-        themeChanged: Any = None  # populated by _make_signal() in __init__
+        themeChanged: Any = None  # populated by _DummySignal() in __init__
 
     _instance: ThemeManager | None = None
 
