@@ -78,13 +78,31 @@ class ToolsPanel(QWidget):
 
         main_layout.addWidget(self._tabs)
 
-    def _replace_tab(self, index: int, widget: QWidget, label: str) -> None:
-        """Replace the widget at the given tab index."""
+    def _replace_tab(self, index: int, widget: QWidget, label: str) -> QWidget | None:
+        """Replace the widget at the given tab index.
+
+        Returns the widget that was previously shown at ``index``
+        (after detaching it from the tab widget) so callers can keep
+        a strong reference if needed. The returned widget has already
+        been removed from the tab and had ``shutdown()`` called on it
+        when applicable, but has NOT been deleted — the caller owns
+        its lifetime after this call.
+        """
         old = self._tabs.widget(index)
         self._tabs.removeTab(index)
         self._tabs.insertTab(index, widget, label)
-        if old is not None and old is not self._a2a_widget:
+        if old is not None and old is not widget:
+            # Shut down the old widget first so any background threads
+            # / timers tied to it stop while the replacement is still
+            # alive. ``hasattr`` keeps the helper robust against plain
+            # placeholder QLabels that do not implement shutdown().
+            if hasattr(old, "shutdown"):
+                try:
+                    old.shutdown()
+                except Exception:  # defensive — teardown must not raise
+                    pass
             old.deleteLater()
+        return old
 
     def set_renamer_widget(self, widget: QWidget) -> None:
         """Replace the Renamer tab content."""
@@ -95,8 +113,14 @@ class ToolsPanel(QWidget):
         self._replace_tab(1, widget, "Agents")
 
     def set_a2a_widget(self, widget: QWidget) -> None:
-        """Replace the A2A tab content (replaces our default bridge)."""
+        """Replace the A2A tab content (replaces our default bridge).
+
+        Also updates ``self._a2a_widget`` so the panel always knows
+        which widget is active in the A2A slot. ``shutdown()`` only
+        needs this when the caller later destroys the panel.
+        """
         self._replace_tab(2, widget, "A2A")
+        self._a2a_widget = widget
 
     def hide_header(self) -> None:
         """Hide the title bar (used when embedded in a dockable form)."""

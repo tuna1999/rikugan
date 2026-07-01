@@ -224,13 +224,6 @@ class RikuganPanel(idaapi.PluginForm):
         # Apply custom font if configured
         self._apply_font_override()
 
-        # Debug: print the actual widget font after all processing
-        _widget_font = self._core.font()
-        ida_kernwin.msg(
-            f"[Rikugan] Widget font: family='{_widget_font.family()}', "
-            f"pointSize={_widget_font.pointSize()}, pixelSize={_widget_font.pixelSize()}\n"
-        )
-
         end("ida_form.on_create_total", t_oncreate)
 
     def _apply_ida_theme(self) -> None:
@@ -463,10 +456,10 @@ class RikuganPanel(idaapi.PluginForm):
             ThemeManager.instance().themeChanged.connect(self._on_theme_changed)
         except Exception as e:
             try:
-                import ida_kernwin
+                from rikugan.core.logging import log_debug
 
-                ida_kernwin.msg(f"[Rikugan] themeChanged subscribe failed: {type(e).__name__}: {e}\n")
-            except Exception as msg_exc:
+                log_debug(f"themeChanged subscribe failed: {type(e).__name__}: {e}")
+            except Exception as msg_exc:  # noqa: BLE001 — best-effort; never block panel creation
                 _log_teardown("themeChanged subscribe fallback log", msg_exc)
 
     def _unsubscribe_theme_changes(self) -> None:
@@ -534,16 +527,24 @@ class RikuganPanel(idaapi.PluginForm):
             self._theme_watcher.start()
         except Exception as e:
             # Watcher is best-effort — never block panel creation on it.
-            import traceback
+            try:
+                from rikugan.core.logging import log_debug
 
-            ida_kernwin.msg(f"[Rikugan] ThemeWatcher init failed: {type(e).__name__}: {e}\n")
+                log_debug(f"ThemeWatcher init failed: {type(e).__name__}: {e}")
+            except Exception:
+                pass
             self._theme_watcher = None
 
     def _apply_font_override(self) -> None:
         """Apply custom font settings via stylesheet so it propagates to all children."""
         config = getattr(self._core, "_config", None)
         if config is None:
-            ida_kernwin.msg("[Rikugan] Font: config is None, skipping override\n")
+            try:
+                from rikugan.core.logging import log_debug
+
+                log_debug("Font: config is None, skipping override")
+            except Exception:
+                pass
             return
 
         font_family = getattr(config, "font_family", "") or ""
@@ -564,7 +565,12 @@ class RikuganPanel(idaapi.PluginForm):
         current = self._core.styleSheet()
         self._core.setStyleSheet(current + "\n" + font_stylesheet)
 
-        ida_kernwin.msg(f"[Rikugan] Font: applied stylesheet font: {font_css}\n")
+        try:
+            from rikugan.core.logging import log_debug
+
+            log_debug(f"Font: applied stylesheet font: {font_css}")
+        except Exception:
+            pass
 
     def OnClose(self, form):
         self.shutdown()

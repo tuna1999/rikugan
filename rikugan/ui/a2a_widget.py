@@ -6,19 +6,28 @@ auto-discovered + user-configured agents, send a task, and review
 the streamed output. The widget is hosted in the existing
 ``RikuganPanelCore`` and runs alongside the chat tabs.
 
-Threading: every delegation runs in its own ``QThread`` (one thread
-per task, not a shared pool) so a long-running subprocess call
-doesn't block the UI. The thread yields events via Qt signals;
-the widget's main thread connects those to UI updates. Cancellation
-is done by a ``threading.Event`` that the worker polls between
-subprocess stdout lines (subprocess transport) or A2A status
-checks (a2a transport).
+Threading: every delegation runs in its own ``threading.Thread``
+(one thread per task, not a shared pool) so a long-running
+subprocess call doesn't block the UI. The thread enqueues plain
+``_A2ATaskEvent`` objects into a ``queue.Queue``; the widget's main
+thread owns a ``QTimer`` that polls each runner's queue and routes
+events to the existing UI handlers. This avoids Qt cross-thread
+signal/slot issues (Shiboken UAF on IDA's Qt binding) and matches
+the queue + polling model used elsewhere in Rikugan
+(``panel_core._poll_events``, ``_poll_tools_events``). Cancellation
+is done by a ``threading.Event`` that the runner passes to the
+dispatcher, which polls it between subprocess stdout lines
+(subprocess transport) or A2A status checks (a2a transport).
 """
 
 from __future__ import annotations
 
+import queue
+import threading
 import time
 import uuid
+from dataclasses import dataclass
+from enum import Enum
 from typing import Any
 
 from ..agent.a2a import A2ADispatcher
@@ -26,6 +35,7 @@ from ..agent.turn import TurnEventType
 from ..core.logging import get_logger
 from .qt_compat import (
     QCheckBox,
+    QColor,
     QComboBox,
     QEvent,
     QGroupBox,
@@ -33,52 +43,113 @@ from .qt_compat import (
     QLabel,
     QListWidget,
     QListWidgetItem,
-    QObject,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QSizePolicy,
+    Qt,
     QTableWidget,
     QTableWidgetItem,
-    QThread,
     QTimer,
     QVBoxLayout,
     QWidget,
     Signal,
 )
 
+# Role constants — store the ExternalAgentConfig on the QListWidgetItem
+# (UserRole) and the task_id on QTableWidgetItem cells (UserRole + 1).
+# We keep a named constant for the +1 offset so the magic number doesn't
+# leak through the file. Both are stable Qt 5 / Qt 6 values; the
+# ``qt_compat`` shim re-exports ``Qt`` from either binding.
+_TASK_ID_ROLE: int = Qt.ItemDataRole.UserRole + 1
+
+# History table column indices. Centralised so a future layout change
+# (e.g. add a "Duration" column) ripples to every handler at once.
+_COL_TIME = 0
+_COL_AGENT = 1
+_COL_TASK = 2
+_COL_STATUS = 3
+_COL_RESULT = 4
+
+# How often the widget polls runner event queues (milliseconds).
+_POLL_INTERVAL_MS = 100
+
+# How many events we drain per runner per poll tick. Bounded so a
+# bursty stream can't stall the main thread.
+_MAX_EVENTS_PER_TICK = 64
+
 logger = get_logger()
 
 # ---------------------------------------------------------------------------
-# Background worker — runs the dispatcher in a separate thread
+# Background task runner — drives a single dispatch call in a thread
 # ---------------------------------------------------------------------------
 
 
-class _A2AWorker(QObject):
-    """QObject worker that drives an A2ADispatcher.run_task iteration.
+class _A2ARunnerEventType(str, Enum):
+    """Renderer-facing event names emitted by ``_A2ATaskRunner``.
 
-    Lives in a worker QThread. Emits Qt signals (one per dispatcher
-    event) so the main thread can update widgets safely without
-    cross-thread Qt access.
-
-    Why one worker per task (not a shared pool): the dispatcher
-    cooperates with the caller's event loop via ``yield from``, so
-    a single ``run_task`` IS a coroutine. Running multiple in one
-    thread would interleave events and complicate the UI mapping
-    back to rows. One thread per task is simpler at the cost of a
-    few extra threads (most users won't fire 5+ concurrent
-    delegations).
+    Using an enum (rather than bare string literals) lets the dispatcher
+    surface the same set of values everywhere they are referenced
+    (runner enqueue, poll dispatcher, terminal-event classification)
+    so a typo becomes a ``NameError`` at import time instead of a
+    silently-dropped event at runtime.
     """
 
-    # signal: task_id, agent_name
-    started = Signal(str, str)
-    # signal: task_id, text
-    output_received = Signal(str, str)
-    # signal: task_id, result_text
-    completed = Signal(str, str)
-    # signal: task_id, error_message
-    failed = Signal(str, str)
-    # signal: task_id
-    cancelled = Signal(str)
+    STARTED = "started"
+    OUTPUT = "output"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+#: Runner events that mean "no more polling needed" for this task.
+#: A terminal event always removes the runner from ``_inflight`` and
+#: stops iterating that runner's queue. The shared reference lets
+#: both the runner (``_run``) and the widget (``_poll_task_events``)
+#: agree on which events close the loop.
+_TERMINAL_RUNNER_EVENTS: frozenset[_A2ARunnerEventType] = frozenset(
+    {
+        _A2ARunnerEventType.COMPLETED,
+        _A2ARunnerEventType.FAILED,
+        _A2ARunnerEventType.CANCELLED,
+    }
+)
+
+
+@dataclass
+class _A2ATaskEvent:
+    """Widget-facing event for one delegation step.
+
+    ``type`` is a ``_A2ARunnerEventType`` member. ``text`` carries the
+    per-type payload (streamed text, final result, or error message).
+    The widget is the only consumer; the dispatcher is unaware of this
+    dataclass.
+    """
+
+    type: _A2ARunnerEventType
+    task_id: str
+    text: str = ""
+
+
+class _A2ATaskRunner:
+    """Runs one ``A2ADispatcher.run_task`` call in a background thread.
+
+    Owns the ``threading.Thread`` + ``threading.Event`` + ``queue.Queue``
+    for a single delegation. The widget enqueues events by appending
+    to ``self.queue``; the poll timer drains the queue on the GUI
+    thread and routes each event to a UI handler.
+
+    Thread safety: the background thread is the only writer to
+    ``self.queue``; the widget is the only reader. ``cancel_event``
+    is shared with the dispatcher, which is documented to be
+    thread-safe (``threading.Event`` is a synchronization primitive).
+
+    Cancellation is encapsulated behind ``cancel()`` and ``is_alive()``
+    so callers never reach into ``self._cancel_event`` / ``self._thread``
+    directly. The widget-side shutdown loop uses ``is_alive()`` to
+    decide whether a runner has actually exited before pruning it
+    from ``_inflight``.
+    """
 
     def __init__(
         self,
@@ -86,49 +157,113 @@ class _A2AWorker(QObject):
         agent_name: str,
         task: str,
         include_context: str,
-        cancel_event: Any,  # threading.Event
+        cancel_event: threading.Event,
         task_id: str,
     ) -> None:
-        super().__init__()
         self._dispatcher = dispatcher
         self._agent_name = agent_name
         self._task = task
         self._include_context = include_context
         self._cancel_event = cancel_event
-        self._task_id = task_id
+        self.task_id = task_id
+        self.queue: queue.Queue[_A2ATaskEvent] = queue.Queue()
+        self._thread = threading.Thread(
+            target=self._run,
+            name=f"a2a-task-{task_id}",
+            daemon=True,
+        )
 
-    def run(self) -> None:
-        """Drive the dispatcher's generator. Emits signals as we go."""
-        self.started.emit(self._task_id, self._agent_name)
+    def start(self) -> None:
+        self._thread.start()
+
+    def cancel(self) -> None:
+        """Signal the dispatcher to abort. Idempotent and thread-safe."""
+        self._cancel_event.set()
+
+    def is_alive(self) -> bool:
+        """True if the background thread is still running."""
+        return self._thread.is_alive()
+
+    def join(self, timeout: float) -> None:
+        """Best-effort join — daemon threads won't block process exit."""
+        self._thread.join(timeout=timeout)
+
+    def _enqueue(self, type_: _A2ARunnerEventType, text: str = "") -> None:
+        self.queue.put(_A2ATaskEvent(type=type_, task_id=self.task_id, text=text))
+
+    def _run(self) -> None:
+        """Background entry point. Runs once; never returns events twice."""
+        self._enqueue(_A2ARunnerEventType.STARTED)
+        gen = self._dispatcher.run_task(
+            self._agent_name,
+            self._task,
+            cancel_event=self._cancel_event,
+            include_context=self._include_context,
+        )
+        result_text = ""
+        terminal_type: _A2ARunnerEventType | None = None
+        terminal_text: str = ""
         try:
-            for event in self._dispatcher.run_task(
-                self._agent_name,
-                self._task,
-                cancel_event=self._cancel_event,
-                include_context=self._include_context,
-            ):
+            while True:
+                try:
+                    event = next(gen)
+                except StopIteration as stop:
+                    # The dispatcher's generator return value IS the
+                    # authoritative final result. A plain ``for`` loop
+                    # would discard this — manual iteration captures it.
+                    result_text = stop.value or ""
+                    break
                 if event.type == TurnEventType.TEXT_DELTA:
-                    self.output_received.emit(self._task_id, event.text or "")
+                    self._enqueue(_A2ARunnerEventType.OUTPUT, event.text or "")
                 elif event.type == TurnEventType.ERROR:
-                    self.failed.emit(self._task_id, event.error or "External agent error")
-                    return
+                    msg = event.error or "External agent error"
+                    # If the cancel event is set, the user cancelled
+                    # the task (the cancel button is the only writer
+                    # in normal operation). A timeout from the
+                    # dispatcher sets the event too, so we
+                    # conservatively classify it as cancelled as
+                    # well — the status text is what the user sees.
+                    if self._cancel_event.is_set():
+                        terminal_type = _A2ARunnerEventType.CANCELLED
+                    else:
+                        terminal_type = _A2ARunnerEventType.FAILED
+                    terminal_text = msg
+                    break
         except Exception as e:
-            self.failed.emit(self._task_id, f"Worker exception: {e}")
-            return
+            terminal_type = _A2ARunnerEventType.FAILED
+            terminal_text = f"Worker exception: {e}"
+        finally:
+            try:
+                gen.close()
+            except Exception:
+                pass
 
-        # The dispatcher's run_task returns the aggregated result as
-        # the generator's return value. We don't have a direct hook
-        # to retrieve it, so we rely on the worker to keep a copy
-        # via the started/output/completed signal stream. To keep
-        # the contract simple, the widget reads the final text from
-        # the last output_received emission.
-        self.completed.emit(self._task_id, "")
+        if terminal_type is not None:
+            self._enqueue(terminal_type, terminal_text)
+        else:
+            self._enqueue(_A2ARunnerEventType.COMPLETED, result_text)
 
 
 # ---------------------------------------------------------------------------
 # History row model — kept as a dict, not a dataclass, to avoid
 # thread-safety concerns with Qt row reads from the main thread.
 # ---------------------------------------------------------------------------
+
+
+class _HistoryStatus(str, Enum):
+    """Lifecycle status for one ``_HistoryRow``.
+
+    Stored on the row and rendered as plain text via ``.value`` so the
+    user sees the same five words the existing string-based code
+    produced. Centralising the vocabulary prevents status strings
+    drifting between ``_on_task_*`` handlers and table renderers.
+    """
+
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class _HistoryRow:
@@ -153,7 +288,7 @@ class _HistoryRow:
         self.task_id = task_id
         self.agent_name = agent_name
         self.task_excerpt = task_excerpt
-        self.status = "queued"
+        self.status: _HistoryStatus = _HistoryStatus.QUEUED
         self.started_at = time.time()
         self.result_text = ""
         self.error_text = ""
@@ -186,10 +321,17 @@ class A2ABridgeWidget(QWidget):
         # task_id → _HistoryRow (only main thread reads/writes)
         self._history: dict[str, _HistoryRow] = {}
 
-        # task_id → (QThread, _A2AWorker, threading.Event). We hold
-        # a strong reference to the thread so it isn't GC'd mid-run.
-        # ``cancel_event`` is the worker's cancel flag.
-        self._inflight: dict[str, tuple[QThread, _A2AWorker, Any]] = {}
+        # task_id → _A2ATaskRunner. The runner owns its own
+        # background thread + cancel event + event queue. We hold
+        # a strong reference so the runner isn't GC'd mid-run.
+        self._inflight: dict[str, _A2ATaskRunner] = {}
+
+        # Poll timer — started on first dispatch, stopped when the
+        # last inflight task completes. Runs on the GUI thread and
+        # is the only path that touches Qt widgets from runner output.
+        self._poll_timer = QTimer(self)
+        self._poll_timer.setInterval(_POLL_INTERVAL_MS)
+        _safe_connect(self._poll_timer, "timeout", self._poll_task_events)
 
         # Top-level layout
         root = QVBoxLayout(self)
@@ -306,6 +448,13 @@ class A2ABridgeWidget(QWidget):
 
         self._history_table = QTableWidget(0, 5)
         self._history_table.setHorizontalHeaderLabels(["Time", "Agent", "Task", "Status", "Result"])
+        # Sanity guard: ``_COL_*`` constants and the header order are
+        # now declared in one block above; if anyone reorders this
+        # header literal and forgets to update the constants, the
+        # column count won't match and the assertion catches it on
+        # widget construction (instead of an IndexError hours later
+        # in the poll loop).
+        assert self._history_table.columnCount() == 5
         # Same QAbstractItemView-via-base-class trick for the
         # ``SelectionBehavior`` and ``EditTrigger`` enums. The qt_stubs
         # only attach them to the base class.
@@ -357,7 +506,7 @@ class A2ABridgeWidget(QWidget):
         for agent in agents:
             label = f"{agent.name}  ({agent.transport})"
             list_item = QListWidgetItem(label)
-            list_item.setData(0x0100, agent)  # Qt.UserRole — store the config
+            list_item.setData(Qt.ItemDataRole.UserRole, agent)  # stash the config
             self._agent_list.addItem(list_item)
             # ``addItem(label, userData=agent)`` is the Qt 5+ form.
             # The qt_stubs only support the no-kwarg form, so use
@@ -382,7 +531,7 @@ class A2ABridgeWidget(QWidget):
 
     def _on_agent_double_clicked(self, item: QListWidgetItem) -> None:
         """Double-click selects the same agent in the delegate combo."""
-        agent = item.data(0x0100)
+        agent = item.data(Qt.ItemDataRole.UserRole)
         if agent is None:
             return
         for i in range(self._target_combo.count()):
@@ -434,7 +583,7 @@ class A2ABridgeWidget(QWidget):
     # -- Send / cancel handlers ---------------------------------------------
 
     def _on_send_clicked(self) -> None:
-        """Spawn a worker thread for the selected agent + task."""
+        """Spawn a runner thread for the selected agent + task."""
         agent = self._lookup_target_agent()
         task_text = self._task_edit.toPlainText().strip()
         if agent is None:
@@ -460,11 +609,8 @@ class A2ABridgeWidget(QWidget):
         self._history[task_id] = row
         self._append_history_row(row)
 
-        # Build cancel event + thread + worker.
-        import threading
-
         cancel_event = threading.Event()
-        worker = _A2AWorker(
+        runner = _A2ATaskRunner(
             self._dispatcher,
             agent.name,
             task_text,
@@ -472,27 +618,19 @@ class A2ABridgeWidget(QWidget):
             cancel_event,
             task_id,
         )
-        thread = QThread(self)
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
+        self._inflight[task_id] = runner
+        runner.start()
 
-        worker.started.connect(self._on_task_started)
-        worker.output_received.connect(self._on_task_output)
-        worker.completed.connect(self._on_task_completed)
-        worker.failed.connect(self._on_task_failed)
-        worker.cancelled.connect(self._on_task_cancelled)
-
-        # Cleanup when the thread finishes. We use a single-shot
-        # connection on ``thread.finished`` so we don't leak refs
-        # — when the thread quits, both the worker and the cancel
-        # event can be released.
-        worker.completed.connect(thread.quit)
-        worker.failed.connect(thread.quit)
-        thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(self._on_thread_finished)
-
-        self._inflight[task_id] = (thread, worker, cancel_event)
-        thread.start()
+        # Start the poll timer if this is the first inflight task.
+        # We keep the timer running while at least one runner is
+        # alive and stop it when the last runner drains, so a
+        # long-lived widget doesn't waste a wakeup every 100ms
+        # for no work.
+        if not self._safe_int(
+            getattr(self._poll_timer, "isActive", lambda: False)(),
+            default=0,
+        ):
+            _safe_call(self._poll_timer, "start")
 
         self.task_dispatched.emit(task_id, agent.name, row.task_excerpt)
 
@@ -501,24 +639,27 @@ class A2ABridgeWidget(QWidget):
         row_idx = self._history_table.currentRow()
         if row_idx < 0:
             return
-        task_id_item = self._history_table.item(row_idx, 0)
+        task_id_item = self._history_table.item(row_idx, _COL_TIME)
         if task_id_item is None:
             return
-        # We stashed the task_id in the first cell's ToolTip rather
-        # than the visible Time text. See ``_append_history_row``.
-        task_id = task_id_item.data(0x0101)  # Qt.UserRole + 1
-        inflight = self._inflight.get(task_id)
-        if inflight is None:
+        # We stashed the task_id in the first cell's UserRole+1 slot.
+        # See ``_append_history_row``.
+        task_id = task_id_item.data(_TASK_ID_ROLE)
+        runner = self._inflight.get(task_id)
+        if runner is None:
             return
-        _thread, _worker, cancel_event = inflight
-        cancel_event.set()
+        # The cancel event is shared with the dispatcher. Setting it
+        # signals the subprocess / HTTP loop to abort on the next
+        # checkpoint. The runner will emit a ``CANCELLED`` event which
+        # the poll timer will route to ``_on_task_cancelled``.
+        runner.cancel()
 
     def _on_view_output_clicked(self) -> None:
         """Open a read-only dialog with the selected row's full output."""
         row_idx = self._history_table.currentRow()
         if row_idx < 0:
             return
-        task_id = self._history_table.item(row_idx, 0).data(0x0101)
+        task_id = self._history_table.item(row_idx, _COL_TIME).data(_TASK_ID_ROLE)
         row = self._history.get(task_id)
         if row is None:
             return
@@ -535,8 +676,6 @@ class A2ABridgeWidget(QWidget):
         except Exception as exc:
             logger.debug("A2A output: _OutputDialog failed", exc_info=exc)
         try:
-            from PySide6.QtWidgets import QMessageBox  # type: ignore[import-not-found]
-
             box = QMessageBox(self)
             box.setWindowTitle(f"{row.agent_name} — output")
             box.setText(row.result_text or row.error_text or "(no output)")
@@ -557,7 +696,7 @@ class A2ABridgeWidget(QWidget):
         row = self._history.get(task_id)
         if row is None:
             return
-        row.status = "running"
+        row.status = _HistoryStatus.RUNNING
         self._update_row_status(row)
 
     def _on_task_output(self, task_id: str, text: str) -> None:
@@ -566,17 +705,27 @@ class A2ABridgeWidget(QWidget):
         if row is None:
             return
         row.result_text += text
-        # Update only the result column to avoid scroll jumping.
-        row_idx = self._find_row_index(task_id)
-        if row_idx >= 0:
-            self._history_table.item(row_idx, 4).setText(self._format_result_excerpt(row.result_text))
+        self._set_result_cell(row)
 
-    def _on_task_completed(self, task_id: str, _result_text: str) -> None:
-        """Task finished successfully."""
+    def _on_task_completed(self, task_id: str, result_text: str) -> None:
+        """Task finished successfully. ``result_text`` is the dispatcher's
+        generator return value, which equals the text of the last
+        ``TEXT_DELTA`` for both subprocess and A2A transports."""
         row = self._history.get(task_id)
         if row is None:
             return
-        row.status = "completed"
+        row.status = _HistoryStatus.COMPLETED
+        # The streamed ``TEXT_DELTA`` events have already been appended
+        # to ``row.result_text`` by ``_on_task_output`` and contain the
+        # full output (raw stdout lines + the final JSON-parsed
+        # result for the subprocess path). Unconditionally overwriting
+        # with ``result_text`` would discard the prior streaming and
+        # regress the pre-fix behavior. Only adopt ``result_text``
+        # when nothing was streamed (defensive — the dispatcher
+        # normally yields at least one ``TEXT_DELTA``).
+        if result_text and not row.result_text:
+            row.result_text = result_text
+            self._set_result_cell(row)
         self._update_row_status(row)
         # The cancel button must be re-evaluated — the task is no
         # longer cancellable.
@@ -586,7 +735,7 @@ class A2ABridgeWidget(QWidget):
         row = self._history.get(task_id)
         if row is None:
             return
-        row.status = "failed"
+        row.status = _HistoryStatus.FAILED
         row.error_text = error
         row.result_text = error
         self._update_row_status(row)
@@ -596,23 +745,57 @@ class A2ABridgeWidget(QWidget):
         row = self._history.get(task_id)
         if row is None:
             return
-        row.status = "cancelled"
+        row.status = _HistoryStatus.CANCELLED
+        # The cancel reason is whatever the dispatcher said; if the
+        # user just hit Cancel, ``error`` is usually empty. Stash
+        # the dispatcher message either way so View Output shows
+        # the most informative string we have.
+        row.error_text = ""  # clear; cancellation isn't a hard error
         self._update_row_status(row)
         self._refresh_button_states()
 
-    def _on_thread_finished(self) -> None:
-        """Called when any inflight thread quits. Cleans up refs.
+    def _poll_task_events(self) -> None:
+        """Drain every inflight runner's event queue (GUI thread).
 
-        QThread.finished doesn't carry the task_id, so we walk the
-        inflight map and drop any threads that aren't running. A
-        small leak: if a thread was already removed from ``_inflight``
-        we miss it. The leak is bounded by the test's lifetime —
-        Python refcount reclaims it as soon as the worker is GC'd.
+        Called by ``self._poll_timer`` every ``_POLL_INTERVAL_MS``.
+        Bounded per-tick drain keeps the UI responsive even under a
+        bursty stream. Terminal events remove the runner from
+        ``_inflight``; the timer is stopped when the last runner
+        finishes so the widget doesn't burn CPU on an idle queue.
         """
         for task_id in list(self._inflight.keys()):
-            thread, _worker, _cancel = self._inflight[task_id]
-            if not thread.isRunning():
-                del self._inflight[task_id]
+            runner = self._inflight.get(task_id)
+            if runner is None:
+                continue
+            for _ in range(_MAX_EVENTS_PER_TICK):
+                try:
+                    event = runner.queue.get_nowait()
+                except queue.Empty:
+                    break
+                self._dispatch_runner_event(event, task_id)
+                if event.type in _TERMINAL_RUNNER_EVENTS:
+                    # The runner is done — drop the reference and
+                    # stop iterating its queue. Other runners are
+                    # drained on the next tick.
+                    self._inflight.pop(task_id, None)
+                    break
+
+        if not self._inflight:
+            _safe_call(self._poll_timer, "stop")
+
+    def _dispatch_runner_event(self, event: _A2ATaskEvent, task_id: str) -> None:
+        """Route one queued event to the appropriate UI handler."""
+        et = event.type
+        if et == _A2ARunnerEventType.STARTED:
+            self._on_task_started(task_id, event.text or "")
+        elif et == _A2ARunnerEventType.OUTPUT:
+            self._on_task_output(task_id, event.text)
+        elif et == _A2ARunnerEventType.COMPLETED:
+            self._on_task_completed(task_id, event.text)
+        elif et == _A2ARunnerEventType.FAILED:
+            self._on_task_failed(task_id, event.text or "External agent error")
+        elif et == _A2ARunnerEventType.CANCELLED:
+            self._on_task_cancelled(task_id)
 
     # -- Table helpers -------------------------------------------------------
 
@@ -620,33 +803,43 @@ class A2ABridgeWidget(QWidget):
         """Insert a new row at the bottom. Stash task_id in cell 0's UserRole+1."""
         self._history_table.insertRow(self._history_table.rowCount())
         row_idx = self._history_table.rowCount() - 1
-        # Time column shows wall clock + stashes task_id in Qt.UserRole+1
-        # so cancel / view handlers can find the row.
+        # Time column shows wall clock + stashes task_id in
+        # ``_TASK_ID_ROLE`` (= UserRole + 1) so cancel / view
+        # handlers can find the row.
         time_item = QTableWidgetItem(time.strftime("%H:%M:%S", time.localtime(row.started_at)))
-        time_item.setData(0x0101, row.task_id)  # Qt.UserRole + 1
-        self._history_table.setItem(row_idx, 0, time_item)
-        self._history_table.setItem(row_idx, 1, QTableWidgetItem(row.agent_name))
-        self._history_table.setItem(row_idx, 2, QTableWidgetItem(row.task_excerpt))
-        self._history_table.setItem(row_idx, 3, QTableWidgetItem(row.status))
-        self._history_table.setItem(row_idx, 4, QTableWidgetItem(""))
+        time_item.setData(_TASK_ID_ROLE, row.task_id)
+        self._history_table.setItem(row_idx, _COL_TIME, time_item)
+        self._history_table.setItem(row_idx, _COL_AGENT, QTableWidgetItem(row.agent_name))
+        self._history_table.setItem(row_idx, _COL_TASK, QTableWidgetItem(row.task_excerpt))
+        self._history_table.setItem(row_idx, _COL_STATUS, QTableWidgetItem(row.status.value))
+        self._history_table.setItem(row_idx, _COL_RESULT, QTableWidgetItem(""))
+
+    def _set_result_cell(self, row: _HistoryRow) -> None:
+        """Update only the result column for ``row`` (avoids scroll jumping)."""
+        row_idx = self._find_row_index(row.task_id)
+        if row_idx < 0:
+            return
+        item = self._history_table.item(row_idx, _COL_RESULT)
+        if item is not None:
+            item.setText(self._format_result_excerpt(row.result_text))
 
     def _update_row_status(self, row: _HistoryRow) -> None:
         row_idx = self._find_row_index(row.task_id)
         if row_idx < 0:
             return
-        status_item = self._history_table.item(row_idx, 3)
-        status_item.setText(row.status)
+        status_item = self._history_table.item(row_idx, _COL_STATUS)
+        # ``row.status`` is a ``_HistoryStatus`` enum; ``.value`` gives
+        # the raw string the user sees in the cell.
+        status_item.setText(row.status.value)
         # Light status coloring: green/grey/red. Wrapped in try/except
         # so the stub environment (which doesn't have QColor) doesn't
         # break the test.
         try:
-            from PySide6.QtGui import QColor  # type: ignore[import-not-found]
-
-            if row.status == "completed":
+            if row.status == _HistoryStatus.COMPLETED:
                 status_item.setForeground(QColor("#3fb950"))
-            elif row.status == "failed":
+            elif row.status == _HistoryStatus.FAILED:
                 status_item.setForeground(QColor("#f85149"))
-            elif row.status == "cancelled":
+            elif row.status == _HistoryStatus.CANCELLED:
                 status_item.setForeground(QColor("#d29922"))
             else:
                 status_item.setForeground(QColor("#8b949e"))
@@ -658,8 +851,8 @@ class A2ABridgeWidget(QWidget):
         # and clamp at 0 to avoid TypeError on ``range()``.
         n = self._safe_int(self._history_table.rowCount(), default=0)
         for i in range(n):
-            item = self._history_table.item(i, 0)
-            if item is not None and item.data(0x0101) == task_id:
+            item = self._history_table.item(i, _COL_TIME)
+            if item is not None and item.data(_TASK_ID_ROLE) == task_id:
                 return i
         return -1
 
@@ -683,7 +876,7 @@ class A2ABridgeWidget(QWidget):
             self._cancel_btn.setEnabled(False)
             self._view_output_btn.setEnabled(False)
             return
-        task_id = self._history_table.item(row_idx, 0).data(0x0101)
+        task_id = self._history_table.item(row_idx, _COL_TIME).data(_TASK_ID_ROLE)
         in_flight = task_id in self._inflight
         self._cancel_btn.setEnabled(in_flight)
         self._view_output_btn.setEnabled(task_id in self._history)
@@ -696,14 +889,47 @@ class A2ABridgeWidget(QWidget):
 
     # -- Cleanup ------------------------------------------------------------
 
+    def closeEvent(self, event: Any) -> None:
+        """Last-resort cleanup hook when the host window closes.
+
+        Panel teardown normally propagates ``shutdown()`` explicitly
+        from ``RikuganPanelCore.shutdown()`` or
+        ``ToolsPanel._replace_tab``, but if the host window is closed
+        by the OS or Qt directly, ``closeEvent`` is the only hook we
+        get. ``shutdown()`` is idempotent so calling it from both
+        paths is safe.
+        """
+        self.shutdown()
+        super().closeEvent(event)
+
     def shutdown(self) -> None:
-        """Cancel all in-flight tasks and wait briefly for threads to exit."""
-        for _task_id, (_thread, _worker, cancel_event) in self._inflight.items():
-            cancel_event.set()
-        for task_id, (thread, _worker, _cancel) in list(self._inflight.items()):
-            thread.quit()
-            thread.wait(2000)  # 2s grace
-            del self._inflight[task_id]
+        """Cancel all in-flight tasks and wait briefly for threads to exit.
+
+        Order of operations matters:
+          1. Stop the poll timer first so the GUI thread doesn't race
+             with our cleanup (e.g. by mutating ``_inflight`` while we
+             iterate it).
+          2. Cancel every runner via its public ``cancel()`` so the
+             dispatcher's subprocess / HTTP loops notice on their
+             next checkpoint.
+          3. ``join`` each runner briefly, then ONLY remove it from
+             ``_inflight`` once the thread is actually dead. A runner
+             whose thread is still alive (slow subprocess shutdown,
+             stuck HTTP retry) stays in ``_inflight``; the daemon
+             flag on the thread keeps the process exit clean, and we
+             at least don't *hide* a live worker from the registry.
+        """
+        _safe_call(self._poll_timer, "stop")
+        for runner in self._inflight.values():
+            runner.cancel()
+        for task_id, runner in list(self._inflight.items()):
+            runner.join(2.0)  # 2s grace
+            if not runner.is_alive():
+                # Thread exited within the grace window — safe to drop.
+                self._inflight.pop(task_id, None)
+            # else: leave the runner registered. The daemon thread
+            # won't block process exit and the dispatcher's cancel
+            # polling will still drain it on its own clock.
 
 
 __all__ = ["A2ABridgeWidget"]

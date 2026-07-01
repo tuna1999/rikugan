@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from .profile import AnalysisProfile
 
 from ..constants import (
+    CACHE_DIR_NAME,
     CONFIG_DIR_NAME,
     CONFIG_FILE_NAME,
     CONFIG_SCHEMA_VERSION,
@@ -109,6 +110,13 @@ class RikuganConfig:
     bulk_renamer_batch_size: int = 10
     bulk_renamer_max_concurrent: int = 3
 
+    # IDA Output window verbosity.  Controls which log records appear in
+    # IDA's Output window via ``HostOutputHandler``.  File and JSON
+    # logging are unaffected — full DEBUG output continues to land in
+    # ``rikugan_debug.log`` and ``rikugan_structured.jsonl``.
+    # Allowed: "debug", "info", "warning", "error", "critical", "off".
+    ida_output_log_level: str = "warning"
+
     # Startup behavior
     # "all"    — restore every saved session for this database (default, preserves existing behavior)
     # "latest" — restore only the most recent session (opt-in, faster)
@@ -137,6 +145,11 @@ class RikuganConfig:
     def mcp_config_path(self) -> str:
         return os.path.join(self._config_dir, MCP_CONFIG_FILE)
 
+    @property
+    def cache_dir(self) -> str:
+        """Directory for Rikugan-managed persistent caches (e.g. raw string cache)."""
+        return os.path.join(self._config_dir, CACHE_DIR_NAME)
+
     def validate(self) -> list[str]:
         """Validate config values. Returns list of error messages (empty = valid)."""
         errors: list[str] = []
@@ -162,6 +175,8 @@ class RikuganConfig:
                     errors.append(f"custom_profiles['{k}'] must be a dict")
         if self.startup_restore_sessions not in ("latest", "all", "none"):
             errors.append(f"startup_restore_sessions '{self.startup_restore_sessions}' must be latest|all|none")
+        if self.ida_output_log_level not in ("debug", "info", "warning", "error", "critical", "off"):
+            errors.append(f"ida_output_log_level '{self.ida_output_log_level}' must be debug|info|warning|error|critical|off")
         return errors
 
     def save(self, password: str = "") -> None:
@@ -177,6 +192,9 @@ class RikuganConfig:
             # Normalize invalid startup_restore_sessions to "all"
             if self.startup_restore_sessions not in ("latest", "all", "none"):
                 self.startup_restore_sessions = "all"
+            # Normalize invalid log verbosity to "warning"
+            if self.ida_output_log_level not in ("debug", "info", "warning", "error", "critical", "off"):
+                self.ida_output_log_level = "warning"
 
         os.makedirs(self._config_dir, exist_ok=True)
         # Snapshot current provider into the providers dict before saving
@@ -249,6 +267,7 @@ class RikuganConfig:
             "startup_restore_sessions",
             "oauth_consent_accepted",
             "encrypt_api_keys",
+            "ida_output_log_level",
         ):
             if k in data:
                 val = data[k]
@@ -262,6 +281,11 @@ class RikuganConfig:
                 # Normalize invalid startup_restore_sessions to "all"
                 if k == "startup_restore_sessions" and val not in ("latest", "all", "none"):
                     val = "all"
+                # Normalize invalid log verbosity to "warning"
+                if k == "ida_output_log_level" and val not in (
+                    "debug", "info", "warning", "error", "critical", "off",
+                ):
+                    val = "warning"
                 setattr(self, k, val)
 
     def has_encrypted_keys(self) -> bool:

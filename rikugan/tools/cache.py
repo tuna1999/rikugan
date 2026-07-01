@@ -10,10 +10,18 @@ from ..core.logging import log_debug
 
 # Tool names whose results are safe to cache (read-only, deterministic
 # for a given binary state).  The IDA registry uses these tool names.
+#
+# Note: ``list_strings`` is intentionally NOT cached here.  It has a
+# ``refresh`` argument that cannot be detected by the argument-keyed
+# :class:`ToolResultCache`, and the persistent raw string cache
+# (``rikugan.tools.string_cache``) is authoritative for it.  Caching the
+# in-memory page here would race with ``refresh_string_cache`` and can
+# return stale pages after the on-disk cache is rebuilt.
+#
+# ``search_strings`` is excluded for the same reason.
 CACHEABLE_TOOLS: frozenset[str] = frozenset(
     {
         "list_functions",
-        "list_strings",
         "get_binary_info",
         "decompile_function",
         "function_xrefs",

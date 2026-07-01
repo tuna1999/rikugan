@@ -212,7 +212,13 @@ class RikuganPlugin(idaapi.plugin_t):
 
 
 def _log(msg: str) -> None:
-    """Best-effort log to IDA output and debug file.
+    """Best-effort log to the debug file via ``log_trace``.
+
+    Routine bootstrap trace messages are routed through the standard
+    logging subsystem (debug file + JSONL); they do **not** echo into
+    IDA's Output window.  Set ``RIKUGAN_BOOTSTRAP_VERBOSE=1`` to force
+    every bootstrap call to also write to the Output window — useful
+    when debugging plugin-load failures.
 
     Caches the ``log_trace`` callable after the first successful import so
     that repeated ``importlib`` calls are avoided during the tight bootstrap
@@ -220,7 +226,12 @@ def _log(msg: str) -> None:
     suppress further attempts — the import is retried on every call until it
     succeeds.  Only a successful import is cached.
     """
-    idaapi.msg(f"[Rikugan] {msg}\n")
+    verbose = os.environ.get("RIKUGAN_BOOTSTRAP_VERBOSE", "") in ("1", "yes", "true")
+    if verbose:
+        try:
+            idaapi.msg(f"[Rikugan] {msg}\n")
+        except Exception:
+            pass
     cached = getattr(_log, "_cached_log_trace", None)
     if cached is not None:
         try:
