@@ -440,13 +440,11 @@ class SessionControllerBase:
         is active so the agent can branch on it.
         """
         try:
-            from ..providers import minimax_provider as _minimax_provider
+            from ..tools import web as _web
 
-            sync = getattr(_minimax_provider, "sync_runtime_config", None)
-            if callable(sync):
-                sync(self.config)
+            _web.set_runtime_config(self.config)
         except Exception as exc:
-            log_debug(f"MiniMax runtime config sync failed: {exc}")
+            log_debug(f"web tool runtime config sync failed: {exc}")
         is_minimax = (self.config.provider.name or "").lower() == "minimax"
         try:
             self.tool_registry.set_capabilities({"minimax_provider": is_minimax})
