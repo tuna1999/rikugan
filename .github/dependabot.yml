@@ -1,0 +1,77 @@
+# Dependabot configuration for Rikugan
+# https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options
+#
+# Strategy:
+#   - Weekly check (low noise; PRs auto-merge after CI passes once approved)
+#   - Runtime deps: hold at minor version (avoid surprise breaking API changes
+#     from anthropic/openai/google-genai — they release majors that need code review)
+#   - Dev tools: allow minor + patch (ruff/mypy/pytest rarely break within minor)
+
+version: 2
+
+updates:
+  # ── pip: runtime + dev deps from pyproject.toml ────────────────────────
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Ho_Chi_Minh"
+    labels: ["dependencies", "pip"]
+    # Group runtime + dev separately so a failing CI on one doesn't block the other.
+    groups:
+      runtime:
+        patterns:
+          - "anthropic"
+          - "openai"
+          - "google-genai"
+          - "mcp"
+          - "ida-domain"
+          - "cryptography"
+          - "html2text"
+        update-types:
+          - "minor"
+          - "patch"
+      dev:
+        patterns:
+          - "ruff"
+          - "mypy"
+          - "pytest"
+          - "pytest-cov"
+          - "desloppify"
+          - "pyside6"
+          - "tomli"
+        update-types:
+          - "minor"
+          - "patch"
+    # Hold major version bumps for review (manual commit) — major upgrades
+    # of anthropic/openai/google-genai often include API shape changes that
+    # need human attention.
+    ignore:
+      - dependency-name: "anthropic"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "openai"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "google-genai"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "mcp"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "cryptography"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "ida-domain"
+        update-types: ["version-update:semver-major"]
+
+  # ── github-actions: keep workflow action versions current ─────────────
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Ho_Chi_Minh"
+    labels: ["dependencies", "github-actions"]
+    groups:
+      actions:
+        patterns:
+          - "*"
