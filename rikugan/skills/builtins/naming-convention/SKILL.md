@@ -11,8 +11,8 @@ triggers:
   - rename variable
   - how to name
   - naming
-  - wrapper
-  - thunk
+  - wrapper name
+  - thunk name
   - unknown function
   - uncertain rename
   - c++ mangling
@@ -27,6 +27,7 @@ allowed_tools:
   - rename_address
   - set_comment
   - set_function_comment
+  - set_function_prototype
   - decompile_function
   - get_decompiler_variables
   - xrefs_to

@@ -270,8 +270,8 @@ class TestBuiltinTriggerMatching(unittest.TestCase):
         """Rename/wrapper/thunk queries must route to naming-convention."""
         for query in (
             "what naming convention should I use for this function",
-            "how should I name this wrapper function",
-            "is this a thunk I should prefix with j_",
+            "how should I pick a wrapper name for this function",
+            "what thunk name should I use when the target is malloc",
             "how to name an unknown function I'm not sure about",
             "naming standard for enum members",
         ):
@@ -291,6 +291,7 @@ class TestBuiltinTriggerMatching(unittest.TestCase):
             "analyze this binary for malware behavior",
             "what does this binary do overall",
             "find all crypto imports in this sample",
+            "explain what this wrapper class does in the codebase",
         ):
             with self.subTest(query=query):
                 # These should NOT resolve to naming-convention.
