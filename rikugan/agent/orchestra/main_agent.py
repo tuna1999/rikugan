@@ -269,6 +269,17 @@ class OrchestraMainAgent:
 
         return deduped
 
+    @staticmethod
+    def _is_error_result(result: str) -> bool:
+        """Detect error results from orchestra tool handlers.
+
+        All orchestra handlers signal errors by returning strings prefixed
+        with 'Error:' or 'Delegation denied'. The dispatch loop uses this
+        single helper to convert a result string into an is_error flag for
+        TurnEvent.tool_result_event.
+        """
+        return result.startswith("Error:") or result.startswith("Delegation denied")
+
     def _handle_delegate_task(self, tc_id: str, args: dict[str, Any]) -> Generator[TurnEvent, None, str]:
         """Handle delegate_task tool call — requires user approval."""
         task = args.get("task", "")
@@ -459,17 +470,17 @@ class OrchestraMainAgent:
 
                 if tool_name == "delegate_task":
                     result = yield from self._handle_delegate_task(tc["id"], tool_args)
-                    is_error = result.startswith("Error:") or result.startswith("Delegation denied")
+                    is_error = self._is_error_result(result)
                     yield TurnEvent.tool_result_event(tc["id"], tool_name, result, is_error)
 
                 elif tool_name == "submit":
                     result = self._handle_submit(tc["id"], tool_args)
-                    is_error = result.startswith("Error:")
+                    is_error = self._is_error_result(result)
                     yield TurnEvent.tool_result_event(tc["id"], tool_name, result, is_error)
 
                 elif tool_name == "complete":
                     result = self._handle_complete(tc["id"], tool_args)
-                    is_error = result.startswith("Error:")
+                    is_error = self._is_error_result(result)
                     yield TurnEvent.tool_result_event(tc["id"], tool_name, result, is_error)
 
                 elif tool_name in self.tools.list_names():
