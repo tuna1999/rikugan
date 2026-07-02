@@ -80,8 +80,18 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
-      - name: Install deps
+      - name: Install dev tools
         run: pip install pytest tomli
+
+      # Tests import rikugan.ui.* which imports PySide6 at module
+      # level (subject to Shiboken UAF on Python 3.13+ — see
+      # rikugan_plugin.py docstring). PySide6 + a subset of runtime
+      # deps are required for the headless tests; the heavy ones
+      # (anthropic, openai, ...) are mock-stubbed via tests/mocks/.
+      - name: Install runtime + test deps
+        run: |
+          pip install -r requirements.txt
+          pip install PySide6
 
       - name: Run tests
         run: python -m pytest tests/ --tb=short -q
@@ -127,12 +137,18 @@ jobs:
 
       - name: Get changed Python files
         id: changed
+        if: github.event_name == 'pull_request'
+        # `github.base_ref` is only populated on pull_request events.
+        # For push events (e.g. direct force-push to master), the diff
+        # against the merge base is undefined, so the security gate is
+        # skipped here and only the objective-score gate above applies.
         run: |
           git diff --name-only origin/${{ github.base_ref }}...HEAD -- '*.py' > /tmp/changed_files.txt
           echo "Changed files:"
           cat /tmp/changed_files.txt
 
       - name: Gate on security findings in changed files
+        if: github.event_name == 'pull_request'
         run: |
           python -c "
           import json, subprocess, sys
