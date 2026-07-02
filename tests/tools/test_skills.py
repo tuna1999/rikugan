@@ -302,6 +302,24 @@ class TestBuiltinTriggerMatching(unittest.TestCase):
                         f"naming-convention stole a general query: {query}",
                     )
 
+    def test_malware_analysis_skill_naming_section_expanded(self):
+        """malware-analysis must carry the full 6-rule naming summary, not just 3."""
+        skill = self.reg.get("malware-analysis")
+        self.assertIsNotNone(skill)
+        body = skill.body
+        self.assertIn("Variables: snake_case", body)
+        self.assertIn("Enums", body)
+        self.assertIn("/naming-convention", body)
+
+    def test_generic_re_skill_naming_section_expanded(self):
+        """generic-re must carry the full 6-rule naming summary, not just 1 line."""
+        skill = self.reg.get("generic-re")
+        self.assertIsNotNone(skill)
+        body = skill.body
+        self.assertIn("Variables: snake_case", body)
+        self.assertIn("Enums", body)
+        self.assertIn("/naming-convention", body)
+
 
 if __name__ == "__main__":
     unittest.main()
