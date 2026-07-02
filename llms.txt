@@ -37,7 +37,6 @@ rikugan/
 ├── skills/         # Skill discovery, loading, 12 built-in skills
 ├── state/          # SessionState, SessionHistory
 ├── ui/             # Shared Qt widgets (PanelCore, ChatView, MutationLogPanel, etc.)
-└── hosts/          # Backward-compat shims
 rikugan_plugin.py           # IDA Pro entry point
 ```
 

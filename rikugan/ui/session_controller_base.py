@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from ..agent.loop import AgentLoop, BackgroundAgentRunner
     from ..agent.turn import TurnEvent
     from ..mcp.manager import MCPManager
+    from ..providers.base import LLMProvider
     from ..providers.registry import ProviderRegistry
     from ..skills.registry import SkillRegistry
     from ..state.history import SessionHistory
@@ -330,8 +331,12 @@ class SessionControllerBase:
     def get_runner(self) -> BackgroundAgentRunner | None:
         return self._runner
 
-    def get_provider(self) -> Any:
-        """Create and return an LLMProvider instance for the current config."""
+    def get_provider(self) -> LLMProvider | None:
+        """Create and return an LLMProvider instance for the current config.
+
+        Returns None when provider construction or ensure_ready fails (failure
+        is logged via ``log_error``); callers must defensively handle this.
+        """
         try:
             return self._create_provider()
         except Exception as e:

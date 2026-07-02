@@ -1105,7 +1105,7 @@ class AgentLoop:
             return tr
 
         # execute_python always requires explicit approval
-        if tc.name == "execute_python":
+        if tc.name == constants.EXECUTE_PYTHON_TOOL_NAME:
             # Docs-review gate: for complex scripts, run a docs reviewer
             # BEFORE the user approval prompt so the user sees a
             # docs-checked script.  Configurable via
