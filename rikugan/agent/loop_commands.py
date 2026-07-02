@@ -155,6 +155,193 @@ def _handle_mcp_command(loop: AgentLoop) -> Generator[TurnEvent, None, None]:
     yield TurnEvent.text_done("\n".join(lines))
 
 
+def _handle_report_command(loop: AgentLoop, raw_scope: str) -> Generator[TurnEvent, None, None]:
+    """Generate a Markdown report from stored knowledge.
+
+    Usage: ``/report`` (default scope: ``full``) or ``/report <scope>``
+    where scope is one of: ``full``, ``executive``, ``technical``,
+    ``iocs``, ``network``.
+    """
+    from ..memory.ingest import make_store
+    from ..memory.report import (
+        SUPPORTED_SCOPES,
+        build_report_context,
+        synthesize_report,
+    )
+
+    if not getattr(loop.config, "knowledge_enabled", True):
+        yield TurnEvent.text_done(
+            "Raw knowledge memory is disabled — re-enable `knowledge_enabled` in config to use `/report`."
+        )
+        return
+
+    idb_path = loop.session.idb_path or ""
+    if not idb_path:
+        yield TurnEvent.text_done("No IDB path is set, so the raw knowledge store is not available.")
+        return
+
+    scope = (raw_scope or "full").strip().lower() or "full"
+    if scope not in SUPPORTED_SCOPES:
+        yield TurnEvent.text_done(f"Unknown report scope: `{scope}`. Supported: {', '.join(SUPPORTED_SCOPES)}.")
+        return
+
+    store, paths = make_store(idb_path)
+    if store is None:
+        yield TurnEvent.text_done("Could not initialize the knowledge store.")
+        return
+
+    # Validate there is something to report *before* the LLM call.
+    try:
+        ctx = build_report_context(store, paths, scope=scope)
+    except Exception as e:
+        yield TurnEvent.error_event(f"Failed to assemble report context: {e}")
+        return
+    if ctx.is_empty():
+        yield TurnEvent.text_done(
+            "No stored knowledge to report. Try running `/research <goal>`, "
+            "`save_memory`, or `exploration_report` first."
+        )
+        return
+
+    provider = getattr(loop, "provider", None)
+    if provider is None:
+        yield TurnEvent.text_done("No LLM provider is configured — cannot synthesize the report.")
+        return
+
+    try:
+        _, report_md, file_path = synthesize_report(
+            store,
+            paths,
+            scope=scope,
+            provider=provider,
+            config=loop.config,
+        )
+    except Exception as e:
+        yield TurnEvent.error_event(f"Report generation failed: {e}")
+        return
+
+    # Return a compact chat message: path + a short preview.
+    preview = report_md
+    if len(preview) > 1500:
+        preview = preview[:1500].rstrip() + "\n…(truncated)…"
+    yield TurnEvent.text_done(
+        f"**Report saved** — `{file_path}`\n\nScope: `{scope}` · "
+        f"Counts: {ctx.counts['memories']} memories · "
+        f"{ctx.counts['entities']} entities · "
+        f"{ctx.counts['relations']} relations · "
+        f"{ctx.counts['notes']} notes\n\n```markdown\n{preview}\n```"
+    )
+
+
+def _handle_knowledge_command(loop: AgentLoop, raw_query: str) -> Generator[TurnEvent, None, None]:
+    """Show knowledge counts or search stored knowledge.
+
+    ``/knowledge`` → counts + most-recent items.
+    ``/knowledge <query>`` → ranked search across memories/entities/relations/notes.
+    """
+    from ..memory.ingest import make_store
+    from ..memory.retrieve import search_all
+
+    if not getattr(loop.config, "knowledge_enabled", True):
+        yield TurnEvent.text_done(
+            "Raw knowledge memory is disabled in settings "
+            "(`knowledge_enabled = False`). Re-enable it in "
+            "`RikuganConfig` to use `/knowledge` and the Knowledge tab."
+        )
+        return
+
+    idb_path = loop.session.idb_path or ""
+    if not idb_path:
+        yield TurnEvent.text_done("No IDB path is set, so the raw knowledge store is not available.")
+        return
+
+    store, paths = make_store(idb_path)
+    if store is None:
+        yield TurnEvent.text_done("Could not initialize the knowledge store.")
+        return
+
+    query = (raw_query or "").strip()
+    counts = store.counts()
+
+    # No query: dump counts + a few of the newest records.
+    if not query:
+        recent = store.list_memories()[-5:][::-1]
+        lines = ["**Knowledge Memory — Overview**", ""]
+        lines.append(
+            f"Counts: {counts['memories']} memories · "
+            f"{counts['entities']} entities · "
+            f"{counts['relations']} relations · "
+            f"{counts['observations']} observations"
+        )
+        lines.append(f"Storage: `{paths.kb_dir}`")
+        if recent:
+            lines.append("")
+            lines.append("Recent memories:")
+            for m in recent:
+                flag = " ✓" if m.verified else ""
+                lines.append(f"- `{m.id}`{flag} — {m.title}")
+        else:
+            lines.append("")
+            lines.append("No memories yet. Use `/research`, `save_memory`, or `exploration_report` to populate.")
+        yield TurnEvent.text_done("\n".join(lines))
+        return
+
+    # Search path
+    try:
+        result = search_all(store, query, max_results=20)
+    except Exception as e:
+        yield TurnEvent.error_event(f"Knowledge search failed: {e}")
+        return
+
+    lines = [f"**Knowledge Search — `{query}`**", ""]
+    lines.append(
+        f"Matched: {len(result['memories'])} memories, "
+        f"{len(result['entities'])} entities, "
+        f"{len(result['relations'])} relations, "
+        f"{len(result['notes'])} note excerpts"
+    )
+
+    if result["memories"]:
+        lines.append("")
+        lines.append("### Memories")
+        for m in result["memories"][:10]:
+            flag = " ✓" if m.verified else ""
+            snippet = (m.content or "").splitlines()[0] if m.content else ""
+            if len(snippet) > 200:
+                snippet = snippet[:200] + "…"
+            lines.append(f"- `{m.id}`{flag} — {m.title}")
+            if snippet:
+                lines.append(f"  {snippet}")
+
+    if result["entities"]:
+        lines.append("")
+        lines.append("### Entities")
+        for e in result["entities"][:10]:
+            addr = f" @ {e.address}" if e.address else ""
+            lines.append(f"- `{e.id}` ({e.type}){addr} — {e.name}")
+
+    if result["relations"]:
+        lines.append("")
+        lines.append("### Relations")
+        for r in result["relations"][:10]:
+            lines.append(f"- `{r.src}` → *{r.predicate}* → `{r.dst}`")
+
+    if result["notes"]:
+        lines.append("")
+        lines.append("### Note excerpts")
+        for n in result["notes"][:3]:
+            excerpt = (n or "").strip()
+            if len(excerpt) > 400:
+                excerpt = excerpt[:400] + "…"
+            lines.append(f"```\n{excerpt}\n```")
+
+    if not any([result["memories"], result["entities"], result["relations"], result["notes"]]):
+        lines.append("")
+        lines.append("No matches. Try a hex address (`0x401000`), a function name, a tag, or a free-text term.")
+
+    yield TurnEvent.text_done("\n".join(lines))
+
+
 def _handle_doctor_command(loop: AgentLoop) -> Generator[TurnEvent, None, None]:
     """Diagnose common setup issues."""
     issues: list[str] = []

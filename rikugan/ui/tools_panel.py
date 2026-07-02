@@ -76,6 +76,14 @@ class ToolsPanel(QWidget):
             self._a2a_widget.setStyleSheet(get_placeholder_style())
         self._tabs.addTab(self._a2a_widget, "A2A")
 
+        # Knowledge tab: lazily filled by panel_core from
+        # ``_ensure_tools_initialized()``. A placeholder keeps the
+        # tab order stable (0=Renamer, 1=Agents, 2=A2A, 3=Knowledge)
+        # so existing ``tab_index=0/1/2`` callers keep working.
+        self._knowledge_widget = QLabel("Knowledge (loading…)")
+        self._knowledge_widget.setStyleSheet(get_placeholder_style())
+        self._tabs.addTab(self._knowledge_widget, "Knowledge")
+
         main_layout.addWidget(self._tabs)
 
     def _replace_tab(self, index: int, widget: QWidget, label: str) -> QWidget | None:
@@ -121,6 +129,16 @@ class ToolsPanel(QWidget):
         """
         self._replace_tab(2, widget, "A2A")
         self._a2a_widget = widget
+
+    def set_knowledge_widget(self, widget: QWidget) -> None:
+        """Replace the Knowledge tab content (4th tab).
+
+        Index 3 must remain stable so :meth:`show_tools_with_renamer`
+        and other ``tab_index=0/1/2`` callers don't shift the Renamer
+        and Agents tabs when Knowledge is added.
+        """
+        self._replace_tab(3, widget, "Knowledge")
+        self._knowledge_widget = widget
 
     def hide_header(self) -> None:
         """Hide the title bar (used when embedded in a dockable form)."""

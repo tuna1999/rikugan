@@ -1298,6 +1298,14 @@ class RikuganPanelCore(QWidget):
         if chat_view is None:
             return
         chat_view.handle_event(event)
+        # Side-effects that don't belong in chat_view: refresh the
+        # Knowledge tab on events that imply the store changed.
+        if event.type in (
+            TurnEventType.RESEARCH_NOTE_SAVED,
+            TurnEventType.EXPLORATION_FINDING,
+            TurnEventType.KNOWLEDGE_RETRIEVED,
+        ):
+            self._on_knowledge_event_refresh(event.type.value)
         if event.usage:
             # Use prompt_tokens from the event directly — session hasn't
             # been updated yet during streaming, so session.last_prompt_tokens
@@ -1524,6 +1532,7 @@ class RikuganPanelCore(QWidget):
 
         from .agent_tree import AgentTreeWidget
         from .bulk_renamer import BulkRenamerWidget
+        from .knowledge_panel import KnowledgePanel
 
         # Agent tree
         self._agent_tree = AgentTreeWidget()
@@ -1541,6 +1550,19 @@ class RikuganPanelCore(QWidget):
         self._bulk_renamer.refresh_requested.connect(self._load_renamer_functions)
         self._tools_panel.set_renamer_widget(self._bulk_renamer)
 
+        # Knowledge panel — wired with config persistence for the
+        # "show retrieved in chat" checkbox and event-driven refresh.
+        self._knowledge_panel = KnowledgePanel()
+        try:
+            self._knowledge_panel.set_show_retrieved(
+                bool(getattr(self._config, "knowledge_show_retrieved_in_chat", False))
+            )
+        except Exception:
+            pass
+        self._knowledge_panel.show_retrieved_changed.connect(self._on_knowledge_show_changed)
+        self._knowledge_panel.refresh_requested.connect(self._refresh_knowledge_panel)
+        self._tools_panel.set_knowledge_widget(self._knowledge_panel)
+
         # Create IDA dockable form wrapper if factory is available
         if self._tools_form_factory is not None and self._tools_form is None:
             self._tools_form = self._tools_form_factory(self._tools_panel)
@@ -1548,6 +1570,7 @@ class RikuganPanelCore(QWidget):
         # Populate bulk renamer with functions from the binary.
         # Defer to next event-loop tick so the panel paints first.
         QTimer.singleShot(0, self._load_renamer_functions)
+        QTimer.singleShot(0, self._refresh_knowledge_panel)
 
         # Start tools polling timer
         self._tools_poll_timer = QTimer(self)
@@ -1941,6 +1964,78 @@ class RikuganPanelCore(QWidget):
             return
         # Submit /undo command through the normal agent path
         self._start_agent(f"/undo {count}")
+
+    # ------------------------------------------------------------------
+    # Knowledge panel wiring
+    # ------------------------------------------------------------------
+
+    def _on_knowledge_show_changed(self, checked: bool) -> None:
+        """Persist the *Show retrieved knowledge in chat* toggle."""
+        try:
+            self._config.knowledge_show_retrieved_in_chat = bool(checked)
+            # Best-effort: don't crash UI if save() fails (e.g. read-only disk).
+            try:
+                self._config.save()
+            except Exception as e:
+                log_debug(f"config save after knowledge toggle failed: {e}")
+        except Exception as e:
+            log_debug(f"knowledge toggle persist failed: {e}")
+
+    def _refresh_knowledge_panel(self) -> None:
+        """Re-populate the Knowledge tab from the current IDB path."""
+        if self._is_shutdown:
+            return
+        panel = getattr(self, "_knowledge_panel", None)
+        if panel is None:
+            return
+
+        idb_path = ""
+        try:
+            idb_path = self._ctrl.session.idb_path if self._ctrl and self._ctrl.session else ""
+        except Exception:
+            idb_path = ""
+
+        if not idb_path:
+            panel.set_disabled_message("No IDB path is set. Open a binary to populate the knowledge store.")
+            return
+
+        try:
+            from ..memory.ingest import make_store
+            from ..memory.notes import list_notes
+
+            store, paths = make_store(idb_path)
+            if store is None or paths is None:
+                panel.set_disabled_message("Could not initialize the knowledge store.")
+                return
+
+            counts = store.counts()
+            panel.set_counts(counts)
+            panel.populate(
+                memories=store.list_memories(),
+                entities=store.list_entities(),
+                relations=store.list_relations(),
+                notes=[
+                    f"{(n.title or os.path.basename(n.path or 'note'))}: {(n.body or '').strip()[:400]}"
+                    for n in list_notes(paths.notes_dir)[:20]
+                ],
+            )
+        except Exception as e:
+            log_debug(f"knowledge panel refresh failed: {e}")
+            panel.set_disabled_message(f"Failed to load knowledge: {e}")
+
+    def _on_knowledge_event_refresh(self, event_type: str) -> None:
+        """Hook for relevant events to nudge the panel to refresh."""
+        # Called from the chat-view dispatch (see below) for events
+        # that imply the store changed: research notes saved, exploration
+        # findings, knowledge-retrieved indicators, report completion.
+        if getattr(self, "_is_shutdown", False):
+            return
+        # Defer to the next event loop tick so we don't compete with
+        # in-flight tool execution for the store's per-file lock.
+        try:
+            QTimer.singleShot(50, self._refresh_knowledge_panel)
+        except Exception:
+            pass
 
     def _set_running(self, running: bool) -> None:
         # Keep input enabled so users can queue follow-up messages while
