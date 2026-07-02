@@ -260,6 +260,48 @@ class TestBuiltinTriggerMatching(unittest.TestCase):
         self.assertIsNotNone(skill)
         self.assertEqual(skill.slug, "vuln-audit")
 
+    def test_naming_convention_skill_discovered(self):
+        """The naming-convention skill must be discoverable with its triggers."""
+        skill = self.reg.get("naming-convention")
+        self.assertIsNotNone(skill, "naming-convention skill not discovered")
+        self.assertGreater(len(skill.triggers), 10, "naming-convention must carry its triggers")
+
+    def test_naming_convention_wins_rename_queries(self):
+        """Rename/wrapper/thunk queries must route to naming-convention."""
+        for query in (
+            "what naming convention should I use for this function",
+            "how should I name this wrapper function",
+            "is this a thunk I should prefix with j_",
+            "how to name an unknown function I'm not sure about",
+            "naming standard for enum members",
+        ):
+            with self.subTest(query=query):
+                skill = self.reg.match_triggers(query)
+                self.assertIsNotNone(skill, f"no match for: {query}")
+                self.assertEqual(
+                    skill.slug,
+                    "naming-convention",
+                    f"expected naming-convention for: {query}",
+                )
+
+    def test_naming_convention_does_not_steal_analysis_queries(self):
+        """naming-convention must not steal general analysis queries that
+        belong to generic-re or malware-analysis."""
+        for query in (
+            "analyze this binary for malware behavior",
+            "what does this binary do overall",
+            "find all crypto imports in this sample",
+        ):
+            with self.subTest(query=query):
+                # These should NOT resolve to naming-convention.
+                skill = self.reg.match_triggers(query)
+                if skill is not None:
+                    self.assertNotEqual(
+                        skill.slug,
+                        "naming-convention",
+                        f"naming-convention stole a general query: {query}",
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()
