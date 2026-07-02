@@ -127,10 +127,7 @@ def list_strings(
         # happens when no IDB identity is available, which is uncommon).
         # Sanitize the untrusted binary strings before returning to the LLM.
         records = list(_iter_ida_strings())
-        rows = [
-            f"  0x{ea:x}  [{length}] {strip_injection_markers(text)}"
-            for (ea, length, text) in records
-        ]
+        rows = [f"  0x{ea:x}  [{length}] {strip_injection_markers(text)}" for (ea, length, text) in records]
         out = format_page(rows, offset=offset, limit=limit, title="Strings")
         out += "\n  (no persistent cache — direct enumeration)"
         return out
@@ -166,17 +163,12 @@ def search_strings(
         results: list[str] = []
         for ea, length, text in _iter_ida_strings():
             if q in text.lower():
-                results.append(
-                    f"  0x{ea:x}  [{length}] {strip_injection_markers(text)}"
-                )
+                results.append(f"  0x{ea:x}  [{length}] {strip_injection_markers(text)}")
                 if len(results) >= limit:
                     break
         if not results:
             return f"No strings matching '{query}'"
-        return (
-            f"Found {len(results)} string(s) (no persistent cache):\n"
-            + "\n".join(results)
-        )
+        return f"Found {len(results)} string(s) (no persistent cache):\n" + "\n".join(results)
 
     results = cache.search(query, limit=limit)
     if not results:
@@ -230,10 +222,7 @@ def refresh_string_cache() -> str:
 
     cache = _ensure_cache(refresh=True)
     if cache is None:
-        return (
-            "Persistent string cache unavailable: no IDB identity. "
-            "Strings will be enumerated directly."
-        )
+        return "Persistent string cache unavailable: no IDB identity. Strings will be enumerated directly."
     return f"String cache rebuilt: {cache.total} strings indexed."
 
 

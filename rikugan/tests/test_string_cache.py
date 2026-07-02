@@ -42,9 +42,7 @@ from rikugan.tools import string_cache
 # ---------------------------------------------------------------------------
 
 
-def _patch_active_key(
-    monkeypatch: pytest.MonkeyPatch, cache_dir: str, cache_key: str
-) -> None:
+def _patch_active_key(monkeypatch: pytest.MonkeyPatch, cache_dir: str, cache_key: str) -> None:
     """Pin the active cache key so tests do not depend on host identity."""
 
     def _resolve() -> tuple[str, str, str]:
@@ -95,18 +93,14 @@ def test_returns_none_when_missing(tmp_path: Any) -> None:
     assert result is None
 
 
-def test_returns_none_for_missing_version_dir(
-    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_returns_none_for_missing_version_dir(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     """Key resolves but no version_dir on disk yet."""
     cache_dir = str(tmp_path)
     _patch_active_key(monkeypatch, cache_dir, "idb-no-such-key")
     assert string_cache.get_existing_string_cache(cache_dir) is None
 
 
-def test_does_not_invoke_records_factory(
-    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_does_not_invoke_records_factory(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     """``get_existing_string_cache`` must not call the records factory or build."""
     cache_dir = str(tmp_path)
     _patch_active_key(monkeypatch, cache_dir, "idb-must-not-build")
@@ -131,9 +125,7 @@ def test_does_not_invoke_records_factory(
     assert len(calls) == 0
 
 
-def test_round_trips_after_build(
-    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_round_trips_after_build(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     """After a build, the read-only helper returns the same index data."""
     cache_dir = str(tmp_path)
     _patch_active_key(monkeypatch, cache_dir, "idb-roundtrip")
@@ -156,9 +148,7 @@ def test_round_trips_after_build(
 # ---------------------------------------------------------------------------
 
 
-def test_tampered_meta_with_wrong_string_count_is_rejected(
-    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_tampered_meta_with_wrong_string_count_is_rejected(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     """``meta.json`` claiming more strings than ``strings.jsonl`` has -> rejected."""
     cache_dir = str(tmp_path)
     _patch_active_key(monkeypatch, cache_dir, "idb-bad-meta")
@@ -177,9 +167,7 @@ def test_tampered_meta_with_wrong_string_count_is_rejected(
     assert string_cache.get_existing_string_cache(cache_dir) is None
 
 
-def test_truncated_strings_jsonl_rejected_when_meta_claims_more(
-    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_truncated_strings_jsonl_rejected_when_meta_claims_more(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     """``strings.jsonl`` with fewer lines than ``meta.json`` claims -> rejected."""
     cache_dir = str(tmp_path)
     _patch_active_key(monkeypatch, cache_dir, "idb-trunc")
@@ -204,9 +192,7 @@ def test_truncated_strings_jsonl_rejected_when_meta_claims_more(
     assert string_cache.get_existing_string_cache(cache_dir) is None
 
 
-def test_oversized_addr_index_rejected(
-    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_oversized_addr_index_rejected(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     """``addr_index.json`` exceeding the byte cap -> ``get_at`` returns None."""
     cache_dir = str(tmp_path)
     _patch_active_key(monkeypatch, cache_dir, "idb-oversize-idx")
@@ -229,9 +215,7 @@ def test_oversized_addr_index_rejected(
     assert fresh.get_at(0x401000) is None
 
 
-def test_oversized_shard_rejected(
-    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_oversized_shard_rejected(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     """Oversize gram shard is skipped instead of loading it into memory."""
     cache_dir = str(tmp_path)
     _patch_active_key(monkeypatch, cache_dir, "idb-oversize-shard")
@@ -255,9 +239,7 @@ def test_oversized_shard_rejected(
 # ---------------------------------------------------------------------------
 
 
-def test_build_sanitizes_stored_text(
-    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_build_sanitizes_stored_text(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     """Stored text in ``strings.jsonl`` is free of injection markers.
 
     ``strip_injection_markers`` replaces known role markers and instruction
@@ -285,9 +267,7 @@ def test_build_sanitizes_stored_text(
     assert "[FILTERED]" in raw
 
 
-def test_get_at_returns_sanitized_text(
-    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_get_at_returns_sanitized_text(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     """``get_at`` never returns text containing injection markers."""
     cache_dir = str(tmp_path)
     _patch_active_key(monkeypatch, cache_dir, "idb-getat-sanitize")
@@ -304,9 +284,7 @@ def test_get_at_returns_sanitized_text(
     assert "[FILTERED]" in rec.text
 
 
-def test_search_returns_sanitized_matches(
-    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_search_returns_sanitized_matches(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     """Search matches must not carry injection markers.
 
     Sanitization happens at build time, so the sanitized token text

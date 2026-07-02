@@ -459,7 +459,7 @@ class RikuganPanel(idaapi.PluginForm):
                 from rikugan.core.logging import log_debug
 
                 log_debug(f"themeChanged subscribe failed: {type(e).__name__}: {e}")
-            except Exception as msg_exc:  # noqa: BLE001 — best-effort; never block panel creation
+            except Exception as msg_exc:
                 _log_teardown("themeChanged subscribe fallback log", msg_exc)
 
     def _unsubscribe_theme_changes(self) -> None:

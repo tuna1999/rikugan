@@ -243,9 +243,7 @@ class TestHostLogLevelRuntime(unittest.TestCase):
 
         from rikugan.core import log_sinks
 
-        with patch.object(
-            log_sinks, "_host_sink", fake_sink, create=True
-        ):
+        with patch.object(log_sinks, "_host_sink", fake_sink, create=True):
             from rikugan.core.log_sinks import set_host_log_level
 
             new_level = set_host_log_level("error")
@@ -354,9 +352,10 @@ class TestBootstrapHostLevel(unittest.TestCase):
         # handler picks up the freshly-written config.
         rikugan_logging._logger = None
 
-        with patch.object(
-            rikugan_logging, "_read_configured_host_level", fake_reader
-        ), patch.object(log_sinks, "_log_file_path", fake_path):
+        with (
+            patch.object(rikugan_logging, "_read_configured_host_level", fake_reader),
+            patch.object(log_sinks, "_log_file_path", fake_path),
+        ):
             logger = rikugan_logging.get_logger()
 
         self._configured_level = configured
@@ -366,9 +365,7 @@ class TestBootstrapHostLevel(unittest.TestCase):
         logger = self._bootstrap_with_level(None)
         from rikugan.core.log_sinks import HostOutputHandler
 
-        host_handlers = [
-            h for h in logger.handlers if isinstance(h, HostOutputHandler)
-        ]
+        host_handlers = [h for h in logger.handlers if isinstance(h, HostOutputHandler)]
         self.assertTrue(host_handlers, "Bootstrap must attach a HostOutputHandler.")
         self.assertEqual(host_handlers[0].level, logging.WARNING)
 

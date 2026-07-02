@@ -238,9 +238,7 @@ def _resolve_call_chain(node: ast.Call) -> list[str] | None:
     return None
 
 
-def _call_is_attribute_of(
-    chain: list[str], imports: dict[str, str], modules: set[str]
-) -> tuple[str, str] | None:
+def _call_is_attribute_of(chain: list[str], imports: dict[str, str], modules: set[str]) -> tuple[str, str] | None:
     """Return ``(module, attr)`` if *chain* ends with a module attribute.
 
     e.g. ``ida_bytes.patch_byte(ea, 0)`` -> ``("ida_bytes", "patch_byte")``.
@@ -347,9 +345,7 @@ def classify_idapython_script(
 
     code_lines = _count_code_lines(source)
     if code_lines > COMPLEX_LINE_THRESHOLD:
-        reasons.append(
-            f"script has {code_lines} non-comment lines (threshold {COMPLEX_LINE_THRESHOLD})"
-        )
+        reasons.append(f"script has {code_lines} non-comment lines (threshold {COMPLEX_LINE_THRESHOLD})")
 
     # AST-based checks.  We fall back to line-count-only on syntax error.
     try:
@@ -358,9 +354,7 @@ def classify_idapython_script(
         # Invalid syntax is already a hard fail inside execute_python;
         # still gate on length so the reviewer can give the agent a
         # better error.
-        return ScriptComplexity(
-            is_complex=bool(reasons), reasons=tuple(reasons)
-        )
+        return ScriptComplexity(is_complex=bool(reasons), reasons=tuple(reasons))
 
     imports_map = _imported_names(tree)
     imported_modules = _imported_modules(tree)
@@ -414,9 +408,7 @@ def classify_idapython_script(
             if attr_info is not None:
                 module, attr = attr_info
                 if module in _HEAVY_MODULES:
-                    reasons.append(
-                        f"uses heavy module {module}.{attr}()"
-                    )
+                    reasons.append(f"uses heavy module {module}.{attr}()")
                 # Mutating calls: either on a known mutating module, or
                 # any ``set_*`` / ``patch_*`` / etc. on any IDA module.
                 if module in _MUTATING_MODULES and _is_mutating_call(attr):
@@ -439,16 +431,11 @@ def classify_idapython_script(
             if h not in seen:
                 seen.add(h)
                 unique.append(h)
-        reasons.append(
-            "calls mutating APIs: " + ", ".join(unique[:5])
-            + (" ..." if len(unique) > 5 else "")
-        )
+        reasons.append("calls mutating APIs: " + ", ".join(unique[:5]) + (" ..." if len(unique) > 5 else ""))
 
     # Module variety heuristic (count heavy + mutating modules used)
     referenced_ida_modules: set[str] = set(ida_modules_used)
-    for chain in (
-        _resolve_call_chain(n) for n in ast.walk(tree) if isinstance(n, ast.Call)
-    ):
+    for chain in (_resolve_call_chain(n) for n in ast.walk(tree) if isinstance(n, ast.Call)):
         if not chain:
             continue
         root = chain[0]
@@ -457,10 +444,7 @@ def classify_idapython_script(
     # De-duplicate attribute-only references via the full chain root
     # (already handled above for the heavy/mutating checks).
     if len(referenced_ida_modules) >= COMPLEX_MODULE_COUNT:
-        reasons.append(
-            f"uses {len(referenced_ida_modules)} IDA modules: "
-            + ", ".join(sorted(referenced_ida_modules))
-        )
+        reasons.append(f"uses {len(referenced_ida_modules)} IDA modules: " + ", ".join(sorted(referenced_ida_modules)))
 
     if _has_user_definitions(tree):
         reasons.append("defines classes or functions (likely helper logic)")
@@ -470,21 +454,13 @@ def classify_idapython_script(
 
     if validation is not None:
         if validation.syntax_error:
-            reasons.append(
-                f"script has a syntax error: {validation.syntax_error}"
-            )
+            reasons.append(f"script has a syntax error: {validation.syntax_error}")
         if validation.is_blocked:
-            reasons.append(
-                f"validator blocked {len(validation.blocked_issues)} hallucinated API(s)"
-            )
+            reasons.append(f"validator blocked {len(validation.blocked_issues)} hallucinated API(s)")
         elif validation.warnings:
-            reasons.append(
-                f"validator flagged {len(validation.warnings)} legacy/warn API(s)"
-            )
+            reasons.append(f"validator flagged {len(validation.warnings)} legacy/warn API(s)")
 
-    return ScriptComplexity(
-        is_complex=bool(reasons), reasons=tuple(reasons)
-    )
+    return ScriptComplexity(is_complex=bool(reasons), reasons=tuple(reasons))
 
 
 __all__ = [

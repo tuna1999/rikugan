@@ -177,7 +177,9 @@ class RikuganConfig:
         if self.startup_restore_sessions not in ("latest", "all", "none"):
             errors.append(f"startup_restore_sessions '{self.startup_restore_sessions}' must be latest|all|none")
         if self.ida_output_log_level not in ("debug", "info", "warning", "error", "critical", "off"):
-            errors.append(f"ida_output_log_level '{self.ida_output_log_level}' must be debug|info|warning|error|critical|off")
+            errors.append(
+                f"ida_output_log_level '{self.ida_output_log_level}' must be debug|info|warning|error|critical|off"
+            )
         return errors
 
     def save(self, password: str = "") -> None:
@@ -285,7 +287,12 @@ class RikuganConfig:
                     val = "all"
                 # Normalize invalid log verbosity to "warning"
                 if k == "ida_output_log_level" and val not in (
-                    "debug", "info", "warning", "error", "critical", "off",
+                    "debug",
+                    "info",
+                    "warning",
+                    "error",
+                    "critical",
+                    "off",
                 ):
                     val = "warning"
                 setattr(self, k, val)

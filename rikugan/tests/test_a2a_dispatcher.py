@@ -69,9 +69,7 @@ class _FakeSubprocessBridge:
         timeout: int = 300,
         cancel_event: Any = None,
     ) -> Generator[A2AEvent, None, str]:
-        self.calls.append(
-            {"agent": agent, "task": task, "timeout": timeout, "cancel_event": cancel_event}
-        )
+        self.calls.append({"agent": agent, "task": task, "timeout": timeout, "cancel_event": cancel_event})
         yield from self._events
         return self._return_value
 
@@ -132,9 +130,7 @@ class TestA2ADispatcherSubprocessFailure(unittest.TestCase):
         dispatcher._subprocess_bridge = bridge  # type: ignore[assignment]
         # ``_find_agent`` calls ``self.discover()``; replacing
         # ``discover`` keeps the registry out of the picture.
-        fake_agent = ExternalAgentConfig(
-            name="fake", transport="subprocess", endpoint="fake"
-        )
+        fake_agent = ExternalAgentConfig(name="fake", transport="subprocess", endpoint="fake")
         dispatcher.discover = lambda: [fake_agent]  # type: ignore[method-assign]
         return dispatcher
 

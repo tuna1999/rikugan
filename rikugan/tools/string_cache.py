@@ -48,22 +48,22 @@ _MAX_VERIFY_CANDIDATES = 200_000
 # Hard bounds applied to on-disk artifacts to prevent tampered/oversized
 # caches from blowing up memory or stalling the agent.  These are read-side
 # limits — they do not affect legitimate caches of any realistic binary.
-_MAX_ADDR_INDEX_ENTRIES = 10_000_000      # 10M addresses
+_MAX_ADDR_INDEX_ENTRIES = 10_000_000  # 10M addresses
 _MAX_ADDR_INDEX_FILE_BYTES = 512 * 1024 * 1024  # 512 MB
 _MAX_SHARD_FILE_BYTES = 256 * 1024 * 1024  # 256 MB per gram shard
-_MAX_SHARD_LINE_BYTES = 4 * 1024 * 1024   # 4 MB per shard line
-_MAX_POSTING_IDS_PER_GRAM = 10_000_000    # 10M ids per trigram posting list
-_MAX_TRIGRAMS_PER_QUERY = 256             # safety cap on the grams set
+_MAX_SHARD_LINE_BYTES = 4 * 1024 * 1024  # 4 MB per shard line
+_MAX_POSTING_IDS_PER_GRAM = 10_000_000  # 10M ids per trigram posting list
+_MAX_TRIGRAMS_PER_QUERY = 256  # safety cap on the grams set
 
 
 @dataclass(frozen=True)
 class StringRecord:
     """In-memory representation of one cached string."""
 
-    i: int           # document id (line index in strings.jsonl)
-    ea: int          # effective address
-    length: int      # original string length as reported by IDA
-    text: str        # the raw string text (already sanitized for cache writes)
+    i: int  # document id (line index in strings.jsonl)
+    ea: int  # effective address
+    length: int  # original string length as reported by IDA
+    text: str  # the raw string text (already sanitized for cache writes)
 
 
 # ---------------------------------------------------------------------------
@@ -359,17 +359,13 @@ class StringCacheIndex:
             # memory; treat oversize as if the gram has no postings.
             try:
                 if os.path.getsize(shard_path) > _MAX_SHARD_FILE_BYTES:
-                    log_warning(
-                        f"StringCacheIndex: skipping oversize shard {shard_path}"
-                    )
+                    log_warning(f"StringCacheIndex: skipping oversize shard {shard_path}")
                     continue
             except OSError:
                 continue
             ids = self._read_posting_shard(shard_path, gram)
             if len(ids) > _MAX_POSTING_IDS_PER_GRAM:
-                log_warning(
-                    f"StringCacheIndex: truncating oversize posting list for '{gram}'"
-                )
+                log_warning(f"StringCacheIndex: truncating oversize posting list for '{gram}'")
                 ids = set(sorted(ids)[:_MAX_POSTING_IDS_PER_GRAM])
             postings.append(ids)
         if not postings:
@@ -396,9 +392,7 @@ class StringCacheIndex:
             with open(shard_path, encoding="utf-8", errors="replace") as f:
                 for line in f:
                     if len(line) > _MAX_SHARD_LINE_BYTES:
-                        log_warning(
-                            f"StringCacheIndex: skipping oversize line in {shard_path}"
-                        )
+                        log_warning(f"StringCacheIndex: skipping oversize line in {shard_path}")
                         continue
                     try:
                         rec = json.loads(line)
@@ -743,10 +737,7 @@ def _build_cache(
             os.unlink(meta_path)
         except OSError:
             pass
-        for p in (
-            os.path.join(grams_subdir, shard_name)
-            for shard_name in shards
-        ):
+        for p in (os.path.join(grams_subdir, shard_name) for shard_name in shards):
             _commit(p)
         _commit(strings_path)
         _commit(addr_path)

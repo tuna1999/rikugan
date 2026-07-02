@@ -55,31 +55,19 @@ class TestClassifier(unittest.TestCase):
         self.assertTrue(any("non-comment lines" in r for r in result.reasons))
 
     def test_multi_module_script_is_complex(self):
-        src = (
-            "import idaapi\n"
-            "import idautils\n"
-            "import ida_funcs\n"
-            "print(idaapi.get_inf_structure())\n"
-        )
+        src = "import idaapi\nimport idautils\nimport ida_funcs\nprint(idaapi.get_inf_structure())\n"
         result = classify_idapython_script(src)
         self.assertTrue(result.is_complex)
         self.assertTrue(any("IDA modules" in r for r in result.reasons))
 
     def test_mutating_calls_are_complex(self):
-        src = (
-            "import idc\n"
-            "idc.set_cmt(0x401000, 'test', 0)\n"
-        )
+        src = "import idc\nidc.set_cmt(0x401000, 'test', 0)\n"
         result = classify_idapython_script(src)
         self.assertTrue(result.is_complex)
         self.assertTrue(any("mutating" in r for r in result.reasons))
 
     def test_iteration_helpers_are_complex(self):
-        src = (
-            "import idautils\n"
-            "for ea in idautils.Functions():\n"
-            "    print(hex(ea))\n"
-        )
+        src = "import idautils\nfor ea in idautils.Functions():\n    print(hex(ea))\n"
         result = classify_idapython_script(src)
         self.assertTrue(result.is_complex)
         self.assertTrue(any("iterates database" in r for r in result.reasons))
