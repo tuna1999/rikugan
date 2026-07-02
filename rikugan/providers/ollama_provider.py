@@ -52,7 +52,14 @@ class OllamaProvider(OpenAICompatProvider):
         )
 
     def list_models(self) -> list[ModelInfo]:
-        """Try to list models from the Ollama API."""
+        """Try to list models from the Ollama API.
+
+        Override the base ``_builtin_models()`` fallback contract: Ollama has
+        no meaningful builtin model catalogue, so on any API failure we
+        return a single-element list containing the currently configured
+        model — the base fallback (hardcoded builtin list) would be wrong
+        for Ollama since users run arbitrary local models.
+        """
         try:
             base = self.api_base.removesuffix("/v1").rstrip("/")
             url = f"{base}/api/tags"

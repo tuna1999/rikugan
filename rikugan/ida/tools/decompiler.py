@@ -189,6 +189,11 @@ def get_pseudocode_comment(
     """Read the Hex-Rays pseudocode comment at a specific line.
 
     Returns the raw comment text, or an empty string if none exists.
+
+    Note: an empty string is also returned when decompilation fails
+    (``_decompile`` returns an error string). Callers that need to
+    distinguish decompile failure from a genuinely empty comment
+    should use :func:`get_pseudocode_comment_state` instead.
     """
     func_ea = parse_addr(func_address)
     target_ea = parse_addr(target_address)
