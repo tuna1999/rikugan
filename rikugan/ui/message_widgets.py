@@ -241,7 +241,7 @@ class _HeightCachedLabel(QLabel):
 class CollapsibleSection(QFrame):
     """A widget with a clickable header that shows/hides content."""
 
-    def __init__(self, title: str, parent: QWidget = None):
+    def __init__(self, title: str, parent: QWidget | None = None):
         super().__init__(parent)
         self._expanded = False
         # Re-apply on theme change. ``update()`` alone is not enough
@@ -326,7 +326,7 @@ class CollapsibleSection(QFrame):
 class UserMessageWidget(QFrame):
     """Displays a user message."""
 
-    def __init__(self, text: str, parent: QWidget = None):
+    def __init__(self, text: str, parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("message_user")
 
@@ -487,7 +487,7 @@ def _split_thinking(text: str):
 class _ThinkingBlock(QFrame):
     """Collapsible block for model reasoning / chain-of-thought."""
 
-    def __init__(self, parent: QWidget = None):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("thinking_block")
 
@@ -615,7 +615,7 @@ class AssistantMessageWidget(QFrame):
     # hasn't elapsed (e.g. burst of 500+ chars in a single poll tick).
     _RENDER_BATCH_MAX: int = 500
 
-    def __init__(self, parent: QWidget = None):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("message_assistant")
         self._full_text = ""
@@ -759,7 +759,7 @@ class ThinkingWidget(QFrame):
 
     _STAR_FRAMES: ClassVar[list[str]] = ["✳", "✴", "✵", "✶"]
 
-    def __init__(self, parent: QWidget = None):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("message_thinking")
         self._phrase_idx = random.randint(0, len(_THINKING_PHRASES) - 1)
@@ -834,7 +834,7 @@ class ThinkingWidget(QFrame):
 class QueuedMessageWidget(QFrame):
     """Displays a queued user message with dashed border."""
 
-    def __init__(self, text: str, parent: QWidget = None):
+    def __init__(self, text: str, parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("message_queued")
 
@@ -902,7 +902,7 @@ class UserQuestionWidget(QFrame):
     #   widget.option_selected.connect(self._on_user_answer)
     option_selected = Signal(str)
 
-    def __init__(self, question: str, options: list | None = None, parent: QWidget = None):
+    def __init__(self, question: str, options: list | None = None, parent: QWidget | None = None):
         super().__init__(parent)
         self._option_selected_callback = None
         self.setObjectName("message_question")
@@ -1033,7 +1033,7 @@ class ExplorationPhaseWidget(QFrame):
         "save": "\u2714",  # checkmark
     }
 
-    def __init__(self, from_phase: str, to_phase: str, reason: str = "", parent: QWidget = None):
+    def __init__(self, from_phase: str, to_phase: str, reason: str = "", parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("message_tool")
         self._reason_text = reason
@@ -1102,7 +1102,7 @@ class ExplorationFindingWidget(QFrame):
         summary: str,
         address: str | None = None,
         relevance: str = "medium",
-        parent: QWidget = None,
+        parent: QWidget | None = None,
     ):
         super().__init__(parent)
         self.setObjectName("message_tool")
@@ -1179,7 +1179,7 @@ class ResearchNoteWidget(QFrame):
         path: str,
         preview: str = "",
         review_passed: bool = True,
-        parent: QWidget = None,
+        parent: QWidget | None = None,
     ):
         super().__init__(parent)
         self.setObjectName("message_tool")
@@ -1266,7 +1266,7 @@ class SubagentEventWidget(QFrame):
         status: str,
         name: str,
         detail: str = "",
-        parent: QWidget = None,
+        parent: QWidget | None = None,
     ):
         super().__init__(parent)
         self.setObjectName("message_tool")
@@ -1331,7 +1331,7 @@ class SubagentEventWidget(QFrame):
 class ErrorMessageWidget(QFrame):
     """Displays an error message."""
 
-    def __init__(self, error_text: str, parent: QWidget = None):
+    def __init__(self, error_text: str, parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("message_tool")
 

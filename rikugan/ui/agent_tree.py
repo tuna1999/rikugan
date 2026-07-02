@@ -48,7 +48,7 @@ class AgentTreeWidget(QWidget):
     cancel_requested = Signal(str)  # agent_id
     inject_summary_requested = Signal(str)  # agent_id
 
-    def __init__(self, parent: QWidget = None):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("agent_tree_widget")
 

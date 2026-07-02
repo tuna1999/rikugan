@@ -42,7 +42,7 @@ def _function_name_at(ea: int) -> str | None:
 class ContextBar(QFrame):
     """Status bar showing current binary context and session info."""
 
-    def __init__(self, parent: QWidget = None):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("context_bar")
         self.setFixedHeight(28)

@@ -82,7 +82,7 @@ class BulkRenamerWidget(QWidget):
     seek_requested = Signal(object)  # address (64-bit int, can't use Signal(int))
     refresh_requested = Signal()
 
-    def __init__(self, parent: QWidget = None):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("bulk_renamer_widget")
         self._loading = False  # guard to suppress filter during load

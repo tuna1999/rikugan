@@ -47,7 +47,7 @@ class _SkillPopup(QFrame):
     checkQtSignal() on any later signal operation (e.g. QTimer.singleShot).
     """
 
-    def __init__(self, parent: QWidget = None):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("skill_popup")
         self.setWindowFlags(Qt.WindowType.ToolTip)
@@ -121,7 +121,7 @@ class InputArea(QPlainTextEdit):
     # Do NOT define Signal() here — Shiboken signal dispatch causes
     # random SIGSEGV during emit() on Python 3.14 + PySide6 6.8.2.
 
-    def __init__(self, parent: QWidget = None):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("input_area")
         self.setPlaceholderText("Ask about this binary... (/ for skills, /modify to patch)")

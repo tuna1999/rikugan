@@ -121,7 +121,6 @@ module = [
     "rikugan.ui.bulk_renamer",
     "rikugan.ui.agent_tree",
     "rikugan.ui.context_bar",
-    "rikugan.ui.panel",
     "rikugan.ui.theme.manager",
     "rikugan.ui.theme.palette_ida",
     "rikugan.ui.tabs.skills_tab",

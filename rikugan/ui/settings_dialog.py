@@ -143,7 +143,7 @@ _BUILTIN_PROVIDERS = [
 class _AddProviderDialog(QDialog):
     """Mini-dialog to create a new custom OpenAI-compatible connection."""
 
-    def __init__(self, existing_names: list, parent: QWidget = None):
+    def __init__(self, existing_names: list, parent: QWidget | None = None):
         super().__init__(parent)
         self.setWindowTitle("Add Custom Connection")
         self.setMinimumWidth(400)
@@ -206,7 +206,7 @@ class SettingsDialog(QDialog):
         registry: ProviderRegistry | None = None,
         tool_registry: Any | None = None,
         is_running_callback: Callable[[], bool] | None = None,
-        parent: QWidget = None,
+        parent: QWidget | None = None,
     ):
         # Use None parent to avoid lifecycle coupling with IDA PluginForm widgets
         super().__init__(None)

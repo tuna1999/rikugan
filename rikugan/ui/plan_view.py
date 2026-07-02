@@ -15,7 +15,7 @@ from .qt_compat import (
 class PlanStepWidget(QFrame):
     """Single plan step with status indicator."""
 
-    def __init__(self, index: int, text: str, parent: QWidget = None):
+    def __init__(self, index: int, text: str, parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("plan_step")
         self._index = index
@@ -65,7 +65,7 @@ class PlanView(QFrame):
     Shiboken's global signal registry on Python 3.14.
     """
 
-    def __init__(self, parent: QWidget = None):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("plan_view")
         self._steps: list[PlanStepWidget] = []

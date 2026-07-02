@@ -23,7 +23,7 @@ from .styles import (
 class ToolsPanel(QWidget):
     """Standalone tools window containing tabs: Renamer, Agents, A2A."""
 
-    def __init__(self, parent: QWidget = None):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("tools_panel")
         self.setWindowTitle("Rikugan Tools")

@@ -34,7 +34,7 @@ class MutationEntryWidget(QFrame):
 
     undo_clicked = Signal(int)  # emits the entry index
 
-    def __init__(self, index: int, record: MutationRecord, parent: QWidget = None):
+    def __init__(self, index: int, record: MutationRecord, parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("mutation_entry")
         self._index = index
@@ -72,7 +72,7 @@ class MutationLogPanel(QFrame):
 
     undo_requested = Signal(int)  # emits count to undo
 
-    def __init__(self, parent: QWidget = None):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("mutation_log_panel")
 

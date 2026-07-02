@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 class MCPTab(QWidget):
     """Tab for managing MCP servers: Rikugan configured + external MCP."""
 
-    def __init__(self, config: RikuganConfig, service: SettingsService, parent: QWidget = None):
+    def __init__(self, config: RikuganConfig, service: SettingsService, parent: QWidget | None = None):
         super().__init__(parent)
         self._config = config
         self._service = service

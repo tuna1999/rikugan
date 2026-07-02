@@ -472,7 +472,7 @@ class ToolCallWidget(QFrame):
 
     _SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
-    def __init__(self, tool_name: str, tool_call_id: str, parent: QWidget = None):
+    def __init__(self, tool_name: str, tool_call_id: str, parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("message_tool")
         self._tool_name = tool_name
@@ -658,7 +658,7 @@ class ToolBatchWidget(QFrame):
     With preview of the first call's args.
     """
 
-    def __init__(self, tool_name: str, parent: QWidget = None):
+    def __init__(self, tool_name: str, parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("message_tool")
         self._tool_name = tool_name
@@ -827,7 +827,7 @@ class ToolBatchWidget(QFrame):
 class ToolGroupWidget(QFrame):
     """Collapsible group for a consecutive run of tool calls."""
 
-    def __init__(self, parent: QWidget = None):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("message_tool")
         self._expanded = False
@@ -1039,7 +1039,7 @@ class ToolApprovalWidget(QFrame):
         tool_name: str,
         args_text: str,
         description: str,
-        parent: QWidget = None,
+        parent: QWidget | None = None,
     ):
         super().__init__(parent)
         self.setObjectName("message_question")

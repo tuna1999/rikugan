@@ -186,7 +186,7 @@ class RikuganPanelCore(QWidget):
         controller_factory: Callable[[RikuganConfig], Any],
         ui_hooks_factory: Callable[[Callable[[], Any]], Any] | None = None,
         tools_form_factory: Callable[..., Any] | None = None,
-        parent: QWidget = None,
+        parent: QWidget | None = None,
     ):
         super().__init__(parent)
         self._config = RikuganConfig.load_or_create()
