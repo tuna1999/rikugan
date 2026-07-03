@@ -19,14 +19,7 @@ from rikugan.memory.ingest import (
     ingest_save_memory,
     make_store,
 )
-from rikugan.memory.paths import knowledge_paths
-from rikugan.memory.raw_store import KnowledgeRawStore
-
-
-def fresh_store(tmp: str) -> tuple[KnowledgeRawStore, object]:
-    paths = knowledge_paths(os.path.join(tmp, "x.idb"))
-    paths.ensure()
-    return KnowledgeRawStore(paths), paths
+from rikugan.tests.knowledge._helpers import fresh_store
 
 
 class TestMakeStore(unittest.TestCase):
@@ -190,6 +183,55 @@ class TestIngestSilence(unittest.TestCase):
         ingest_save_memory(None, None, fact="x", category="general")  # type: ignore[arg-type]
         ingest_exploration_finding(None, None, category="general", summary="x", address=None, relevance="low")  # type: ignore[arg-type]
         ingest_research_note(None, None, note_path="x.md", genre="g", title="t", content="c")  # type: ignore[arg-type]
+
+
+class TestCanonicalIdHelpers(unittest.TestCase):
+    """ingest.* must use the canonical entity-ID helpers from paths."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.store, self.paths = fresh_store(self.tmp)
+
+    def test_report_entity_id_sanitizes_hostile_slug(self):
+        from rikugan.memory.paths import report_entity_id
+
+        hostile_slug = "../etc/passwd"
+        ingest_report(
+            self.store,
+            self.paths,
+            report_path="/tmp/x.md",
+            slug=hostile_slug,
+            scope="full",
+            body_excerpt="body",
+        )
+        # The entity ID for the report must match what
+        # ``report_entity_id`` produces for the same slug.
+        ents = self.store.list_entities()
+        report_ents = [e for e in ents if e.type == "report"]
+        self.assertEqual(len(report_ents), 1)
+        self.assertEqual(report_ents[0].id, report_entity_id(hostile_slug))
+
+    def test_import_entity_id_sanitizes_unsafe_name(self):
+        # ingest_exploration_finding with category "import_usage" and an
+        # address falls through the "_entity_id_for" path that builds
+        # an "import:unknown:{name}" id. Verify the unsafe characters
+        # are sanitized (the old hard-coded f-string skipped that).
+        from rikugan.memory.paths import import_entity_id
+
+        # ``address`` is required for the import branch; use a dummy.
+        ingest_exploration_finding(
+            self.store,
+            self.paths,
+            category="import_usage",
+            summary="calls interesting Win32 API",
+            address=0x401000,
+            relevance="medium",
+            function_name="evil name with spaces & slashes",
+        )
+        ents = self.store.list_entities()
+        import_ents = [e for e in ents if e.type == "import"]
+        self.assertEqual(len(import_ents), 1)
+        self.assertEqual(import_ents[0].id, import_entity_id("unknown", "evil name with spaces & slashes"))
 
 
 if __name__ == "__main__":

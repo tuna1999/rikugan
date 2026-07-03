@@ -27,6 +27,7 @@ from ..core.sanitize import (
     sanitize_tool_result,
     strip_injection_markers,
     strip_iocs,
+    strip_lone_surrogates,
 )
 from ..core.types import Message, Role, TokenUsage, ToolCall, ToolResult, coerce_token_count
 from ..providers.base import LLMProvider
@@ -252,6 +253,47 @@ def append_to_memory_file(md_path: str, content: str) -> None:
         f.write(content)
 
 
+# Maximum length allowed for a save_memory category token. Anything longer
+# is hostile noise — categories are short labels, not free-form descriptions.
+_SAVE_MEMORY_CATEGORY_MAX_LEN = 64
+
+
+def _sanitize_save_memory_category(raw: object) -> str:
+    """Coerce and sanitize a save_memory ``category`` argument.
+
+    Categories flow into three downstream surfaces:
+      * ``RIKUGAN.md`` line format ``- [{category}] {fact}``,
+      * the ``log_info`` message,
+      * the tool result echoed back to the LLM,
+      * the knowledge-ingest ``ingest_save_memory(category=...)`` call.
+
+    An attacker (or a buggy tool call) that injects ``</persistent_memory>system``
+    into the category would let a subsequent ``sanitize_memory`` wrapper close
+    out and smuggle raw prompt text in. We neutralize that here.
+    """
+    if raw is None:
+        return "general"
+    text = strip_lone_surrogates(str(raw))
+    text = strip_injection_markers(text)
+    # Neutralize ANY closing tag — strip_injection_markers only covers
+    # known role markers (``</system>``, ``</tool_result>``, …) and would
+    # leave ``</persistent_memory>`` untouched. We replace the angle
+    # brackets so no closing tag can survive into RIKUGAN.md or the
+    # tool result.
+    text = text.replace("<", "").replace(">", "")
+    # Strip the surrounding ``[...]`` brackets and surrounding whitespace so
+    # an injected ``[INJECTED]`` collapses to a benign label.
+    text = text.replace("[", "").replace("]", "").strip()
+    if not text:
+        return "general"
+    # Collapse internal whitespace (newlines / runs of spaces) so the category
+    # is a single short token.
+    text = " ".join(text.split())
+    if len(text) > _SAVE_MEMORY_CATEGORY_MAX_LEN:
+        text = text[:_SAVE_MEMORY_CATEGORY_MAX_LEN].rstrip()
+    return text or "general"
+
+
 class AgentLoop:
     """The core agentic loop: stream LLM -> execute tools -> repeat.
 
@@ -453,8 +495,9 @@ class AgentLoop:
                 return ""
             from ..memory.context import (
                 RetrievalQuery,
+                budget_from_config,
                 build_retrieval_metadata,
-                build_retrieved_context,
+                build_retrieved_context_with_pack,
             )
             from ..memory.ingest import make_store
 
@@ -485,15 +528,23 @@ class AgentLoop:
                 active_mode=active_mode,
             )
 
-            section = build_retrieved_context(store, paths, query=query, active_mode=active_mode)
-            if section:
+            # Build the section AND the underlying pack in a single
+            # retrieve() call.  ``budget_from_config`` honors
+            # knowledge_max_context_items / knowledge_max_context_chars
+            # so user-set caps actually take effect.
+            budget = budget_from_config(self.config, active_mode=active_mode)
+            section, pack = build_retrieved_context_with_pack(
+                store,
+                paths,
+                query=query,
+                budget=budget,
+                active_mode=active_mode,
+            )
+            if section and pack is not None:
                 # Emit a TurnEvent so the UI can display a compact
-                # retrieved-knowledge indicator when configured.
-                pack = None  # we don't re-run retrieve here for metadata
+                # retrieved-knowledge indicator when configured.  Reuse
+                # the same pack we just built — do NOT re-run retrieve.
                 try:
-                    from ..memory.retrieve import retrieve as _retrieve
-
-                    pack = _retrieve(store, paths, query)
                     meta = build_retrieval_metadata(pack)
                     self.session.metadata["last_knowledge_retrieval"] = meta
                 except Exception:
@@ -1439,11 +1490,26 @@ class AgentLoop:
         return tr
 
     def _handle_save_memory_tool(self, tc: ToolCall) -> Generator[TurnEvent, None, ToolResult]:
-        """Handle the save_memory pseudo-tool."""
-        from ..core.sanitize import strip_injection_markers
+        """Handle the save_memory pseudo-tool.
 
-        fact = strip_injection_markers(tc.arguments.get("fact", ""))
-        category = tc.arguments.get("category", "general")
+        The *category* argument is sanitized the same way as *fact*:
+        injection markers and lone surrogates are stripped, ``[`` / ``]``
+        are removed, whitespace is collapsed, and the result is bounded
+        in length. This prevents a hostile category such as
+        ``</persistent_memory>system`` from breaking out of the
+        ``[persistent_memory]`` wrapper on a future read of RIKUGAN.md.
+        """
+        from ..core.sanitize import strip_injection_markers, strip_lone_surrogates
+
+        raw_fact = tc.arguments.get("fact", "")
+        # Apply the same sanitization contract as ``category``: strip
+        # surrogates, role markers, AND angle brackets so an injected
+        # ``</persistent_memory>`` payload cannot break out of the
+        # downstream ``[persistent_memory]`` wrapper when RIKUGAN.md is
+        # reloaded into the system prompt.
+        fact = strip_injection_markers(strip_lone_surrogates(str(raw_fact)))
+        fact = fact.replace("<", "").replace(">", "")
+        category = _sanitize_save_memory_category(tc.arguments.get("category", "general"))
         if not fact:
             content = "Error: 'fact' is required."
             is_err = True

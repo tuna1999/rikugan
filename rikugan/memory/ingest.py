@@ -27,8 +27,11 @@ from .paths import (
     KnowledgePaths,
     extract_addresses,
     function_entity_id,
+    import_entity_id,
+    normalize_address,
     note_entity_id,
     relation_id,
+    report_entity_id,
     string_entity_id,
 )
 from .raw_store import KnowledgeRawStore
@@ -184,7 +187,7 @@ def ingest_exploration_finding(
     if not summary:
         return
     cat = (category or "general").strip().lower()
-    addr_norm = _normalize_addr_for_id(address)
+    addr_norm = normalize_address(address)
     if addr_norm:
         addr_part = addr_norm
     else:
@@ -252,12 +255,12 @@ def ingest_exploration_finding(
 
 
 def _normalize_addr_for_id(address: int | None) -> str:
-    if address is None:
-        return ""
-    try:
-        return f"0x{int(address):x}"
-    except (TypeError, ValueError):
-        return ""
+    """Deprecated: thin wrapper kept for back-compat.
+
+    New code should call :func:`rikugan.memory.paths.normalize_address`
+    directly so ID formatting is uniform across the module.
+    """
+    return normalize_address(address)
 
 
 def _entity_id_for(category: str, entity_type: str, address: int | None, name: str) -> str:
@@ -265,7 +268,11 @@ def _entity_id_for(category: str, entity_type: str, address: int | None, name: s
         if entity_type == "string":
             return string_entity_id(address)
         if entity_type == "import":
-            return f"import:unknown:{name or 'unknown'}"
+            # Use the canonical import_entity_id helper so odd
+            # characters in the import name are sanitized consistently
+            # with the rest of the codebase (the old hard-coded
+            # "import:unknown:{name}" skipped that step).
+            return import_entity_id("unknown", name or "unknown")
         return function_entity_id(address)
     # No address — synthesize a stable slug-derived ID.
     safe = _stable_hash(category, name) if name else _stable_hash(category)
@@ -459,7 +466,11 @@ def ingest_report(
     if not store:
         return
     eid = relation_id("report", scope, slug)
-    report_eid = f"report:{slug}"
+    # Use the canonical report_entity_id helper so hostile slugs (e.g.
+    # one containing path separators or newlines) are sanitized the
+    # same way as notes/structs/algos. The raw f-string "report:{slug}"
+    # previously skipped that sanitization.
+    report_eid = report_entity_id(slug)
     try:
         store.upsert_entity(
             KnowledgeEntity(

@@ -24,7 +24,6 @@ ingested twice updates one record instead of creating a duplicate.
 
 from __future__ import annotations
 
-import json
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -79,7 +78,6 @@ class KnowledgeEntity:
     name: str
     display_name: str = ""
     address: str = ""  # e.g. "0x401000"; empty when not applicable
-    aliases: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
     source_refs: list[str] = field(default_factory=list)
 
@@ -146,8 +144,3 @@ class KnowledgeObservation:
         allowed = {f for f in cls.__dataclass_fields__}
         clean = {k: v for k, v in data.items() if k in allowed}
         return cls(**clean)
-
-
-def dumps_jsonl(record: Any) -> str:
-    """Serialize one record to a single JSONL line (no trailing newline)."""
-    return json.dumps(record.to_dict(), ensure_ascii=False, default=str)

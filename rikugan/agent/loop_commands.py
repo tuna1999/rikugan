@@ -21,6 +21,8 @@ from ..core.sanitize import strip_injection_markers
 from .turn import TurnEvent
 
 if TYPE_CHECKING:
+    from ..memory.paths import KnowledgePaths
+    from ..memory.raw_store import KnowledgeRawStore
     from .loop import AgentLoop
 
 
@@ -40,6 +42,57 @@ def normalize_goal(raw_goal: str) -> str:
     if len(goal) > _MAX_GOAL_CHARS:
         goal = goal[:_MAX_GOAL_CHARS].rstrip() + "..."
     return goal
+
+
+# ---------------------------------------------------------------------------
+# Shared guards for knowledge-store-backed slash commands (/knowledge, /report)
+# ---------------------------------------------------------------------------
+
+
+def _open_knowledge_store(loop: AgentLoop) -> tuple[KnowledgeRawStore | None, KnowledgePaths | None, TurnEvent | None]:
+    """Centralize the "is the knowledge store usable?" guard.
+
+    ``/knowledge`` and ``/report`` both need: a real :class:`AgentLoop`
+    config with ``knowledge_enabled=True``, an IDB path, and a
+    successfully-constructed :class:`KnowledgeRawStore`.  Sharing the
+    guard here keeps the user-facing messages consistent and avoids
+    the duplicate four-step boilerplate that previously lived in both
+    handlers.
+
+    Returns ``(store, paths, None)`` on success and
+    ``(None, None, event)`` on failure.  Callers should ``yield`` the
+    event when present and ``return`` to short-circuit the command.
+    """
+    if not getattr(loop.config, "knowledge_enabled", True):
+        return (
+            None,
+            None,
+            TurnEvent.text_done(
+                "Raw knowledge memory is disabled in settings "
+                "(`knowledge_enabled = False`). Re-enable it in "
+                "Settings → Behavior or `RikuganConfig` to use the "
+                "knowledge store."
+            ),
+        )
+
+    idb_path = loop.session.idb_path or ""
+    if not idb_path:
+        return (
+            None,
+            None,
+            TurnEvent.text_done("No IDB path is set, so the raw knowledge store is not available."),
+        )
+
+    from ..memory.ingest import make_store
+
+    store, paths = make_store(idb_path)
+    if store is None or paths is None:
+        return (
+            None,
+            None,
+            TurnEvent.text_done("Could not initialize the knowledge store."),
+        )
+    return store, paths, None
 
 
 def _handle_memory_command(loop: AgentLoop) -> Generator[TurnEvent, None, None]:
@@ -162,32 +215,20 @@ def _handle_report_command(loop: AgentLoop, raw_scope: str) -> Generator[TurnEve
     where scope is one of: ``full``, ``executive``, ``technical``,
     ``iocs``, ``network``.
     """
-    from ..memory.ingest import make_store
     from ..memory.report import (
         SUPPORTED_SCOPES,
         build_report_context,
         synthesize_report,
     )
 
-    if not getattr(loop.config, "knowledge_enabled", True):
-        yield TurnEvent.text_done(
-            "Raw knowledge memory is disabled — re-enable `knowledge_enabled` in config to use `/report`."
-        )
-        return
-
-    idb_path = loop.session.idb_path or ""
-    if not idb_path:
-        yield TurnEvent.text_done("No IDB path is set, so the raw knowledge store is not available.")
+    store, paths, err_event = _open_knowledge_store(loop)
+    if err_event is not None:
+        yield err_event
         return
 
     scope = (raw_scope or "full").strip().lower() or "full"
     if scope not in SUPPORTED_SCOPES:
         yield TurnEvent.text_done(f"Unknown report scope: `{scope}`. Supported: {', '.join(SUPPORTED_SCOPES)}.")
-        return
-
-    store, paths = make_store(idb_path)
-    if store is None:
-        yield TurnEvent.text_done("Could not initialize the knowledge store.")
         return
 
     # Validate there is something to report *before* the LLM call.
@@ -239,25 +280,11 @@ def _handle_knowledge_command(loop: AgentLoop, raw_query: str) -> Generator[Turn
     ``/knowledge`` → counts + most-recent items.
     ``/knowledge <query>`` → ranked search across memories/entities/relations/notes.
     """
-    from ..memory.ingest import make_store
     from ..memory.retrieve import search_all
 
-    if not getattr(loop.config, "knowledge_enabled", True):
-        yield TurnEvent.text_done(
-            "Raw knowledge memory is disabled in settings "
-            "(`knowledge_enabled = False`). Re-enable it in "
-            "`RikuganConfig` to use `/knowledge` and the Knowledge tab."
-        )
-        return
-
-    idb_path = loop.session.idb_path or ""
-    if not idb_path:
-        yield TurnEvent.text_done("No IDB path is set, so the raw knowledge store is not available.")
-        return
-
-    store, paths = make_store(idb_path)
-    if store is None:
-        yield TurnEvent.text_done("Could not initialize the knowledge store.")
+    store, paths, err_event = _open_knowledge_store(loop)
+    if err_event is not None:
+        yield err_event
         return
 
     query = (raw_query or "").strip()

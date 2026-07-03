@@ -1006,26 +1006,20 @@ class ChatView(QScrollArea):
         """Render the compact ``KNOWLEDGE_RETRIEVED`` indicator.
 
         Cheap, no scroll: this is a small status pill, not a full
-        message. The indicator is a small frame containing the summary
-        (e.g. "5 memories, 2 entities, 4 relations for 0x401000").
+        message.  Uses the dedicated :class:`KnowledgeContextWidget`
+        so the label reads "Retrieved Knowledge" instead of
+        "Subagent ...".
         """
-        from .message_widgets import SubagentEventWidget  # visual reuse
+        from .message_widgets import KnowledgeContextWidget
 
         meta = event.metadata or {}
         items = meta.get("items", []) or []
-        # Show the top 3 item titles for context, but truncate.
-        preview_bits = []
-        for it in items[:3]:
-            label = it.get("title") or it.get("name") or it.get("id") or ""
-            kind = it.get("kind", "")
-            if label and kind:
-                preview_bits.append(f"{kind}: {label}")
-            elif label:
-                preview_bits.append(label)
-        detail = ", ".join(preview_bits) if preview_bits else ""
-        # Wrap in a SubagentEventWidget with a stable "knowledge" type
-        # string. The styling is shared with subagent events.
-        self._insert_widget(SubagentEventWidget("knowledge", event.text or "retrieved", detail))
+        self._insert_widget(
+            KnowledgeContextWidget(
+                summary=event.text or "",
+                items=items,
+            )
+        )
 
     def _handle_question_event(self, event: TurnEvent) -> None:
         self._hide_thinking()

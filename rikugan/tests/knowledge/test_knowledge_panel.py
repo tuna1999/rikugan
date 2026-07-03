@@ -111,13 +111,26 @@ class TestKnowledgePanel(unittest.TestCase):
 
     def test_set_show_retrieved_round_trip(self):
         self.w.set_show_retrieved(True)
-        self.assertTrue(self.w.is_show_retrieved())
+        self.assertTrue(self.w._show_chk.isChecked())
         # set_show_retrieved must not re-emit the signal
         seen = []
         self.w.show_retrieved_changed.connect(lambda v: seen.append(v))
         self.w.set_show_retrieved(False)
         self.assertEqual(seen, [])
-        self.assertFalse(self.w.is_show_retrieved())
+        self.assertFalse(self.w._show_chk.isChecked())
+
+    def test_set_disabled_state_shows_banner(self):
+        self.w.set_disabled_state(True)
+        self.assertTrue(self.w._disabled)
+        # ``isHidden`` is the inverse of ``setVisible(True)`` and
+        # does not depend on the parent widget's shown state (which
+        # we don't trigger in unit tests).
+        self.assertFalse(self.w._banner_label.isHidden())
+        self.assertIn("disabled", self.w._banner_label.text().lower())
+        # Re-enabling clears the disabled state and hides the banner.
+        self.w.set_disabled_state(False)
+        self.assertFalse(self.w._disabled)
+        self.assertTrue(self.w._banner_label.isHidden())
 
     def test_set_disabled_message(self):
         self.w.set_disabled_message("Disabled — no IDB path")

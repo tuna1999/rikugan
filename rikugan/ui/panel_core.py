@@ -1018,6 +1018,14 @@ class RikuganPanelCore(QWidget):
                 self._renamer_engine = None
             self._stop_poll_timer()
             self._stop_skills_refresh_timer()
+            # Stop the knowledge-panel debounce timer so it can't fire
+            # a refresh after the panel is destroyed.
+            timer = getattr(self, "_knowledge_refresh_timer", None)
+            if timer is not None:
+                try:
+                    timer.stop()
+                except Exception:
+                    pass
             # Detach from ThemeManager.themeChanged so the singleton
             # doesn't keep a dangling reference to this panel alive
             # after teardown.  ``disconnect`` may raise if the panel
@@ -1300,10 +1308,12 @@ class RikuganPanelCore(QWidget):
         chat_view.handle_event(event)
         # Side-effects that don't belong in chat_view: refresh the
         # Knowledge tab on events that imply the store changed.
+        # KNOWLEDGE_RETRIEVED is a READ-SIDE indicator (per-turn context
+        # rebuild) and does NOT mutate the store, so it must not trigger
+        # a refresh.
         if event.type in (
             TurnEventType.RESEARCH_NOTE_SAVED,
             TurnEventType.EXPLORATION_FINDING,
-            TurnEventType.KNOWLEDGE_RETRIEVED,
         ):
             self._on_knowledge_event_refresh(event.type.value)
         if event.usage:
@@ -1559,9 +1569,19 @@ class RikuganPanelCore(QWidget):
             )
         except Exception:
             pass
+        self._knowledge_panel.set_disabled_state(not bool(getattr(self._config, "knowledge_enabled", True)))
         self._knowledge_panel.show_retrieved_changed.connect(self._on_knowledge_show_changed)
         self._knowledge_panel.refresh_requested.connect(self._refresh_knowledge_panel)
         self._tools_panel.set_knowledge_widget(self._knowledge_panel)
+        # Debounce knowledge-panel refresh: many write-side events
+        # (e.g. exploration findings) can fire in a single burst, and
+        # we only need to repaint the table once.  Reusing a single
+        # QTimer coalesces bursts into one refresh ~50ms after the
+        # last event lands.
+        self._knowledge_refresh_timer = QTimer(self)
+        self._knowledge_refresh_timer.setSingleShot(True)
+        self._knowledge_refresh_timer.setInterval(50)
+        self._knowledge_refresh_timer.timeout.connect(self._refresh_knowledge_panel)
 
         # Create IDA dockable form wrapper if factory is available
         if self._tools_form_factory is not None and self._tools_form is None:
@@ -1982,11 +2002,24 @@ class RikuganPanelCore(QWidget):
             log_debug(f"knowledge toggle persist failed: {e}")
 
     def _refresh_knowledge_panel(self) -> None:
-        """Re-populate the Knowledge tab from the current IDB path."""
+        """Re-populate the Knowledge tab from the current IDB path.
+
+        Reads each JSONL record type exactly ONCE per refresh.  The
+        previous implementation called ``store.counts()`` (which reads
+        all four files) and then ``list_memories()`` / ``list_entities()``
+        / ``list_relations()`` (three more reads).  Now we read the
+        three queryable record types once, derive their counts from
+        the in-memory list, and use ``store.count_observations()`` for
+        the observation count.
+        """
         if self._is_shutdown:
             return
         panel = getattr(self, "_knowledge_panel", None)
         if panel is None:
+            return
+
+        if not bool(getattr(self._config, "knowledge_enabled", True)):
+            panel.set_disabled_state(True)
             return
 
         idb_path = ""
@@ -1996,6 +2029,7 @@ class RikuganPanelCore(QWidget):
             idb_path = ""
 
         if not idb_path:
+            panel.set_disabled_state(False)
             panel.set_disabled_message("No IDB path is set. Open a binary to populate the knowledge store.")
             return
 
@@ -2005,15 +2039,29 @@ class RikuganPanelCore(QWidget):
 
             store, paths = make_store(idb_path)
             if store is None or paths is None:
+                panel.set_disabled_state(False)
                 panel.set_disabled_message("Could not initialize the knowledge store.")
                 return
 
-            counts = store.counts()
-            panel.set_counts(counts)
+            # One read per file (was: four via counts() + three more
+            # via the list_* calls = seven total).
+            memories = store.list_memories()
+            entities = store.list_entities()
+            relations = store.list_relations()
+            obs_count = store.count_observations()
+            panel.set_disabled_state(False)
+            panel.set_counts(
+                {
+                    "memories": len(memories),
+                    "entities": len(entities),
+                    "relations": len(relations),
+                    "observations": obs_count,
+                }
+            )
             panel.populate(
-                memories=store.list_memories(),
-                entities=store.list_entities(),
-                relations=store.list_relations(),
+                memories=memories,
+                entities=entities,
+                relations=relations,
                 notes=[
                     f"{(n.title or os.path.basename(n.path or 'note'))}: {(n.body or '').strip()[:400]}"
                     for n in list_notes(paths.notes_dir)[:20]
@@ -2024,16 +2072,22 @@ class RikuganPanelCore(QWidget):
             panel.set_disabled_message(f"Failed to load knowledge: {e}")
 
     def _on_knowledge_event_refresh(self, event_type: str) -> None:
-        """Hook for relevant events to nudge the panel to refresh."""
-        # Called from the chat-view dispatch (see below) for events
-        # that imply the store changed: research notes saved, exploration
-        # findings, knowledge-retrieved indicators, report completion.
+        """Hook for relevant events to nudge the panel to refresh.
+
+        Coalesces bursty events (e.g. several ``EXPLORATION_FINDING``
+        events emitted back-to-back) into a single refresh via a
+        shared single-shot :class:`QTimer`.  ``.start()`` on a running
+        single-shot timer resets its deadline, so only the LAST event
+        in a burst ends up triggering the actual repaint.
+        """
+        del event_type  # unused — the timer coalesces regardless
         if getattr(self, "_is_shutdown", False):
             return
-        # Defer to the next event loop tick so we don't compete with
-        # in-flight tool execution for the store's per-file lock.
+        timer = getattr(self, "_knowledge_refresh_timer", None)
+        if timer is None:
+            return
         try:
-            QTimer.singleShot(50, self._refresh_knowledge_panel)
+            timer.start()  # 50ms debounce window
         except Exception:
             pass
 

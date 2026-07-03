@@ -87,10 +87,6 @@ def _terms_from(text: str) -> list[str]:
     return [m.group(0).lower() for m in _WORD_RE.finditer(text)]
 
 
-def _entity_index(entities: Iterable[KnowledgeEntity]) -> dict[str, KnowledgeEntity]:
-    return {e.id: e for e in entities}
-
-
 # ---------------------------------------------------------------------------
 # Scoring helpers
 # ---------------------------------------------------------------------------
@@ -138,9 +134,6 @@ def _score_entity(ent: KnowledgeEntity, terms: list[str], addrs: list[str]) -> f
             score += 2.0
         if term in name_l:
             score += 2.0
-        for alias in ent.aliases:
-            if term in alias.lower():
-                score += 1.5
         for tag in ent.tags:
             if term == tag.lower():
                 score += 1.5

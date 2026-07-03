@@ -6,7 +6,6 @@ store on disk; no Qt, no IDA, no LLM calls.
 
 from __future__ import annotations
 
-import os
 import tempfile
 import unittest
 from collections.abc import Generator
@@ -20,9 +19,8 @@ from rikugan.memory.ingest import (
     ingest_exploration_finding,
     ingest_save_memory,
 )
-from rikugan.memory.paths import knowledge_paths
-from rikugan.memory.raw_store import KnowledgeRawStore
 from rikugan.state.session import SessionState
+from rikugan.tests.knowledge._helpers import fresh_store
 
 
 class TestParser(unittest.TestCase):
@@ -60,11 +58,10 @@ def _drain(gen: Generator[TurnEvent, None, None]) -> list[TurnEvent]:
 class TestHandler(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
-        self.idb_path = os.path.join(self.tmp, "x.idb")
+        # Canonical IDB filename via shared helper.
+        store, paths = fresh_store(self.tmp)
+        self.idb_path = paths.idb_path
         # Seed some knowledge
-        paths = knowledge_paths(self.idb_path)
-        paths.ensure()
-        store = KnowledgeRawStore(paths)
         ingest_save_memory(store, paths, fact="uses RC4 at 0x401000", category="crypto")
         ingest_save_memory(store, paths, fact="creates scheduled task for persistence", category="persistence")
         ingest_exploration_finding(

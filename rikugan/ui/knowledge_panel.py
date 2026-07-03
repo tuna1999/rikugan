@@ -135,6 +135,7 @@ class KnowledgePanel(QWidget):
 
         # Internal state
         self._rows: list[_Row] = []
+        self._disabled: bool = False
 
     # ------------------------------------------------------------------
     # Public API
@@ -147,9 +148,6 @@ class KnowledgePanel(QWidget):
             self._show_chk.setChecked(bool(value))
         finally:
             self._show_chk.blockSignals(blocker)
-
-    def is_show_retrieved(self) -> bool:
-        return self._show_chk.isChecked()
 
     def set_counts(self, counts: dict) -> None:
         """Update the counts label and apply filtering."""
@@ -165,6 +163,41 @@ class KnowledgePanel(QWidget):
         self._table.setRowCount(0)
         self._detail.setPlainText(message)
         self._counts_label.setText("—")
+
+    def set_disabled_state(self, disabled: bool) -> None:
+        """Toggle the master ``knowledge_enabled`` state.
+
+        When *disabled* is True, the panel renders a clear "raw
+        knowledge memory is disabled" banner and clears the table.
+        The user can still interact with the toolbar (search/filter
+        chrome stays visible) so toggling the option back on in
+        Settings immediately re-enables data display.
+        """
+        self._disabled = bool(disabled)
+        if not hasattr(self, "_banner_label"):
+            # Banner inserted between toolbar and counts label so the
+            # user sees the disabled state at the top of the panel.
+            self._banner_label = QLabel(self)
+            self._banner_label.setObjectName("knowledge_disabled_banner")
+            self._banner_label.setStyleSheet(get_placeholder_style())
+            self._banner_label.setWordWrap(True)
+            # The main_layout has: toolbar(0), counts_label(1),
+            # table(2), detail(3). Insert the banner at index 1.
+            try:
+                self.layout().insertWidget(1, self._banner_label)
+            except Exception:
+                pass
+        if self._disabled:
+            self._banner_label.setText(
+                "Raw knowledge memory is disabled. "
+                "Re-enable it in Settings → Behavior to resume writes and the Knowledge tab."
+            )
+            self._banner_label.setVisible(True)
+            self._rows = []
+            self._table.setRowCount(0)
+            self._counts_label.setText("—")
+        else:
+            self._banner_label.setVisible(False)
 
     def populate(
         self,

@@ -6,36 +6,130 @@ verify ranking and the prompt-section renderer.
 
 from __future__ import annotations
 
-import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
+from rikugan.core.config import RikuganConfig
 from rikugan.memory.context import (
     ContextBudget,
     budget_for_mode,
+    budget_from_config,
     build_retrieval_metadata,
     build_retrieved_context,
+    build_retrieved_context_with_pack,
     sanitize_knowledge_context,
 )
 from rikugan.memory.ingest import (
     ingest_exploration_finding,
     ingest_save_memory,
 )
-from rikugan.memory.paths import knowledge_paths
-from rikugan.memory.raw_store import KnowledgeRawStore
 from rikugan.memory.retrieve import RetrievalQuery, retrieve, search_all
+from rikugan.tests.knowledge._helpers import fresh_store
 
 
-def fresh(tmp: str) -> tuple[KnowledgeRawStore, object]:
-    paths = knowledge_paths(os.path.join(tmp, "x.idb"))
-    paths.ensure()
-    return KnowledgeRawStore(paths), paths
+class TestBudgetFromConfig(unittest.TestCase):
+    """Verify config-driven budget actually caps retrieval output."""
+
+    def test_default_config_normal_mode(self):
+        cfg = RikuganConfig()
+        budget = budget_from_config(cfg, active_mode="normal")
+        # Defaults: 12 items / 12_000 chars.
+        self.assertEqual(budget.max_total_chars, 12_000)
+        # Item cap split between mem/entity/rel/notes.
+        self.assertEqual(
+            budget.max_memories + budget.max_entities + budget.max_relations + budget.max_notes,
+            12,
+        )
+
+    def test_smaller_item_cap_shrinks_section(self):
+        cfg = RikuganConfig()
+        cfg.knowledge_max_context_items = 4
+        budget = budget_from_config(cfg, active_mode="normal")
+        self.assertEqual(
+            budget.max_memories + budget.max_entities + budget.max_relations + budget.max_notes,
+            4,
+        )
+
+    def test_smaller_char_cap_truncates(self):
+        cfg = RikuganConfig()
+        cfg.knowledge_max_context_chars = 2_000
+        budget = budget_from_config(cfg, active_mode="normal")
+        self.assertEqual(budget.max_total_chars, 2_000)
+
+    def test_research_mode_multiplies_but_is_capped(self):
+        cfg = RikuganConfig()
+        cfg.knowledge_max_context_items = 100  # already at hard cap
+        cfg.knowledge_max_context_chars = 60_000
+        budget = budget_from_config(cfg, active_mode="research")
+        # Research multiplies by 1.5 but stays under the validation cap.
+        self.assertLessEqual(
+            budget.max_memories + budget.max_entities + budget.max_relations + budget.max_notes,
+            100,
+        )
+        self.assertLessEqual(budget.max_total_chars, 60_000)
+
+    def test_invalid_config_falls_back_to_default(self):
+        cfg = RikuganConfig()
+        cfg.knowledge_max_context_items = "bogus"  # type: ignore[assignment]
+        cfg.knowledge_max_context_chars = object()  # type: ignore[assignment]
+        budget = budget_from_config(cfg, active_mode="normal")
+        # Falls back to NORMAL_BUDGET (12 items / 12_000 chars).
+        self.assertEqual(
+            budget.max_memories + budget.max_entities + budget.max_relations + budget.max_notes,
+            12,
+        )
+        self.assertEqual(budget.max_total_chars, 12_000)
+
+    def test_none_config_returns_mode_budget(self):
+        normal = budget_from_config(None, active_mode="normal")
+        research = budget_from_config(None, active_mode="research")
+        self.assertLessEqual(
+            normal.max_memories + normal.max_entities + normal.max_relations + normal.max_notes,
+            research.max_memories + research.max_entities + research.max_relations + research.max_notes,
+        )
+
+
+class TestRetrieveDeduplication(unittest.TestCase):
+    """Verify only one retrieve() call happens per turn."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.store, self.paths = fresh_store(self.tmp)
+        ingest_save_memory(self.store, self.paths, fact="uses RC4 at 0x401000", category="crypto")
+        ingest_exploration_finding(
+            self.store,
+            self.paths,
+            category="function_purpose",
+            summary="RC4 KSA",
+            address=0x401000,
+            relevance="high",
+        )
+
+    def test_build_retrieved_context_with_pack_calls_retrieve_once(self):
+        q = RetrievalQuery(text="rc4", address="0x401000")
+        with patch("rikugan.memory.context.retrieve", wraps=retrieve) as spy:
+            section, pack = build_retrieved_context_with_pack(self.store, self.paths, query=q, active_mode="normal")
+        self.assertEqual(spy.call_count, 1)
+        # The returned pack and the rendered section are consistent.
+        self.assertIsNotNone(pack)
+        self.assertGreater(pack.counts.get("memories", 0), 0)
+        if section:
+            self.assertIn("## Retrieved Knowledge", section)
+
+    def test_with_pack_helper_returns_same_pack(self):
+        q = RetrievalQuery(text="rc4", address="0x401000")
+        _section, pack = build_retrieved_context_with_pack(self.store, self.paths, query=q, active_mode="normal")
+        meta = build_retrieval_metadata(pack)
+        # Metadata is built from the same pack the section was built from,
+        # so the counts must agree.
+        self.assertEqual(meta["counts"], pack.counts)
 
 
 class TestRetrieve(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
-        self.store, self.paths = fresh(self.tmp)
+        self.store, self.paths = fresh_store(self.tmp)
         # Seed some data
         ingest_save_memory(self.store, self.paths, fact="RC4 decrypts beacon payload at 0x401000", category="crypto")
         ingest_save_memory(self.store, self.paths, fact="HTTP POST endpoint /api/v2/report", category="network")
@@ -92,7 +186,7 @@ class TestRetrieve(unittest.TestCase):
 class TestContextBuilder(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
-        self.store, self.paths = fresh(self.tmp)
+        self.store, self.paths = fresh_store(self.tmp)
         ingest_save_memory(self.store, self.paths, fact="uses RC4 at 0x401000", category="crypto")
 
     def test_build_section_includes_tag_and_sanitize(self):
@@ -139,7 +233,7 @@ class TestContextBuilder(unittest.TestCase):
 class TestSearchAll(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
-        self.store, self.paths = fresh(self.tmp)
+        self.store, self.paths = fresh_store(self.tmp)
         ingest_save_memory(self.store, self.paths, fact="uses AES at 0x402000", category="crypto")
         ingest_save_memory(self.store, self.paths, fact="creates scheduled task", category="persistence")
 

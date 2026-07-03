@@ -17,8 +17,9 @@ collapse to an empty context.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from ..core.sanitize import strip_injection_markers
+from ..core.sanitize import strip_injection_markers, strip_lone_surrogates
 from .paths import KnowledgePaths
 from .raw_store import KnowledgeRawStore
 from .retrieve import (
@@ -26,6 +27,9 @@ from .retrieve import (
     RetrievalQuery,
     retrieve,
 )
+
+if TYPE_CHECKING:
+    from ..core.config import RikuganConfig
 
 
 @dataclass
@@ -44,6 +48,11 @@ class ContextBudget:
 NORMAL_BUDGET = ContextBudget(max_memories=12, max_entities=8, max_relations=15, max_notes=3, max_total_chars=12000)
 RESEARCH_BUDGET = ContextBudget(max_memories=18, max_entities=12, max_relations=25, max_notes=5, max_total_chars=18000)
 
+# Multiplier applied to the user-configured base for research/plan/
+# exploration modes.  Capped below so we never exceed the validation
+# limits in ``RikuganConfig.validate()``.
+_RESEARCH_BUDGET_MULTIPLIER = 1.5
+
 
 _BUDGET_BY_MODE = {
     "normal": NORMAL_BUDGET,
@@ -52,6 +61,80 @@ _BUDGET_BY_MODE = {
     "exploration": RESEARCH_BUDGET,
     "modify": RESEARCH_BUDGET,
 }
+
+# Config validation caps (must stay in sync with RikuganConfig.validate).
+_CFG_MAX_ITEMS_HARD_CAP = 100
+_CFG_MAX_CHARS_HARD_CAP = 60_000
+
+
+def _clamp_int(value: object, default: int, lo: int, hi: int) -> int:
+    """Clamp *value* into [lo, hi] with a *default* fallback for bad inputs."""
+    try:
+        v = int(value)  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, v))
+
+
+def budget_from_config(
+    config: RikuganConfig | None,
+    *,
+    active_mode: str = "normal",
+) -> ContextBudget:
+    """Build a :class:`ContextBudget` from a live :class:`RikuganConfig`.
+
+    Normal mode -> use the configured item/char caps verbatim.
+    Research / plan / exploration / modify -> multiply by a bounded
+    factor (1.5x) but never exceed the config validation caps
+    (``knowledge_max_context_items <= 100``,
+    ``knowledge_max_context_chars <= 60_000``).
+
+    Falls back to the default :data:`NORMAL_BUDGET` when *config* is
+    ``None`` or its fields are missing/malformed.
+    """
+    if config is None:
+        return budget_for_mode(active_mode)
+    base_items = _clamp_int(
+        getattr(config, "knowledge_max_context_items", NORMAL_BUDGET.max_memories),
+        NORMAL_BUDGET.max_memories,
+        1,
+        _CFG_MAX_ITEMS_HARD_CAP,
+    )
+    base_chars = _clamp_int(
+        getattr(config, "knowledge_max_context_chars", NORMAL_BUDGET.max_total_chars),
+        NORMAL_BUDGET.max_total_chars,
+        1_000,
+        _CFG_MAX_CHARS_HARD_CAP,
+    )
+    mode = (active_mode or "normal").lower()
+    if mode in ("research", "plan", "exploration", "modify"):
+        items = min(round(base_items * _RESEARCH_BUDGET_MULTIPLIER), _CFG_MAX_ITEMS_HARD_CAP)
+        chars = min(round(base_chars * _RESEARCH_BUDGET_MULTIPLIER), _CFG_MAX_CHARS_HARD_CAP)
+    else:
+        items = base_items
+        chars = base_chars
+
+    # Split the item cap between memories/entities/relations/notes
+    # proportionally to NORMAL_BUDGET so the proportion is preserved
+    # regardless of where the user has set the cap.
+    nm = NORMAL_BUDGET
+    total_default = nm.max_memories + nm.max_entities + nm.max_relations + nm.max_notes
+    mem_share = round(items * nm.max_memories / total_default) or 1
+    ent_share = round(items * nm.max_entities / total_default) or 1
+    rel_share = round(items * nm.max_relations / total_default) or 1
+    note_share = max(1, items - mem_share - ent_share - rel_share)
+    # Reconcile rounding so we don't exceed the configured cap.
+    drift = (mem_share + ent_share + rel_share + note_share) - items
+    if drift > 0:
+        rel_share = max(1, rel_share - drift)
+
+    return ContextBudget(
+        max_memories=mem_share,
+        max_entities=ent_share,
+        max_relations=rel_share,
+        max_notes=note_share,
+        max_total_chars=chars,
+    )
 
 
 def budget_for_mode(mode: str) -> ContextBudget:
@@ -68,12 +151,14 @@ def sanitize_knowledge_context(text: str) -> str:
     """Tag and sanitize retrieved-knowledge text before prompt injection.
 
     Mirrors :func:`sanitize_memory` but with a ``<retrieved_knowledge>``
-    wrapper so the LLM treats it as data. We also try ``strip_lone_surrogates``
+    wrapper so the LLM treats it as data. We also strip lone surrogates
     because provenance strings (function names, comments) frequently leak
-    bad UTF-16 halves from IDA.
+    bad UTF-16 halves from IDA — leaving them in would crash downstream
+    ``str.encode('utf-8')`` in the provider HTTP body.
     """
     if not text:
         return text
+    text = strip_lone_surrogates(text)
     text = strip_injection_markers(text)
     text = text.replace("</retrieved_knowledge>", "[/retrieved_knowledge]")
     return text
@@ -84,6 +169,7 @@ def _safe_field(value, limit: int = 400) -> str:
     if value is None:
         return ""
     s = str(value)
+    s = strip_lone_surrogates(s)
     s = strip_injection_markers(s)
     if limit and len(s) > limit:
         s = s[: limit - 1].rstrip() + "…"
@@ -105,8 +191,37 @@ def build_retrieved_context(
     active_mode: str = "normal",
 ) -> str:
     """Build the ``## Retrieved Knowledge`` Markdown block (or "")."""
+    section, _pack = build_retrieved_context_with_pack(
+        store,
+        paths,
+        query=query,
+        budget=budget,
+        active_mode=active_mode,
+    )
+    return section
+
+
+def build_retrieved_context_with_pack(
+    store: KnowledgeRawStore | None,
+    paths: KnowledgePaths | None,
+    *,
+    query: RetrievalQuery | None = None,
+    budget: ContextBudget | None = None,
+    active_mode: str = "normal",
+) -> tuple[str, RetrievalPack | None]:
+    """Build the prompt section AND return the underlying :class:`RetrievalPack`.
+
+    Returns ``(section_text, pack_or_none)``.  Callers that need the
+    pack for chat-side metadata (e.g. ``KNOWLEDGE_RETRIEVED`` events)
+    use this entry point so retrieval runs **once per turn** instead
+    of twice (once for the section, once for metadata).
+
+    The string-only :func:`build_retrieved_context` is kept as a
+    thin wrapper for tests and external callers that don't need the
+    pack; it delegates here so the two paths share a single code path.
+    """
     if store is None or paths is None:
-        return ""
+        return "", None
 
     if budget is None:
         budget = budget_for_mode(active_mode)
@@ -125,10 +240,10 @@ def build_retrieved_context(
             expand_relations=True,
         )
     except Exception:
-        return ""
+        return "", None
 
     if pack.total == 0:
-        return ""
+        return "", pack
 
     parts = [
         "## Retrieved Knowledge",
@@ -169,7 +284,7 @@ def build_retrieved_context(
     # Apply total char budget (rough — we don't tokenize).
     if len(text) > budget.max_total_chars:
         text = text[: budget.max_total_chars - 1].rstrip() + "…"
-    return text
+    return text, pack
 
 
 def build_retrieval_metadata(pack: RetrievalPack | None) -> dict:
@@ -254,7 +369,9 @@ __all__ = [
     "RESEARCH_BUDGET",
     "ContextBudget",
     "budget_for_mode",
+    "budget_from_config",
     "build_retrieval_metadata",
     "build_retrieved_context",
+    "build_retrieved_context_with_pack",
     "sanitize_knowledge_context",
 ]

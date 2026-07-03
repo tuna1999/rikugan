@@ -274,8 +274,16 @@ def list_notes(notes_dir: str) -> list[ParsedNote]:
 
 
 def extract_inline_addresses(text: str) -> list[str]:
-    """Return lowercase hex addresses found in *text* (uses the same regex)."""
-    return [m.group(0).lower() for m in ADDRESS_RE.finditer(text or "")]
+    """Return lowercase hex addresses found in *text* (delegates to ``paths.extract_addresses``).
+
+    Shared with :func:`rikugan.memory.paths.extract_addresses` so both
+    ingestion paths produce identical, deduped, leading-word-boundary
+    lists.  Older behavior was a separate regex + ordered scan that
+    silently diverged for inputs without a leading word boundary.
+    """
+    from .paths import extract_addresses
+
+    return extract_addresses(text)
 
 
 def extract_inline_tags(text: str) -> list[str]:

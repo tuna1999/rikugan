@@ -50,8 +50,30 @@ def _guarded_import(*args, **kwargs):
 
 
 _guarded_import._rikugan_guarded = True  # marker to avoid double-wrapping
-if not getattr(builtins.__import__, "_rikugan_guarded", False):
+
+
+def _ensure_import_guard() -> None:
+    """Install the Shiboken import guard if it is not already active.
+
+    PySide6/Shiboken6 may replace ``builtins.__import__`` with its own
+    hook *after* plugin load. Without re-installing our guard, the
+    re-entrancy protection would be silently lost. Call this before any
+    risky import (e.g. before importing the panel module) and again
+    whenever the surrounding code observes a Shiboken restart.
+
+    The bypass target (``_shiboken_import``) is pinned ONCE at module
+    load to the unmodified CPython ``__import__``. We never reassign it
+    inside this function — if we did, a Shiboken restart would overwrite
+    the bypass target with the very hook we are trying to bypass, and
+    the guard would silently become a no-op.
+    """
+    current = builtins.__import__
+    if getattr(current, "_rikugan_guarded", False):
+        return
     builtins.__import__ = _guarded_import
+
+
+_ensure_import_guard()
 
 
 class RikuganPlugmod(idaapi.plugmod_t):
@@ -62,6 +84,7 @@ class RikuganPlugmod(idaapi.plugmod_t):
         self._panel = None
 
     def run(self, arg: int) -> bool:
+        _ensure_import_guard()
         self._toggle_panel()
         return True
 
@@ -75,11 +98,11 @@ class RikuganPlugmod(idaapi.plugmod_t):
             except Exception as e:
                 idaapi.msg(f"[Rikugan] Panel close error: {e}\n")
         # Flush deferred widget deletions while Python is still alive.
-        # Without this, orphaned PySide6-wrapped QFrames survive until
+        # Without this, orphaned Qt-wrapped QFrames survive until
         # QApplication::~QApplication() where their C++ destructors call
         # disconnectNotify -> PyErr_Occurred on a dead interpreter -> crash.
         try:
-            from PySide6.QtWidgets import QApplication
+            from rikugan.ui.qt_compat import QApplication
 
             QApplication.processEvents()
         except Exception as exc:
@@ -88,6 +111,11 @@ class RikuganPlugmod(idaapi.plugmod_t):
             sys.stderr.write(f"[Rikugan] QApplication.processEvents failed: {exc}\n")
 
     def _toggle_panel(self) -> None:
+        # Reinstall the Shiboken import guard before any panel import —
+        # PySide6/Shiboken6 may have replaced builtins.__import__ since
+        # plugin load, and a bare ``from rikugan.… import …`` without
+        # protection would re-enter the broken hook.
+        _ensure_import_guard()
         # Lazily import startup_timing within toggle_panel so that the
         # plugin module itself does NOT import rikugan.* at load time.
         from rikugan.core.startup_timing import (

@@ -242,3 +242,23 @@ class KnowledgeRawStore:
             "relations": len(self.list_relations()),
             "observations": len(self.list_observations()),
         }
+
+    def count_observations(self) -> int:
+        """Cheap observation count without re-reading the other JSONL files.
+
+        Used by the Knowledge tab so it can fetch memories/entities/
+        relations ONCE each, then issue a single observation count
+        instead of doing a second pass through the same files
+        (which ``counts()`` would do).
+        """
+        if not os.path.isfile(self.paths.observations_path):
+            return 0
+        n = 0
+        try:
+            with open(self.paths.observations_path, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if line.strip():
+                        n += 1
+        except OSError:
+            return 0
+        return n
