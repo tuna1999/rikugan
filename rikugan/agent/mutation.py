@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -322,7 +323,7 @@ def build_reverse_record(
 def capture_pre_state(
     tool_name: str,
     arguments: dict[str, Any],
-    tool_executor,
+    tool_executor: Callable[[str, dict[str, Any]], str],
 ) -> dict[str, Any]:
     """Capture pre-mutation state needed for undo.
 

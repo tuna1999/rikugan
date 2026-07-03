@@ -1,6 +1,6 @@
 [project]
 name = "rikugan"
-version = "1.6.0"
+version = "1.7.0"
 description = "Agentic LLM reverse-engineering companion embedded directly in IDA Pro."
 readme = "README.md"
 license = "MIT"
@@ -42,6 +42,8 @@ dependencies = [
     "ida-domain>=0.5.0",
     "tomli>=2.4.0",
     "cryptography>=49.0.0",
+    "requests>=2.31.0",
+    "html2text>=2025.4.15",
 ]
 
 [tool.ruff]
@@ -120,7 +122,6 @@ module = [
     "rikugan.ui.bulk_renamer",
     "rikugan.ui.agent_tree",
     "rikugan.ui.context_bar",
-    "rikugan.ui.panel",
     "rikugan.ui.theme.manager",
     "rikugan.ui.theme.palette_ida",
     "rikugan.ui.tabs.skills_tab",

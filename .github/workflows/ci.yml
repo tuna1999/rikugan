@@ -27,9 +27,9 @@ jobs:
     name: Ruff
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: pip
@@ -47,9 +47,9 @@ jobs:
     name: Mypy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: pip
@@ -73,9 +73,9 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -94,23 +94,17 @@ jobs:
           pip install PySide6
 
       - name: Run tests
-        # Exclude tests/ui/test_a2a_widget.py until rewrite — see
-        # https://github.com/EliteClassRoom/rikugan/issues/3 . The
-        # tests still patch QThread + import _A2AWorker, both removed
-        # by the a2a refactor (threading.Thread + _A2ATaskRunner).
-        # Run locally with `pytest tests/ui/test_a2a_widget.py -v`
-        # to drive the rewrite.
-        run: python -m pytest tests/ --tb=short -q --ignore=tests/ui/test_a2a_widget.py
+        run: python -m pytest tests/ --tb=short -q
 
   quality:
     name: Desloppify
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: pip

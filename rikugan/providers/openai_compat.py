@@ -62,7 +62,15 @@ class OpenAICompatProvider(OpenAIProvider):
         )
 
     def list_models(self) -> list[ModelInfo]:
-        """Fetch models from the OpenAI-compatible endpoint."""
+        """Fetch models from the OpenAI-compatible endpoint.
+
+        Override the base ``_builtin_models()`` fallback contract: arbitrary
+        OpenAI-compatible endpoints (MiniMax, custom servers) have no
+        canonical builtin model list. On failure we fall back to the
+        currently configured model, or an empty list if none is set —
+        empty is appropriate because the user types the model name
+        manually for these endpoints.
+        """
         try:
             client = self._get_client()
             response = client.models.list()

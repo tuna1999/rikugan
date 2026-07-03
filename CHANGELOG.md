@@ -5,6 +5,48 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] — 2026-07-03
+
+### Added
+- `naming-convention` skill (`rikugan/skills/builtins/naming-convention/`) — comprehensive naming standard covering functions, variables, globals, structs, enums, and typedefs, plus edge cases (wrappers/thunks, C++ mangling, Go/Rust, vtable) and a confidence-based escalation ladder with `Unknown_<Hint>_<addr>` placeholders.
+
+### Changed
+- **BREAKING (behavior):** `bulk_renamer` Quick and Deep prompts now generate PascalCase function names (`InitializeGlobals`) instead of snake_case (`initialize_globals`). This unifies bulk-rename output with the system prompt and the new `naming-convention` skill. Existing IDBs are NOT migrated — old snake_case names persist; only new renames follow the standard. If you relied on snake_case output from Bulk Rename, regenerate names for affected functions.
+- `RENAMING_SECTION` in the system prompt (`rikugan/agent/prompts/base.py`) expanded from 3 naming rules to 6 (now covers variables, enums, typedefs) and references the `/naming-convention` skill for edge cases. Also removes the ghost-tool reference to `rename_multi_variables` (which never existed).
+- `malware-analysis` and `generic-re` skills: naming sections expanded from 1-3 rules to the full 6-rule summary, cross-referencing `/naming-convention`.
+- Removed ghost-tool references to `rename_multi_variables` in `rikugan/agent/exploration_mode.py` and `rikugan/agent/modes/research.py` (the tool never existed — agents in `/explore` and research modes would attempt to call it and waste a turn).
+
+## [1.6.0] — 2026-07-02
+
+### Added
+- `set_runtime_config` wiring in `rikugan/web/__init__.py` (fixes silent `getattr` no-op; security-constant-real-bug step 2).
+- `EXECUTE_PYTHON_TOOL_NAME` constant in `rikugan/constants.py` (security-constant-real-bug step 1).
+
+### Fixed
+- CI: master trigger + push hook + concurrency + Python 3.12 matrix (`f191722`).
+- CI: base_ref diff guard for push events + runtime deps install in test job (`d2545d0`).
+- CI: pin Python 3.11 via uv for reproducible desloppify scores (`d518cb6`).
+- Release: sync version check across 3 sources (`4270f69`).
+- Subprocess injection guard in a2a (port from fork `57caf5e`).
+- `a2a_widget` threading model refactored from `QThread`/`_A2AWorker(QObject)` to `threading.Thread` + `queue.Queue` + `QTimer` polling.
+
+### Refactor / Quality
+- Pseudo tool schemas extracted to `rikugan/agent/pseudo_tool_schemas.py` (6 of 7 schemas imported into `loop.py`; `DELEGATE_EXTERNAL_TASK_SCHEMA` import pending — see Phase 2).
+- Purged IDA 8.x `ida_struct` paths from `types_tools.py` (step 8 of dead-code-purge).
+- Removed duplicate `completed_tool_call_ids.add()` at `loop.py:775` (step 7).
+- Removed 58 empty legacy `{dark:'', light:''}` dict constants (step 6).
+- Applied ruff format to 9 files + removed invalid `noqa` (step 5).
+- Extended `sanitize.py` with `strip_lone_surrogates` + `sanitize_messages_for_provider`.
+
+### Tooling
+- Added Dependabot weekly config with grouped updates.
+- Added `CODEOWNERS` for security and CI paths.
+
+## [1.6.1] — 2026-07-02
+
+### Fixed
+- `delegate_external_task` pseudo-tool is now visible to the LLM. The handler (`_handle_delegate_external_task_tool`) and dispatch (`elif tc.name == "delegate_external_task"`) were previously unreachable because `DELEGATE_EXTERNAL_TASK_SCHEMA` was never appended to the tool list in `_build_tools_schema`. The schema is now imported and wired in `rikugan/agent/loop.py` (C.4 final step).
+
 ## [1.5.0] — 2026-06-29
 
 ### Added

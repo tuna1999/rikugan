@@ -24,8 +24,8 @@ from .qt_compat import (
     qt_flags,
 )
 from .styles import host_stylesheet
-from .theme.manager import ThemeManager, _blend_hex
-from .theme.tokens import _hex_luminance
+from .theme.manager import ThemeManager, blend_hex
+from .theme.tokens import hex_luminance
 
 logger = get_logger()
 
@@ -70,7 +70,7 @@ def _body_text(t) -> str:
 
 
 def _muted_text(t) -> str:
-    return _blend_hex(t.text, t.mid, 0.5)
+    return blend_hex(t.text, t.mid, 0.5)
 
 
 def _subtle_text(t) -> str:
@@ -91,9 +91,9 @@ def _pick_contrasting_text(bg_hex: str, dark_candidate: str, light_candidate: st
     see dark text on a light-blue button (readable), while dark-mode
     users still get the light ``highlight_text`` they expect.
     """
-    bg_l = _hex_luminance(bg_hex)
-    dark_l = _hex_luminance(dark_candidate)
-    light_l = _hex_luminance(light_candidate)
+    bg_l = hex_luminance(bg_hex)
+    dark_l = hex_luminance(dark_candidate)
+    light_l = hex_luminance(light_candidate)
 
     def _ratio(a: float, b: float) -> float:
         hi, lo = max(a, b), min(a, b)
@@ -106,7 +106,7 @@ def _pick_contrasting_text(bg_hex: str, dark_candidate: str, light_candidate: st
 
 def _user_bubble_bg(t) -> str:
     # Darker user bubble: blend highlight toward base.
-    return _blend_hex(t.highlight, t.base, 0.4)
+    return blend_hex(t.highlight, t.base, 0.4)
 
 
 def _user_bubble_border(t) -> str:
@@ -241,7 +241,7 @@ class _HeightCachedLabel(QLabel):
 class CollapsibleSection(QFrame):
     """A widget with a clickable header that shows/hides content."""
 
-    def __init__(self, title: str, parent: QWidget = None):
+    def __init__(self, title: str, parent: QWidget | None = None):
         super().__init__(parent)
         self._expanded = False
         # Re-apply on theme change. ``update()`` alone is not enough
@@ -326,7 +326,7 @@ class CollapsibleSection(QFrame):
 class UserMessageWidget(QFrame):
     """Displays a user message."""
 
-    def __init__(self, text: str, parent: QWidget = None):
+    def __init__(self, text: str, parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("message_user")
 
@@ -487,7 +487,7 @@ def _split_thinking(text: str):
 class _ThinkingBlock(QFrame):
     """Collapsible block for model reasoning / chain-of-thought."""
 
-    def __init__(self, parent: QWidget = None):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("thinking_block")
 
@@ -615,7 +615,7 @@ class AssistantMessageWidget(QFrame):
     # hasn't elapsed (e.g. burst of 500+ chars in a single poll tick).
     _RENDER_BATCH_MAX: int = 500
 
-    def __init__(self, parent: QWidget = None):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("message_assistant")
         self._full_text = ""
@@ -759,7 +759,7 @@ class ThinkingWidget(QFrame):
 
     _STAR_FRAMES: ClassVar[list[str]] = ["✳", "✴", "✵", "✶"]
 
-    def __init__(self, parent: QWidget = None):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("message_thinking")
         self._phrase_idx = random.randint(0, len(_THINKING_PHRASES) - 1)
@@ -834,7 +834,7 @@ class ThinkingWidget(QFrame):
 class QueuedMessageWidget(QFrame):
     """Displays a queued user message with dashed border."""
 
-    def __init__(self, text: str, parent: QWidget = None):
+    def __init__(self, text: str, parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("message_queued")
 
@@ -902,7 +902,7 @@ class UserQuestionWidget(QFrame):
     #   widget.option_selected.connect(self._on_user_answer)
     option_selected = Signal(str)
 
-    def __init__(self, question: str, options: list | None = None, parent: QWidget = None):
+    def __init__(self, question: str, options: list | None = None, parent: QWidget | None = None):
         super().__init__(parent)
         self._option_selected_callback = None
         self.setObjectName("message_question")
@@ -955,7 +955,7 @@ class UserQuestionWidget(QFrame):
             _tool_frame_style(
                 tokens=tokens,
                 accent=tokens.warning,
-                background=_blend_hex(tokens.warning, tokens.base, 0.85),
+                background=blend_hex(tokens.warning, tokens.base, 0.85),
                 object_name="message_question",
             )
         )
@@ -972,9 +972,9 @@ class UserQuestionWidget(QFrame):
             )
         )
         if self._buttons:
-            btn_bg = _blend_hex(tokens.highlight, tokens.base, 0.55)
-            btn_bg_hover = _blend_hex(tokens.highlight, tokens.base, 0.40)
-            btn_bg_pressed = _blend_hex(tokens.highlight, tokens.base, 0.70)
+            btn_bg = blend_hex(tokens.highlight, tokens.base, 0.55)
+            btn_bg_hover = blend_hex(tokens.highlight, tokens.base, 0.40)
+            btn_bg_pressed = blend_hex(tokens.highlight, tokens.base, 0.70)
             # Foreground must contrast with the button background, not
             # with the highlight itself. In dark mode ``highlight_text``
             # is white-ish and reads well on the bluish bg; in light
@@ -983,8 +983,8 @@ class UserQuestionWidget(QFrame):
             # ``base`` is darker than the bg, prefer ``text``; else
             # prefer ``highlight_text``.
             btn_fg = _pick_contrasting_text(btn_bg, tokens.text, tokens.highlight_text)
-            btn_border = _blend_hex(tokens.highlight, tokens.mid, 0.5)
-            disabled_bg = _blend_hex(tokens.base, tokens.alt_base, 0.5)
+            btn_border = blend_hex(tokens.highlight, tokens.mid, 0.5)
+            disabled_bg = blend_hex(tokens.base, tokens.alt_base, 0.5)
             button_css = (
                 f"QPushButton {{ background: {btn_bg}; color: {btn_fg}; "
                 f"border: 1px solid {btn_border}; border-radius: 4px; "
@@ -1033,7 +1033,7 @@ class ExplorationPhaseWidget(QFrame):
         "save": "\u2714",  # checkmark
     }
 
-    def __init__(self, from_phase: str, to_phase: str, reason: str = "", parent: QWidget = None):
+    def __init__(self, from_phase: str, to_phase: str, reason: str = "", parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("message_tool")
         self._reason_text = reason
@@ -1056,9 +1056,9 @@ class ExplorationPhaseWidget(QFrame):
 
     def _apply_styles(self, _tokens: object = None) -> None:
         tokens = ThemeManager.instance().tokens()
-        phase_accent = _blend_hex(tokens.warning, tokens.text, 0.25)
-        phase_bg = _blend_hex(tokens.warning, tokens.base, 0.9)
-        phase_reason = _blend_hex(tokens.warning, tokens.text, 0.45)
+        phase_accent = blend_hex(tokens.warning, tokens.text, 0.25)
+        phase_bg = blend_hex(tokens.warning, tokens.base, 0.9)
+        phase_reason = blend_hex(tokens.warning, tokens.text, 0.45)
         self.setStyleSheet(
             _tool_frame_style(
                 tokens=tokens,
@@ -1102,7 +1102,7 @@ class ExplorationFindingWidget(QFrame):
         summary: str,
         address: str | None = None,
         relevance: str = "medium",
-        parent: QWidget = None,
+        parent: QWidget | None = None,
     ):
         super().__init__(parent)
         self.setObjectName("message_tool")
@@ -1179,7 +1179,7 @@ class ResearchNoteWidget(QFrame):
         path: str,
         preview: str = "",
         review_passed: bool = True,
-        parent: QWidget = None,
+        parent: QWidget | None = None,
     ):
         super().__init__(parent)
         self.setObjectName("message_tool")
@@ -1238,8 +1238,8 @@ class ResearchNoteWidget(QFrame):
         )
         self._path_label.setStyleSheet(
             host_stylesheet(
-                f"color: {_blend_hex(tokens.text, tokens.mid, 0.3)}; font-family: monospace; font-size: 10px;",
-                f"color: {_blend_hex(tokens.text, tokens.mid, 0.3)}; {_native_text_style(size=10, monospace=True)}",
+                f"color: {blend_hex(tokens.text, tokens.mid, 0.3)}; font-family: monospace; font-size: 10px;",
+                f"color: {blend_hex(tokens.text, tokens.mid, 0.3)}; {_native_text_style(size=10, monospace=True)}",
             )
         )
         if self._preview_label is not None:
@@ -1266,7 +1266,7 @@ class SubagentEventWidget(QFrame):
         status: str,
         name: str,
         detail: str = "",
-        parent: QWidget = None,
+        parent: QWidget | None = None,
     ):
         super().__init__(parent)
         self.setObjectName("message_tool")
@@ -1304,7 +1304,7 @@ class SubagentEventWidget(QFrame):
             _tool_frame_style(
                 tokens=tokens,
                 accent=color,
-                background=_blend_hex(tokens.alt_base, tokens.mid, 0.85),
+                background=blend_hex(tokens.alt_base, tokens.mid, 0.85),
             )
         )
         self._icon.setStyleSheet(
@@ -1421,7 +1421,7 @@ class KnowledgeContextWidget(QFrame):
 class ErrorMessageWidget(QFrame):
     """Displays an error message."""
 
-    def __init__(self, error_text: str, parent: QWidget = None):
+    def __init__(self, error_text: str, parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("message_tool")
 

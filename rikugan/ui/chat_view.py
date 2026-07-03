@@ -417,7 +417,7 @@ class ChatView(QScrollArea):
     user_answer_submitted = Signal(str)  # chosen option / typed answer
     orchestra_approval_decided = Signal(str, str)  # (tool_call_id, "approve"/"deny")
 
-    def __init__(self, parent: QWidget = None):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("chat_scroll")
         self.setWidgetResizable(True)

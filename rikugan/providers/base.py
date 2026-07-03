@@ -27,6 +27,22 @@ class LLMProvider(ABC):
     is implemented once in the concrete ``chat`` and ``chat_stream`` methods.
     Subclasses supply provider-specific hooks:
 
+    API key auto-discovery contract
+    --------------------------------
+    Subclasses SHOULD honour environment-variable auto-discovery for API keys
+    in ``__init__`` (e.g. ``api_key = api_key or os.environ.get("OPENAI_API_KEY", "")``).
+    The canonical env-var names currently in use:
+
+    * ``OPENAI_API_KEY`` (OpenAIProvider)
+    * ``GOOGLE_API_KEY`` or ``GEMINI_API_KEY`` (GeminiProvider)
+    * ``ANTHROPIC_API_KEY`` and ``CLAUDE_CODE_OAUTH_TOKEN`` (AnthropicProvider —
+      handled by ``resolve_anthropic_auth`` which also walks keychain)
+    * MiniMaxProvider does not auto-discover — requires explicit ``api_key`` arg
+    * OllamaProvider does not require a key (defaults to literal ``"ollama"``)
+
+    New subclasses should follow this pattern and document any new env-var
+    names in this contract.
+
     * ``_format_messages`` -- convert internal ``Message`` list to wire format
     * ``_build_request_kwargs`` -- assemble the full request dict
     * ``_call_api`` -- invoke the SDK and return the raw response

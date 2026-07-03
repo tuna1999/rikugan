@@ -1,4 +1,27 @@
-"""A2A HTTP client for agent-to-agent communication over HTTPS + SSE."""
+"""A2A HTTP client for agent-to-agent communication over HTTPS + SSE.
+
+Authentication model
+--------------------
+The A2A outbound HTTP client does **not** attach an ``Authorization`` header
+by default. External agents are expected to be reachable over a network
+path that provides its own authentication boundary:
+
+* **Loopback / local network** — typical for Claude Code / Codex CLI
+  subprocess transport; no auth needed.
+* **Authenticated reverse proxy** — the operator fronts the agent endpoint
+  with a TLS-terminating proxy that enforces bearer-token / mTLS auth
+  before forwarding to the A2A server. The A2A server itself sees only
+  authenticated traffic.
+* **User-configured remote host** — operators are responsible for placing
+  the endpoint behind appropriate network-level auth (VPN, IP allow-list,
+  mTLS). Rikugan does not embed a token in outbound requests because
+  ExternalAgentConfig does not currently expose an auth_token field.
+
+If you need token-based auth directly from Rikugan to a remote A2A server
+without an auth-fronting proxy, file an issue to extend
+``ExternalAgentConfig`` with an ``auth_token`` field that propagates into
+the request headers.
+"""
 
 from __future__ import annotations
 

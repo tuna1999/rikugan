@@ -68,8 +68,6 @@ rikugan/
 │   ├── web_fetch.py          # Web fetch tools
 │   └── xrefs.py              # Shared cross-reference helpers
 │
-├── hosts/                    # Backward-compat shims → rikugan.ida.ui.*
-│
 ├── providers/                # LLM provider integrations (host-agnostic)
 │   ├── base.py               # LLMProvider ABC
 │   ├── registry.py           # ProviderRegistry
@@ -368,7 +366,7 @@ Users can also create custom skills in their host config directory (`~/.idapro/r
 - **Within the same package** use absolute imports: `from rikugan.tools.navigation import jump_to`
 - **IDA tool modules** (`rikugan/tools/*.py`) use relative imports within `rikugan.tools`
 - **Host API modules** (`ida_*`) are imported via `importlib.import_module()` inside `try/except ImportError` blocks to avoid Shiboken UAF crashes
-- **Backward-compat shims** in `rikugan/hosts/` re-export from canonical locations
+- **Host dispatch** for `rikugan.ui.panel` lives in `rikugan/ui/panel.py` (10-LOC conditional import shim) and routes to `rikugan.ida.ui.panel` when IDA is the host, `rikugan.ui.panel_core` otherwise
 
 ## System Prompt Structure
 
