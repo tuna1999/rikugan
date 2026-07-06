@@ -46,18 +46,34 @@ class TestQtCompat(unittest.TestCase):
                 f"{name} should be removed (PySide6-only)",
             )
 
-    def test_all_symbols_come_from_pyside6(self):
-        """Every Qt symbol qt_compat exports must originate in PySide6."""
+    def test_qt_compat_source_imports_only_pyside6(self):
+        """Source-level check: qt_compat imports from PySide6, never PyQt5.
+
+        Why source instead of ``inspect.getmodule()``:
+        ``tests/qt_stubs.py`` builds Qt classes with ``type("QWidget", (), attrs)``
+        inside the ``tests.qt_stubs`` module, so each stub class gets
+        ``__module__ = "tests.qt_stubs"`` stamped at construction time. The stubs
+        are then injected into ``sys.modules["PySide6.QtWidgets"].__dict__``, but
+        that injection does NOT mutate the class's ``__module__`` attribute, so
+        ``inspect.getmodule(obj)`` follows ``__module__`` and returns
+        ``tests.qt_stubs`` — never ``PySide6.*``. The intent ("qt_compat must
+        only pull symbols from PySide6") is therefore expressed more reliably
+        by inspecting the source file directly. This check works identically
+        under stubs and real PySide6.
+        """
         import inspect
 
-        for name in ("QWidget", "QVBoxLayout", "QTimer", "Signal", "Qt"):
-            obj = getattr(qt_compat, name)
-            module = inspect.getmodule(obj)
-            self.assertIsNotNone(module, f"{name} has no resolvable module")
-            self.assertTrue(
-                module.__name__.startswith("PySide6"),
-                f"{name} should come from PySide6, got {module.__name__}",
-            )
+        source_path = inspect.getsourcefile(qt_compat)
+        self.assertIsNotNone(source_path, "could not locate qt_compat source")
+        with open(source_path, encoding="utf-8") as fh:
+            source = fh.read()
+
+        self.assertIn("PySide6", source, "qt_compat must import from PySide6")
+        self.assertNotIn(
+            "PyQt5",
+            source,
+            "qt_compat must not import from PyQt5 (PySide6-only)",
+        )
 
 
 if __name__ == "__main__":
