@@ -23,6 +23,7 @@ from .export_formatting import (
 )
 from .input_area import InputArea
 from .mutation_log_view import MutationLogPanel
+from .profiling import probe as ui_probe
 from .qt_compat import (
     QCheckBox,
     QDialog,
@@ -1267,6 +1268,7 @@ class RikuganPanelCore(QWidget):
         if self._polling or self._is_shutdown:
             return
         self._polling = True
+        events_processed = 0
         try:
             chat_view = self._active_chat_view()
             container = chat_view._container if chat_view is not None else None
@@ -1278,13 +1280,15 @@ class RikuganPanelCore(QWidget):
             if container is not None:
                 container.setUpdatesEnabled(False)
             try:
-                for _ in range(30):
-                    event = self._ctrl.get_event(timeout=0)
-                    if event is None:
-                        if not self._ctrl.is_agent_running:
-                            self._on_agent_finished()
-                        return
-                    self._on_event(event)
+                with ui_probe("ui.poll_events", events=0):
+                    for _ in range(30):
+                        event = self._ctrl.get_event(timeout=0)
+                        if event is None:
+                            if not self._ctrl.is_agent_running:
+                                self._on_agent_finished()
+                            return
+                        self._on_event(event)
+                        events_processed += 1
             finally:
                 if container is not None:
                     container.setUpdatesEnabled(True)
