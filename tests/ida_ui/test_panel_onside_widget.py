@@ -107,10 +107,11 @@ def _run_oncreate_under_stubs(qt_binding: str) -> tuple[mock.MagicMock, mock.Mag
 
 class TestPanelOnCreatePySideOnly(unittest.TestCase):
     def test_uses_form_to_pyside_widget_only(self) -> None:
-        """Default QT_BINDING (PySide6) path picks FormToPySideWidget.
+        """Default-path guard: OnCreate picks FormToPySideWidget under PySide6.
 
-        Covers OnCreate's ``else`` branch (path b's success branch):
-        ``QT_BINDING != "PyQt5"`` → ``FormToPySideWidget(form)``.
+        After Task 5, OnCreate unconditionally calls ``FormToPySideWidget(form)``
+        (the ``QT_BINDING`` branch is gone). This test pins that contract on
+        the default binding.
         """
         pyside, pyqt = _run_oncreate_under_stubs(qt_binding="PySide6")
 
