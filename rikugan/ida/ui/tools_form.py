@@ -36,10 +36,8 @@ class RikuganToolsForm(idaapi.PluginForm):
         self._shown = False
 
     def OnCreate(self, form: Any) -> None:
-        try:
-            self._form_widget = self.FormToPyQtWidget(form)
-        except Exception:
-            self._form_widget = self.FormToPySideWidget(form)
+        # IDA ≥ 9.0 ships PySide6 — see panel.py for the binding rationale.
+        self._form_widget = self.FormToPySideWidget(form)
 
         layout = QVBoxLayout(self._form_widget)
         layout.setContentsMargins(0, 0, 0, 0)
