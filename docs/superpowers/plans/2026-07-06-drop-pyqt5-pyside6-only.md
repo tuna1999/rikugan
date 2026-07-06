@@ -468,10 +468,14 @@ Replace with:
 self._form_widget = self.FormToPySideWidget(form)
 ```
 
-- [ ] **Step 3: Run Task 1's regression test**
+- [ ] **Step 3: Update Task 1's characterization test (assertion flip)**
+
+Task 1 added two tests in `tests/ida_ui/test_panel_onside_widget.py`. The second, `test_path_a_dispatches_to_pyqt_under_buggy_branch`, is a **characterization test** that asserted `FormToPyQtWidget` IS called under `QT_BINDING=="PyQt5"` — documenting the pre-Task-5 buggy behavior. Now that the `if QT_BINDING == "PyQt5"` branch is gone, `FormToPyQtWidget` is never called regardless of `QT_BINDING`. **Flip that test's assertion**: rename it to `test_path_a_never_dispatches_to_pyqt_regardless_of_binding` and assert `FormToPyQtWidget` is NOT called (and `FormToPySideWidget` IS called) even when `QT_BINDING` is monkey-patched to `"PyQt5"`. Update its docstring to reflect the new contract: "After the PyQt5 drop, OnCreate must never call FormToPyQtWidget, no matter what QT_BINDING resolves to." Keep the `_run_oncreate_under_stubs("PyQt5")` helper call as-is.
+
+- [ ] **Step 4: Run Task 1's regression test**
 
 Run: `python3 -m pytest tests/ida_ui/test_panel_onside_widget.py -v`
-Expected: PASS.
+Expected: PASS — both tests green (the flipped one now asserts the post-Task-5 correct behavior).
 
 - [ ] **Step 4: Commit**
 
