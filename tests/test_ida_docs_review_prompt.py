@@ -3,11 +3,16 @@
 Task 10 of 13 (offline docs tool).  These tests pin the reviewer
 prompt so that ``lookup_idapython_doc`` is the preferred doc source
 and ``web_fetch`` is demoted to a fallback only.
+
+Task 11 of 13 (offline docs tool).  Mirrors the same preference at the
+SKILL.md level so the skill body recommends the offline tool first and
+demotes ``web_fetch`` to a fallback.
 """
 
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 
 
 class TestReviewerPromptPrefersTool(unittest.TestCase):
@@ -40,6 +45,25 @@ class TestReviewerPromptPrefersTool(unittest.TestCase):
             "not in bundle" in lowered or "fall back" in lowered,
             "Prompt should explain when to fall back to web_fetch",
         )
+
+
+class TestSkillPrefersTool(unittest.TestCase):
+    SKILL_PATH = (
+        Path(__file__).resolve().parent.parent / "rikugan" / "skills" / "builtins" / "ida-scripting" / "SKILL.md"
+    )
+
+    def setUp(self):
+        self.body = self.SKILL_PATH.read_text(encoding="utf-8")
+
+    def test_skill_recommends_lookup_idapython_doc(self):
+        self.assertIn("lookup_idapython_doc", self.body)
+
+    def test_skill_demotes_web_fetch_to_fallback(self):
+        tool_idx = self.body.find("lookup_idapython_doc")
+        web_fetch_idx = self.body.find("web_fetch", tool_idx) if tool_idx >= 0 else -1
+        self.assertGreater(tool_idx, -1)
+        self.assertGreater(web_fetch_idx, -1)
+        self.assertLess(tool_idx, web_fetch_idx)
 
 
 if __name__ == "__main__":
