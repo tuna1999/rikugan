@@ -298,6 +298,46 @@ class TestBuildBundle(unittest.TestCase):
                 self.assertEqual(loaded.module_count, 1)
                 self.assertEqual(loaded.modules[0].name, "ida_typeinf")
 
+    def test_index_403_returns_sentinel_tuple(self):
+        # Regression for Fix 3: when the Hex-Rays module index returns
+        # HTTP 403 (CDN bot-blocking our IP), build_bundle MUST NOT propagate
+        # the raw HTTPError — per spec, it must return the sentinel
+        # (-1, -1) so main() can map it to exit code 2 with the spec-mandated
+        # error message ("Hex-Rays returned 403 on the module index... ").
+        import io
+
+        http_403 = urllib.error.HTTPError(
+            "https://python.docs.hex-rays.com/",
+            403,
+            "Forbidden",
+            {},
+            io.BytesIO(b"blocked"),
+        )
+        with patch("urllib.request.urlopen", side_effect=http_403):
+            with tempfile.TemporaryDirectory() as tmp:
+                out = Path(tmp) / "bundle"
+                success, failed = build_bundle(output_dir=out, now="2026-07-07T00:00:00Z")
+        self.assertEqual((success, failed), (-1, -1))
+
+    def test_index_non_403_http_error_propagates(self):
+        # Fix 3 scope: only HTTP 403 gets the sentinel. Other HTTP 4xx/5xx
+        # from the index page still propagate (let the caller decide) so
+        # we don't accidentally swallow genuine upstream errors.
+        import io
+
+        http_500 = urllib.error.HTTPError(
+            "https://python.docs.hex-rays.com/",
+            500,
+            "Internal Server Error",
+            {},
+            io.BytesIO(b""),
+        )
+        with patch("urllib.request.urlopen", side_effect=http_500):
+            with tempfile.TemporaryDirectory() as tmp:
+                out = Path(tmp) / "bundle"
+                with self.assertRaises(urllib.error.HTTPError):
+                    build_bundle(output_dir=out, now="2026-07-07T00:00:00Z")
+
 
 def _fake_response(body: str) -> MagicMock:
     mock = MagicMock()
@@ -323,10 +363,11 @@ class TestVerifyBundle(unittest.TestCase):
                     _fake_response(index_html),
                     _fake_response("# upstream changed content"),
                 ]
-                drift, new, missing = verify_bundle(output_dir=out)
+                drift, new, missing, network_ok = verify_bundle(output_dir=out)
             self.assertEqual(drift, 1)
             self.assertEqual(new, 0)
             self.assertEqual(missing, 0)
+            self.assertTrue(network_ok)
 
     def test_new_module_in_upstream_reported(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -359,10 +400,11 @@ class TestVerifyBundle(unittest.TestCase):
                     _fake_response("# old"),  # matches local
                     _fake_response("# new"),  # additional
                 ]
-                drift, new, missing = verify_bundle(output_dir=out)
+                drift, new, missing, network_ok = verify_bundle(output_dir=out)
             self.assertEqual(drift, 0)
             self.assertEqual(new, 1)
             self.assertEqual(missing, 0)
+            self.assertTrue(network_ok)
 
     def test_missing_module_reported(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -375,18 +417,58 @@ class TestVerifyBundle(unittest.TestCase):
             index_html = ""
             with patch("scripts.build_idapython_docs.urllib.request.urlopen") as mock_urlopen:
                 mock_urlopen.side_effect = [_fake_response(index_html)]
-                drift, new, missing = verify_bundle(output_dir=out)
+                drift, new, missing, network_ok = verify_bundle(output_dir=out)
             self.assertEqual(drift, 0)
             self.assertEqual(new, 0)
             self.assertEqual(missing, 1)
+            self.assertTrue(network_ok)
 
     def test_no_local_manifest_returns_three(self):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "bundle"
             out.mkdir()
-            drift, new, missing = verify_bundle(output_dir=out)
+            drift, new, missing, network_ok = verify_bundle(output_dir=out)
             self.assertEqual((drift, new, missing), (0, 0, 0))
+            # No local MANIFEST means we cannot claim anything about
+            # upstream drift; network_ok MUST be False so callers do
+            # not silently treat this as "in sync".
+            self.assertFalse(network_ok)
             # But stdout should warn
+
+    def test_network_failure_reports_network_ok_false_and_exit_2(self):
+        # Regression for Fix 1: when urlopen raises URLError (e.g. DNS
+        # resolution fails, no internet, CDN down), verify_bundle MUST
+        # report network_ok=False. Without that flag, _run_verify() would
+        # see drift=0/missing=0 and return exit 0 — silently masking the
+        # outage as "everything in sync".
+        from scripts.build_idapython_docs import _run_verify
+
+        urlerror = urllib.error.URLError("simulated DNS failure")
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "bundle"
+            out.mkdir()
+            # Need a local MANIFEST so verify_bundle actually reaches the
+            # network call (otherwise it returns early with network_ok=False
+            # due to missing manifest, not due to network failure).
+            local_manifest = _manifest_with_one_entry("ida_x", sha="0" * 64)
+            write_manifest(local_manifest, path=out / "MANIFEST.json")
+            with patch(
+                "scripts.build_idapython_docs.urllib.request.urlopen",
+                side_effect=urlerror,
+            ):
+                drift, new, missing, network_ok = verify_bundle(output_dir=out)
+            self.assertEqual(drift, 0)
+            self.assertEqual(new, 0)
+            self.assertEqual(missing, 0)
+            self.assertFalse(network_ok)
+            # And _run_verify() must translate that to exit code 2
+            # (distinct from exit 1 "drift found" and exit 0 "in sync").
+            with patch(
+                "scripts.build_idapython_docs.urllib.request.urlopen",
+                side_effect=urlerror,
+            ):
+                exit_code = _run_verify()
+            self.assertEqual(exit_code, 2)
 
 
 if __name__ == "__main__":

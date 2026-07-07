@@ -233,13 +233,26 @@ def build_bundle(
     """Fetch all modules from upstream and write bundle to ``output_dir``.
 
     Returns:
-        (success_count, failed_count). Both ints >= 0.
+        ``(success_count, failed_count)`` where both ints >= 0 on a
+        successful run. Returns the sentinel ``(-1, -1)`` when the
+        upstream index page returned HTTP 403 (Hex-Rays CDN blocking
+        the build script's IP) — ``main()`` maps that sentinel to
+        process exit 2 with the spec-mandated error message.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
     timestamp = now or (datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
 
-    index_html = _fetch_index_html()
+    try:
+        index_html = _fetch_index_html()
+    except urllib.error.HTTPError as exc:
+        if exc.code == 403:
+            print(
+                "Hex-Rays returned 403 on the module index. Try again later or run from a different IP/CDN.",
+                file=sys.stderr,
+            )
+            return (-1, -1)
+        raise
     modules = discover_modules_from_index(index_html)
     if not modules:
         print("[fatal] No modules discovered from index page", file=sys.stderr)
@@ -302,6 +315,13 @@ def main(argv: list[str] | None = None) -> int:
         return _run_verify()
 
     success, failed = build_bundle()
+    # Sentinel: build_bundle() returned (-1, -1) for upstream index 403.
+    # Per spec, this is a distinct fatal condition (Hex-Rays CDN blocks
+    # our IP) — separate exit code from "no modules fetched" or "partial
+    # failures". The error message has already been printed to stderr by
+    # build_bundle(), so we only translate the sentinel to exit code.
+    if success < 0 and failed < 0:
+        return 2
     if failed > 0:
         return 1
     if success == 0:
@@ -309,17 +329,26 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def verify_bundle(output_dir: Path = OUTPUT_DIR) -> tuple[int, int, int]:
-    """Compare local bundle against upstream. Return (drift, new, missing) counts.
+def verify_bundle(output_dir: Path = OUTPUT_DIR) -> tuple[int, int, int, bool]:
+    """Compare local bundle against upstream.
 
-    Drift: local file's sha256 no longer matches upstream.
-    New: module exists upstream but not in local MANIFEST.
-    Missing: module in local MANIFEST but no longer upstream.
+    Returns:
+        ``(drift, new, missing, network_ok)`` 4-tuple.
+
+        - ``drift``: local file's sha256 no longer matches upstream.
+        - ``new``: module exists upstream but not in local MANIFEST.
+        - ``missing``: module in local MANIFEST but no longer upstream.
+        - ``network_ok``: ``False`` when upstream was unreachable
+          (``URLError`` / ``TimeoutError`` / ``OSError`` while fetching
+          the index HTML, or when no local MANIFEST exists). Callers
+          MUST treat ``network_ok=False`` as a distinct failure mode
+          from "no drift" — exit codes need to differentiate "could not
+          reach upstream" from "everything is up to date".
     """
     local = load_manifest(path=output_dir / "MANIFEST.json")
     if local is None:
         print(f"[warn] No local MANIFEST.json at {output_dir}", file=sys.stderr)
-        return (0, 0, 0)
+        return (0, 0, 0, False)
 
     local_by_name = {e.name: e for e in local.modules}
 
@@ -327,7 +356,7 @@ def verify_bundle(output_dir: Path = OUTPUT_DIR) -> tuple[int, int, int]:
         upstream_html = _fetch_index_html()
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         print(f"[fail] Cannot reach upstream: {exc}", file=sys.stderr)
-        return (0, 0, 0)
+        return (0, 0, 0, False)
 
     upstream_modules = set(discover_modules_from_index(upstream_html))
 
@@ -352,12 +381,23 @@ def verify_bundle(output_dir: Path = OUTPUT_DIR) -> tuple[int, int, int]:
             missing += 1
             print(f"MISSING: {module}")
 
-    return (drift, new_count, missing)
+    return (drift, new_count, missing, True)
 
 
 def _run_verify() -> int:
-    """Run --verify mode and translate counts to exit code."""
-    drift, _new, missing = verify_bundle()
+    """Run ``--verify`` mode and translate counts to process exit code.
+
+    Exit codes:
+        - ``0`` — local bundle is in sync with upstream.
+        - ``1`` — local bundle has drift or missing modules.
+        - ``2`` — upstream was unreachable; we cannot make a claim about
+          drift/missing status (this is distinct from exit 1 and must not
+          be conflated with "no drift"). False confidence from a silent
+          network failure is the bug Fix 1 prevents.
+    """
+    drift, _new, missing, network_ok = verify_bundle()
+    if not network_ok:
+        return 2
     if drift > 0 or missing > 0:
         return 1
     # new_count is informational only, does not fail verify

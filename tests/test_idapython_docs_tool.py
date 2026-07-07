@@ -153,7 +153,11 @@ class TestPaginationAndEdgeCases(unittest.TestCase):
 
         with patch("rikugan.tools.idapython_docs.DOCS_DIR", Path(self.tmpdir)):
             result = lookup_idapython_doc("big")
-        self.assertIn("apply_cdecl" if "apply_cdecl" in result else "XXX", result)  # any content
+        # The "big.rst.txt" fixture contains only 'X' chars, so the result
+        # must contain the tool's standard formatted-output header to prove
+        # the lookup path actually ran end-to-end (not just an empty body).
+        self.assertIn("[Offline IDAPython docs: big", result)
+        self.assertIn("total chars:", result)
 
     def test_zero_byte_file_does_not_crash(self):
         from rikugan.tools.idapython_docs import lookup_idapython_doc
