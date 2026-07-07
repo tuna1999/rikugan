@@ -62,3 +62,7 @@ profile_*.py
 perf.log
 
 MagicMock/
+
+# Atomic-write remnants in bundle directory
+rikugan/data/**/*.tmp
+rikugan/data/**/*.tmp.*

@@ -7,7 +7,9 @@ docs/superpowers/specs/2026-07-07-idapython-offline-docs-design.md
 
 from __future__ import annotations
 
+import argparse
 import dataclasses
+import datetime
 import hashlib
 import json
 import os
@@ -204,6 +206,110 @@ def load_manifest(path: Path = MANIFEST_PATH) -> Manifest | None:
         return None
 
 
+# ---------------------------------------------------------------------------
+# Build loop + CLI — Task 5 deliverable
+# ---------------------------------------------------------------------------
+
+
+def _fetch_index_html(timeout: float = HTTP_TIMEOUT_SECONDS) -> str:
+    """Fetch and decode the Hex-Rays module index HTML page.
+
+    Raises urllib.error.URLError on network failure so caller can decide.
+    """
+    with urllib.request.urlopen(UPSTREAM_INDEX_URL, timeout=timeout) as resp:
+        return resp.read().decode("utf-8")
+
+
+def build_bundle(
+    output_dir: Path = OUTPUT_DIR,
+    *,
+    now: str | None = None,
+    max_retries: int = MAX_RETRIES,
+) -> tuple[int, int]:
+    """Fetch all modules from upstream and write bundle to ``output_dir``.
+
+    Returns:
+        (success_count, failed_count). Both ints >= 0.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = now or (datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
+
+    index_html = _fetch_index_html()
+    modules = discover_modules_from_index(index_html)
+    if not modules:
+        print("[fatal] No modules discovered from index page", file=sys.stderr)
+        return (0, 0)
+
+    entries: list[ManifestEntry] = []
+    success_count = 0
+    failed_count = 0
+    for module in modules:
+        url = SOURCES_URL_TEMPLATE.format(module=module)
+        body = fetch_with_retry(url, max_retries=max_retries)
+        if body is None:
+            failed_count += 1
+            continue
+        sha = sha256_text(body)
+        write_atomic(output_dir / f"{module}.rst.txt", body)
+        entries.append(
+            ManifestEntry(
+                name=module,
+                file=f"{module}.rst.txt",
+                source_url=url,
+                sha256=sha,
+                byte_size=len(body.encode("utf-8")),
+                fetched_at=timestamp,
+            )
+        )
+        success_count += 1
+
+    manifest = Manifest(
+        schema_version=MANIFEST_SCHEMA_VERSION,
+        upstream_base=BASE_URL,
+        fetched_at=timestamp,
+        module_count=len(entries),
+        total_bytes=sum(e.byte_size for e in entries),
+        modules=tuple(entries),
+    )
+    write_manifest(manifest, path=output_dir / "MANIFEST.json")
+
+    print(
+        f"[ok] {success_count}/{len(modules)} modules fetched "
+        f"({manifest.total_bytes:,} bytes, {failed_count} failures)",
+    )
+    return (success_count, failed_count)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI entry point. Returns process exit code."""
+    parser = argparse.ArgumentParser(
+        prog="build_idapython_docs",
+        description="Build the offline IDAPython docs bundle from Hex-Rays upstream.",
+    )
+    parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="Compare local bundle against upstream; exit 1 if drift.",
+    )
+    args = parser.parse_args(argv)
+
+    if args.verify:
+        return _run_verify()  # Implemented in Task 6
+
+    success, failed = build_bundle()
+    if failed > 0:
+        return 1
+    if success == 0:
+        return 2  # Nothing succeeded
+    return 0
+
+
+def _run_verify() -> int:
+    """Stub for Task 6 — full implementation in next task."""
+    raise NotImplementedError("verify mode implemented in Task 6")
+
+
 __all__ = [
     "BACKOFF_MULTIPLIER",
     "BASE_URL",
@@ -217,9 +323,11 @@ __all__ = [
     "UPSTREAM_INDEX_URL",
     "Manifest",
     "ManifestEntry",
+    "build_bundle",
     "discover_modules_from_index",
     "fetch_with_retry",
     "load_manifest",
+    "main",
     "sha256_text",
     "write_atomic",
     "write_manifest",

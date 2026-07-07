@@ -13,6 +13,7 @@ from scripts.build_idapython_docs import (
     MANIFEST_SCHEMA_VERSION,
     Manifest,
     ManifestEntry,
+    build_bundle,
     discover_modules_from_index,
     fetch_with_retry,
     load_manifest,
@@ -225,6 +226,64 @@ class TestManifestRoundTrip(unittest.TestCase):
             # JSON parseable
             data = json.loads(raw)
             self.assertEqual(data["schema_version"], 1)
+
+
+class TestBuildBundle(unittest.TestCase):
+    def test_build_writes_one_file_per_module(self):
+        # Mock upstream: index lists 2 modules, each RST returns known content
+        index_html = '<a href="ida_typeinf/">x</a><a href="ida_name/">y</a>'
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.side_effect = [
+                _fake_response(index_html),
+                _fake_response("# ida_typeinf docs"),
+                _fake_response("# ida_name docs"),
+            ]
+            with tempfile.TemporaryDirectory() as tmp:
+                out = Path(tmp) / "bundle"
+                success, failed = build_bundle(output_dir=out, now="2026-07-07T00:00:00Z")
+                self.assertEqual(success, 2)
+                self.assertEqual(failed, 0)
+                self.assertTrue((out / "ida_typeinf.rst.txt").is_file())
+                self.assertTrue((out / "ida_name.rst.txt").is_file())
+                self.assertTrue((out / "MANIFEST.json").is_file())
+
+    def test_build_skips_failed_modules_and_continues(self):
+        index_html = '<a href="ida_ok/">x</a><a href="ida_404/">y</a>'
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            # 1st call: index. 2nd: 200 for ida_ok. 3rd: 404 for ida_404.
+            mock_urlopen.side_effect = [
+                _fake_response(index_html),
+                _fake_response("# ida_ok docs"),
+                urllib.error.HTTPError("u", 404, "NF", {}, None),
+            ]
+            with tempfile.TemporaryDirectory() as tmp:
+                out = Path(tmp) / "bundle"
+                success, failed = build_bundle(output_dir=out, now="2026-07-07T00:00:00Z")
+                self.assertEqual(success, 1)
+                self.assertEqual(failed, 1)
+
+    def test_build_writes_valid_manifest(self):
+        index_html = '<a href="ida_typeinf/">x</a>'
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.side_effect = [
+                _fake_response(index_html),
+                _fake_response("# ida_typeinf docs"),
+            ]
+            with tempfile.TemporaryDirectory() as tmp:
+                out = Path(tmp) / "bundle"
+                build_bundle(output_dir=out, now="2026-07-07T00:00:00Z")
+                loaded = load_manifest(path=out / "MANIFEST.json")
+                self.assertIsNotNone(loaded)
+                self.assertEqual(loaded.module_count, 1)
+                self.assertEqual(loaded.modules[0].name, "ida_typeinf")
+
+
+def _fake_response(body: str) -> MagicMock:
+    mock = MagicMock()
+    mock.read.return_value = body.encode("utf-8")
+    mock.__enter__ = lambda s: s
+    mock.__exit__ = MagicMock(return_value=False)
+    return mock
 
 
 if __name__ == "__main__":
