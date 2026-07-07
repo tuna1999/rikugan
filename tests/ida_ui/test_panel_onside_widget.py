@@ -135,29 +135,77 @@ class TestPanelOnCreatePySideOnly(unittest.TestCase):
         pyqt.assert_not_called()
 
 
-class TestQtGuiQWidgetShim(unittest.TestCase):
-    """IDA 9.4's TWidgetToPySideWidget looks up QWidget on PySide6.QtGui.
+class TestFormToQtWidgetFallback(unittest.TestCase):
+    """``_form_to_qt_widget`` falls back to FormToPyQtWidget on IDA 9.4.
 
-    IDA 9.4's ``ida_kernwin.TWidgetToPySideWidget`` resolves
-    ``ctx.QtGui.QWidget.FromCapsule(tw)``, but ``QWidget`` lives in
-    ``PySide6.QtWidgets`` — so the lookup raises
-    ``AttributeError: module 'PySide6.QtGui' has no attribute 'QWidget'``
-    inside ``OnCreate``. The module-level shim in ``rikugan.ida.ui.panel``
-    exposes ``QtGui.QWidget = QtWidgets.QWidget`` on import. This test
-    pins that the shim ran at module load.
+    IDA 9.4's ``TWidgetToPySideWidget`` (backing ``FormToPySideWidget``)
+    is buggy: it resolves ``ctx.QtGui.QWidget.FromCapsule(tw)`` which
+    raises ``AttributeError``. ``_form_to_qt_widget`` must catch that
+    and fall back to ``FormToPyQtWidget`` (which still returns a PySide6
+    widget via IDA's shim). Because qt_compat is PySide6-only, the
+    widget returned via either path type-matches our PySide6 layouts.
     """
 
-    def test_qtgui_has_qwidget_after_module_import(self) -> None:
-        import PySide6.QtGui as QtGui
-        import PySide6.QtWidgets as QtWidgets
+    def test_falls_back_when_pyside_raises_attribute_error(self) -> None:
+        panel_mod = importlib.import_module("rikugan.ida.ui.panel")
+        plugin_form_cls = panel_mod.idaapi.PluginForm
+        with (
+            mock.patch.object(
+                plugin_form_cls,
+                "FormToPySideWidget",
+                staticmethod(lambda form: (_ for _ in ()).throw(AttributeError("simulated IDA 9.4 bug"))),
+                create=True,
+            ),
+            mock.patch.object(
+                plugin_form_cls,
+                "FormToPyQtWidget",
+                staticmethod(lambda form: "pyqt_widget"),
+                create=True,
+            ),
+        ):
+            result = panel_mod._form_to_qt_widget(plugin_form_cls, mock.sentinel.form)
+        self.assertEqual(result, "pyqt_widget")
 
-        # The shim in panel.py must have run at import time.
-        self.assertTrue(
-            hasattr(QtGui, "QWidget"),
-            "PySide6.QtGui must expose QWidget (IDA 9.4 shim). "
-            "rikugan.ida.ui.panel._ensure_pyside6_qtgui_qwidget_shim must run at import.",
-        )
-        self.assertIs(QtGui.QWidget, QtWidgets.QWidget)
+    def test_uses_pyside_when_it_succeeds(self) -> None:
+        panel_mod = importlib.import_module("rikugan.ida.ui.panel")
+        plugin_form_cls = panel_mod.idaapi.PluginForm
+        with (
+            mock.patch.object(
+                plugin_form_cls,
+                "FormToPySideWidget",
+                staticmethod(lambda form: "pyside_widget"),
+                create=True,
+            ),
+            mock.patch.object(
+                plugin_form_cls,
+                "FormToPyQtWidget",
+                staticmethod(lambda form: "pyqt_widget_should_not_be_used"),
+                create=True,
+            ),
+        ):
+            result = panel_mod._form_to_qt_widget(plugin_form_cls, mock.sentinel.form)
+        self.assertEqual(result, "pyside_widget")
+
+    def test_falls_back_on_type_error_too(self) -> None:
+        """TypeError (e.g. wrong overload) must also trigger fallback."""
+        panel_mod = importlib.import_module("rikugan.ida.ui.panel")
+        plugin_form_cls = panel_mod.idaapi.PluginForm
+        with (
+            mock.patch.object(
+                plugin_form_cls,
+                "FormToPySideWidget",
+                staticmethod(lambda form: (_ for _ in ()).throw(TypeError("simulated type error"))),
+                create=True,
+            ),
+            mock.patch.object(
+                plugin_form_cls,
+                "FormToPyQtWidget",
+                staticmethod(lambda form: "pyqt_widget"),
+                create=True,
+            ),
+        ):
+            result = panel_mod._form_to_qt_widget(plugin_form_cls, mock.sentinel.form)
+        self.assertEqual(result, "pyqt_widget")
 
 
 if __name__ == "__main__":

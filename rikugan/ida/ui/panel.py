@@ -21,28 +21,30 @@ idaapi = importlib.import_module("idaapi")
 ida_kernwin = importlib.import_module("ida_kernwin")
 
 
-def _ensure_pyside6_qtgui_qwidget_shim() -> None:
-    """Patch IDA 9.4's broken ``TWidgetToPySideWidget`` lookup.
+def _form_to_qt_widget(plugin_form_cls: Any, form: Any) -> Any:
+    """Convert an IDA PluginForm handle to a Qt widget, robustly.
 
-    IDA 9.4's ``ida_kernwin.TWidgetToPySideWidget`` (called by
-    ``PluginForm.FormToPySideWidget``) resolves ``QWidget`` from
-    ``PySide6.QtGui`` — but ``QWidget`` actually lives in
-    ``PySide6.QtWidgets``, so the lookup raises
-    ``AttributeError: module 'PySide6.QtGui' has no attribute 'QWidget'``
-    inside ``OnCreate``. We expose the symbol on ``QtGui`` so the broken
-    lookup succeeds. Idempotent: on IDA versions where ``QtGui.QWidget``
-    already exists (or PySide6 is absent), this is a no-op.
+    IDA ≥ 9.0 ships PySide6, and on most versions ``FormToPySideWidget``
+    is the correct call. IDA 9.4's ``ida_kernwin.TWidgetToPySideWidget``
+    (the function backing ``FormToPySideWidget``) is buggy: it resolves
+    ``ctx.QtGui.QWidget.FromCapsule(tw)``, but ``QWidget`` lives in
+    ``PySide6.QtWidgets`` and the real class has no ``FromCapsule``
+    method — so the call raises ``AttributeError``. On those versions we
+    fall back to ``FormToPyQtWidget``, which takes a different internal
+    path and still returns a PySide6 widget (IDA's PyQt5 is a thin shim
+    over PySide6). Because ``qt_compat`` is PySide6-only, every Qt symbol
+    Rikugan uses originates in PySide6, so a widget returned via either
+    path type-matches our ``QVBoxLayout``/``QWidget``.
+
+    ``plugin_form_cls`` is the ``idaapi.PluginForm`` subclass (typically
+    ``type(self)``); passing it explicitly keeps this a module function
+    while still letting tests patch the conversion methods on the
+    subclass under test.
     """
     try:
-        import PySide6.QtGui as QtGui
-        import PySide6.QtWidgets as QtWidgets
-    except ImportError:
-        return  # non-Qt host (headless) — nothing to patch
-    if not hasattr(QtGui, "QWidget"):
-        QtGui.QWidget = QtWidgets.QWidget  # type: ignore[attr-defined]
-
-
-_ensure_pyside6_qtgui_qwidget_shim()
+        return plugin_form_cls.FormToPySideWidget(form)
+    except (AttributeError, TypeError):
+        return plugin_form_cls.FormToPyQtWidget(form)
 
 
 def _log_teardown(context: str, exc: BaseException) -> None:
@@ -212,11 +214,7 @@ class RikuganPanel(idaapi.PluginForm):
         t_oncreate = start("ida_form.on_create_total")
 
         t_widget = start("ida_form.to_qt_widget")
-        # IDA ≥ 9.0 ships PySide6; FormToPySideWidget returns the host widget.
-        # (IDA 9.x also exposes FormToPyQtWidget, but it returns the same
-        # PySide6 widget via a shim — mixing it with PyQt5-imported layouts was
-        # the root cause of the QVBoxLayout/PySide6 type-mismatch crash.)
-        self._form_widget = self.FormToPySideWidget(form)
+        self._form_widget = _form_to_qt_widget(type(self), form)
         end("ida_form.to_qt_widget", t_widget)
 
         self._root = QWidget()
