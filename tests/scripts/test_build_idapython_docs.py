@@ -18,6 +18,7 @@ from scripts.build_idapython_docs import (
     fetch_with_retry,
     load_manifest,
     sha256_text,
+    verify_bundle,
     write_atomic,
     write_manifest,
 )
@@ -143,6 +144,26 @@ def _sample_entry(name: str = "ida_typeinf") -> ManifestEntry:
         sha256="a" * 64,
         byte_size=12345,
         fetched_at="2026-07-07T00:00:00Z",
+    )
+
+
+def _manifest_with_one_entry(name: str, sha: str, byte_size: int = 100) -> Manifest:
+    return Manifest(
+        schema_version=MANIFEST_SCHEMA_VERSION,
+        upstream_base="https://python.docs.hex-rays.com",
+        fetched_at="2026-01-01T00:00:00Z",
+        module_count=1,
+        total_bytes=byte_size,
+        modules=(
+            ManifestEntry(
+                name=name,
+                file=f"{name}.rst.txt",
+                source_url=f"https://python.docs.hex-rays.com/_sources/{name}/index.rst.txt",
+                sha256=sha,
+                byte_size=byte_size,
+                fetched_at="2026-01-01T00:00:00Z",
+            ),
+        ),
     )
 
 
@@ -284,6 +305,88 @@ def _fake_response(body: str) -> MagicMock:
     mock.__enter__ = lambda s: s
     mock.__exit__ = MagicMock(return_value=False)
     return mock
+
+
+class TestVerifyBundle(unittest.TestCase):
+    def test_drift_detected_when_hash_mismatches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "bundle"
+            out.mkdir()
+            # Local: ida_x.rst.txt with old hash
+            (out / "ida_x.rst.txt").write_text("# current local content")
+            local_manifest = _manifest_with_one_entry("ida_x", sha="0" * 64)
+            write_manifest(local_manifest, path=out / "MANIFEST.json")
+            # Upstream: returns DIFFERENT content
+            index_html = '<a href="ida_x/">x</a>'
+            with patch("scripts.build_idapython_docs.urllib.request.urlopen") as mock_urlopen:
+                mock_urlopen.side_effect = [
+                    _fake_response(index_html),
+                    _fake_response("# upstream changed content"),
+                ]
+                drift, new, missing = verify_bundle(output_dir=out)
+            self.assertEqual(drift, 1)
+            self.assertEqual(new, 0)
+            self.assertEqual(missing, 0)
+
+    def test_new_module_in_upstream_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "bundle"
+            out.mkdir()
+            (out / "ida_old.rst.txt").write_text("# old")
+            local_manifest = Manifest(
+                schema_version=MANIFEST_SCHEMA_VERSION,
+                upstream_base="https://python.docs.hex-rays.com",
+                fetched_at="2026-01-01T00:00:00Z",
+                module_count=1,
+                total_bytes=10,
+                modules=(
+                    ManifestEntry(
+                        name="ida_old",
+                        file="ida_old.rst.txt",
+                        source_url="https://python.docs.hex-rays.com/_sources/ida_old/index.rst.txt",
+                        sha256=sha256_text("# old"),
+                        byte_size=10,
+                        fetched_at="2026-01-01T00:00:00Z",
+                    ),
+                ),
+            )
+            write_manifest(local_manifest, path=out / "MANIFEST.json")
+            # Upstream has ida_old AND a NEW ida_new
+            index_html = '<a href="ida_old/">o</a><a href="ida_new/">n</a>'
+            with patch("scripts.build_idapython_docs.urllib.request.urlopen") as mock_urlopen:
+                mock_urlopen.side_effect = [
+                    _fake_response(index_html),
+                    _fake_response("# old"),  # matches local
+                    _fake_response("# new"),  # additional
+                ]
+                drift, new, missing = verify_bundle(output_dir=out)
+            self.assertEqual(drift, 0)
+            self.assertEqual(new, 1)
+            self.assertEqual(missing, 0)
+
+    def test_missing_module_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "bundle"
+            out.mkdir()
+            (out / "ida_gone.rst.txt").write_text("# content")
+            local_manifest = _manifest_with_one_entry("ida_gone", sha="any")
+            write_manifest(local_manifest, path=out / "MANIFEST.json")
+            # Upstream: empty (module no longer exists)
+            index_html = ""
+            with patch("scripts.build_idapython_docs.urllib.request.urlopen") as mock_urlopen:
+                mock_urlopen.side_effect = [_fake_response(index_html)]
+                drift, new, missing = verify_bundle(output_dir=out)
+            self.assertEqual(drift, 0)
+            self.assertEqual(new, 0)
+            self.assertEqual(missing, 1)
+
+    def test_no_local_manifest_returns_three(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "bundle"
+            out.mkdir()
+            drift, new, missing = verify_bundle(output_dir=out)
+            self.assertEqual((drift, new, missing), (0, 0, 0))
+            # But stdout should warn
 
 
 if __name__ == "__main__":

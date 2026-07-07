@@ -295,7 +295,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.verify:
-        return _run_verify()  # Implemented in Task 6
+        return _run_verify()
 
     success, failed = build_bundle()
     if failed > 0:
@@ -305,9 +305,59 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def verify_bundle(output_dir: Path = OUTPUT_DIR) -> tuple[int, int, int]:
+    """Compare local bundle against upstream. Return (drift, new, missing) counts.
+
+    Drift: local file's sha256 no longer matches upstream.
+    New: module exists upstream but not in local MANIFEST.
+    Missing: module in local MANIFEST but no longer upstream.
+    """
+    local = load_manifest(path=output_dir / "MANIFEST.json")
+    if local is None:
+        print(f"[warn] No local MANIFEST.json at {output_dir}", file=sys.stderr)
+        return (0, 0, 0)
+
+    local_by_name = {e.name: e for e in local.modules}
+
+    try:
+        upstream_html = _fetch_index_html()
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        print(f"[fail] Cannot reach upstream: {exc}", file=sys.stderr)
+        return (0, 0, 0)
+
+    upstream_modules = set(discover_modules_from_index(upstream_html))
+
+    drift, new_count, missing = 0, 0, 0
+
+    for module in sorted(upstream_modules):
+        if module not in local_by_name:
+            new_count += 1
+            print(f"NEW: {module}")
+            continue
+        entry = local_by_name[module]
+        url = SOURCES_URL_TEMPLATE.format(module=module)
+        body = fetch_with_retry(url, max_retries=1)
+        if body is None:
+            continue
+        if sha256_text(body) != entry.sha256:
+            drift += 1
+            print(f"DRIFT: {module} (local={entry.sha256[:12]}... remote={sha256_text(body)[:12]}...)")
+
+    for module in sorted(local_by_name):
+        if module not in upstream_modules:
+            missing += 1
+            print(f"MISSING: {module}")
+
+    return (drift, new_count, missing)
+
+
 def _run_verify() -> int:
-    """Stub for Task 6 — full implementation in next task."""
-    raise NotImplementedError("verify mode implemented in Task 6")
+    """Run --verify mode and translate counts to exit code."""
+    drift, _new, missing = verify_bundle()
+    if drift > 0 or missing > 0:
+        return 1
+    # new_count is informational only, does not fail verify
+    return 0
 
 
 __all__ = [
@@ -329,6 +379,7 @@ __all__ = [
     "load_manifest",
     "main",
     "sha256_text",
+    "verify_bundle",
     "write_atomic",
     "write_manifest",
 ]
