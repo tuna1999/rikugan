@@ -79,3 +79,86 @@ class TestLookupIdapythonDoc(unittest.TestCase):
                 self.assertIn("invalid module name", result)
         finally:
             outside.unlink()
+
+
+class TestPaginationAndEdgeCases(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        # Create one BIG module (~10000 chars) + one EMPTY module
+        big = ("X" * 50 + "\n") * 200  # ~10000 chars
+        (Path(self.tmpdir) / "big.rst.txt").write_text(big, encoding="utf-8")
+        (Path(self.tmpdir) / "empty.rst.txt").write_text("", encoding="utf-8")
+        # One with manifest missing
+        # (No MANIFEST.json file written)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_pagination_first_chunk(self):
+        from rikugan.tools.idapython_docs import lookup_idapython_doc
+
+        with patch("rikugan.tools.idapython_docs.DOCS_DIR", Path(self.tmpdir)):
+            result = lookup_idapython_doc("big", offset=0, limit=200)
+        self.assertIn("showing offset 0-200", result)
+
+    def test_pagination_middle_chunk(self):
+        from rikugan.tools.idapython_docs import lookup_idapython_doc
+
+        with patch("rikugan.tools.idapython_docs.DOCS_DIR", Path(self.tmpdir)):
+            result = lookup_idapython_doc("big", offset=4000, limit=100)
+        self.assertIn("showing offset 4000-4100", result)
+
+    def test_pagination_past_end_returns_marker(self):
+        from rikugan.tools.idapython_docs import lookup_idapython_doc
+
+        with patch("rikugan.tools.idapython_docs.DOCS_DIR", Path(self.tmpdir)):
+            result = lookup_idapython_doc("big", offset=20000, limit=100)
+        self.assertIn("reached end of content", result)
+
+    def test_empty_file_returns_empty_marker(self):
+        from rikugan.tools.idapython_docs import lookup_idapython_doc
+
+        with patch("rikugan.tools.idapython_docs.DOCS_DIR", Path(self.tmpdir)):
+            result = lookup_idapython_doc("empty")
+        self.assertIn("[Offline IDAPython docs: empty", result)
+        self.assertIn("(empty response)", result)
+
+    def test_limit_clamped_to_max(self):
+        from rikugan.tools.idapython_docs import MAX_LIMIT, lookup_idapython_doc
+
+        with patch("rikugan.tools.idapython_docs.DOCS_DIR", Path(self.tmpdir)):
+            # Request way over the max — must clamp to MAX_LIMIT
+            result = lookup_idapython_doc("big", offset=0, limit=99999)
+        # Header shows total file size ~10K so we see clamped chunk end
+        self.assertIn(f"showing offset 0-{MAX_LIMIT}", result)
+
+    def test_limit_below_one_clamped_to_one(self):
+        from rikugan.tools.idapython_docs import lookup_idapython_doc
+
+        with patch("rikugan.tools.idapython_docs.DOCS_DIR", Path(self.tmpdir)):
+            result = lookup_idapython_doc("big", offset=0, limit=0)
+        # limit=0 -> clamp to 1 -> shows offset 0-1
+        self.assertIn("showing offset 0-1", result)
+
+    def test_offset_negative_clamped_to_zero(self):
+        from rikugan.tools.idapython_docs import lookup_idapython_doc
+
+        with patch("rikugan.tools.idapython_docs.DOCS_DIR", Path(self.tmpdir)):
+            result = lookup_idapython_doc("big", offset=-5, limit=100)
+        self.assertIn("showing offset 0-100", result)
+
+    def test_manifest_missing_does_not_break_tool(self):
+        # No MANIFEST.json — tool should still work (manifest is informational)
+        from rikugan.tools.idapython_docs import lookup_idapython_doc
+
+        with patch("rikugan.tools.idapython_docs.DOCS_DIR", Path(self.tmpdir)):
+            result = lookup_idapython_doc("big")
+        self.assertIn("apply_cdecl" if "apply_cdecl" in result else "XXX", result)  # any content
+
+    def test_zero_byte_file_does_not_crash(self):
+        from rikugan.tools.idapython_docs import lookup_idapython_doc
+
+        with patch("rikugan.tools.idapython_docs.DOCS_DIR", Path(self.tmpdir)):
+            result = lookup_idapython_doc("empty")
+        # Must not raise; must include "(empty response)" or similar
+        self.assertIsInstance(result, str)

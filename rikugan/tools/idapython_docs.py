@@ -105,6 +105,8 @@ def lookup_idapython_doc(
         ) from exc
 
     total_chars = len(content)
+    if total_chars == 0:
+        return f"[Offline IDAPython docs: {safe}; total chars: 0; showing offset 0-0]\n\n(empty response)"
     if offset >= total_chars:
         chunk = ""
     else:
