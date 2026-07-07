@@ -312,11 +312,23 @@ cfunc = db.decompile(ea)
 
 The deep static reference below (`## Reference: api-reference.md`) covers ctree,
 microcode, types, xrefs, hooks, and netnodes exhaustively. For an exhaustive
-per-module reference, fetch the official page:
+per-module reference, fetch the **raw RST source** file — it contains the
+entire module reference in one fetch (function signatures, parameters,
+notes) and is the only URL pattern on this site that reliably returns
+`200 OK`:
 
 ```
-web_fetch(url="https://python.docs.hex-rays.com/ida_<module>/index.html", format="markdown")
+web_fetch(url="https://python.docs.hex-rays.com/_sources/ida_<module>/index.rst.txt", format="text")
 ```
+
+Common modules: `ida_typeinf`, `ida_name`, `idautils`, `ida_hexrays`,
+`ida_frame`, `ida_funcs`, `ida_bytes`, `ida_xref`, `ida_segment`,
+`ida_kernwin`, `ida_ua`, `idc`, `idaapi`.
+
+> ⚠️ **DO NOT fetch HTML deep-link pages** like
+> `https://python.docs.hex-rays.com/ida_<module>/<func>.html` — they
+> return **403 Forbidden** (bot-protected).  Stick to the `_sources/`
+> RST files above; they have the same information without the failures.
 
 For IDA 9.x migration details, fetch the porting guide:
 `https://docs.hex-rays.com/developer/idapython/idapython-porting-guide-ida-9`

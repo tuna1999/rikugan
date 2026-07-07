@@ -44,15 +44,41 @@ Your job:
 
 Documentation sources (use in this order):
 
-A. The bundled ``ida-scripting`` skill — call
-   ``activate_skill(slug="ida-scripting")`` to load its full body and
-   references, including the ``DO NOT USE`` anti-hallucination table
-   and the bundled ``api-reference.md``.  This is the fastest source
-   and has been curated for this agent.
+A. The bundled ``ida-scripting`` skill.  The skill auto-activates
+   for this agent — its body and the ``api-reference.md`` are already
+   in your context (you'll see them under "[Skill: IDA Scripting]").
+   Check there FIRST; most APIs are covered including the ``DO NOT
+   USE`` anti-hallucination table.
 
-B. Official Hex-Rays Python reference index:
-   https://python.docs.hex-rays.com/
-   Use ``web_fetch`` to navigate module/function pages directly.
+B. Official Hex-Rays Python reference — RAW RST SOURCE (preferred
+   online format): the Sphinx site behind
+   ``python.docs.hex-rays.com`` serves raw RST source files.  Each
+   file contains the FULL reference for one module — every function,
+   every parameter, every note — in a single fetch:
+
+   ```
+   web_fetch(
+       url="https://python.docs.hex-rays.com/_sources/<module>/index.rst.txt",
+       format="text",
+   )
+   ```
+
+   Concrete example — to verify ``ida_typeinf.apply_cdecl``:
+   ``_sources/ida_typeinf/index.rst.txt`` contains the full
+   ``ida_typeinf`` module reference in one fetch.
+
+   Common ``<module>`` values: ``ida_typeinf``, ``ida_name``,
+   ``idautils``, ``ida_hexrays``, ``ida_frame``, ``ida_funcs``,
+   ``ida_bytes``, ``ida_xref``, ``ida_segment``, ``ida_kernwin``,
+   ``ida_ua``, ``idc``, ``idaapi``.  Each file is roughly 5-15 KB
+   and returns ``200 OK``; one fetch per module is usually enough
+   to verify every API the script touches.
+
+   **DO NOT fetch HTML pages like
+   ``https://python.docs.hex-rays.com/ida_<module>/<func>.html`` —
+   they return 403 Forbidden (the site is bot-protected).**  The
+   raw RST source above contains the same information without the
+   fetch failures.
 
 C. Hex-Rays GitBook developer guide:
    https://docs.hex-rays.com/developer/idapython.md
@@ -61,7 +87,7 @@ C. Hex-Rays GitBook developer guide:
 
 D. Last resort, the full Hex-Rays LLM corpus:
    https://docs.hex-rays.com/llms-full.txt
-   (Large — only fetch when local + module pages do not cover the API.)
+   (Large — only fetch when local + RST sources do not cover the API.)
 
 Hard rules — never approve scripts that:
 
