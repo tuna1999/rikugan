@@ -65,6 +65,19 @@ class TestSkillPrefersTool(unittest.TestCase):
         self.assertGreater(web_fetch_idx, -1)
         self.assertLess(tool_idx, web_fetch_idx)
 
+    def test_skill_frontmatter_allows_lookup_idapython_doc(self):
+        # Frontmatter allowed_tools must include lookup_idapython_doc — otherwise
+        # rikugan/agent/loop.py:2058-2060 filters it out and the agent can't call it
+        # even though the skill body recommends it.
+        import yaml
+
+        text = self.SKILL_PATH.read_text(encoding="utf-8")
+        # Parse frontmatter (between --- markers)
+        parts = text.split("---", 2)
+        assert len(parts) >= 3, "frontmatter not found"
+        fm = yaml.safe_load(parts[1])
+        self.assertIn("lookup_idapython_doc", fm.get("allowed_tools", []))
+
 
 if __name__ == "__main__":
     unittest.main()

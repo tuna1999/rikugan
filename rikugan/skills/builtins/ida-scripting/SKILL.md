@@ -43,6 +43,7 @@ triggers:
   - attributeerror ida
 allowed_tools:
   - web_fetch
+  - lookup_idapython_doc
   - execute_python
   - decompile_function
   - get_decompiler_variables
