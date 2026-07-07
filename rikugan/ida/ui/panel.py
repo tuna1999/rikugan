@@ -21,6 +21,30 @@ idaapi = importlib.import_module("idaapi")
 ida_kernwin = importlib.import_module("ida_kernwin")
 
 
+def _ensure_pyside6_qtgui_qwidget_shim() -> None:
+    """Patch IDA 9.4's broken ``TWidgetToPySideWidget`` lookup.
+
+    IDA 9.4's ``ida_kernwin.TWidgetToPySideWidget`` (called by
+    ``PluginForm.FormToPySideWidget``) resolves ``QWidget`` from
+    ``PySide6.QtGui`` — but ``QWidget`` actually lives in
+    ``PySide6.QtWidgets``, so the lookup raises
+    ``AttributeError: module 'PySide6.QtGui' has no attribute 'QWidget'``
+    inside ``OnCreate``. We expose the symbol on ``QtGui`` so the broken
+    lookup succeeds. Idempotent: on IDA versions where ``QtGui.QWidget``
+    already exists (or PySide6 is absent), this is a no-op.
+    """
+    try:
+        import PySide6.QtGui as QtGui
+        import PySide6.QtWidgets as QtWidgets
+    except ImportError:
+        return  # non-Qt host (headless) — nothing to patch
+    if not hasattr(QtGui, "QWidget"):
+        QtGui.QWidget = QtWidgets.QWidget  # type: ignore[attr-defined]
+
+
+_ensure_pyside6_qtgui_qwidget_shim()
+
+
 def _log_teardown(context: str, exc: BaseException) -> None:
     """Best-effort log for swallowed teardown exceptions.
 

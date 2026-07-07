@@ -135,5 +135,30 @@ class TestPanelOnCreatePySideOnly(unittest.TestCase):
         pyqt.assert_not_called()
 
 
+class TestQtGuiQWidgetShim(unittest.TestCase):
+    """IDA 9.4's TWidgetToPySideWidget looks up QWidget on PySide6.QtGui.
+
+    IDA 9.4's ``ida_kernwin.TWidgetToPySideWidget`` resolves
+    ``ctx.QtGui.QWidget.FromCapsule(tw)``, but ``QWidget`` lives in
+    ``PySide6.QtWidgets`` — so the lookup raises
+    ``AttributeError: module 'PySide6.QtGui' has no attribute 'QWidget'``
+    inside ``OnCreate``. The module-level shim in ``rikugan.ida.ui.panel``
+    exposes ``QtGui.QWidget = QtWidgets.QWidget`` on import. This test
+    pins that the shim ran at module load.
+    """
+
+    def test_qtgui_has_qwidget_after_module_import(self) -> None:
+        import PySide6.QtGui as QtGui
+        import PySide6.QtWidgets as QtWidgets
+
+        # The shim in panel.py must have run at import time.
+        self.assertTrue(
+            hasattr(QtGui, "QWidget"),
+            "PySide6.QtGui must expose QWidget (IDA 9.4 shim). "
+            "rikugan.ida.ui.panel._ensure_pyside6_qtgui_qwidget_shim must run at import.",
+        )
+        self.assertIs(QtGui.QWidget, QtWidgets.QWidget)
+
+
 if __name__ == "__main__":
     unittest.main()
