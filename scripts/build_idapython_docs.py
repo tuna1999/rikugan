@@ -7,7 +7,9 @@ docs/superpowers/specs/2026-07-07-idapython-offline-docs-design.md
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
+import json
 import os
 import re
 import sys
@@ -144,6 +146,64 @@ def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+# ---------------------------------------------------------------------------
+# Manifest dataclasses + JSON I/O — Task 4 deliverable
+# ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True)
+class ManifestEntry:
+    """One module's metadata."""
+
+    name: str
+    file: str
+    source_url: str
+    sha256: str
+    byte_size: int
+    fetched_at: str
+
+
+@dataclasses.dataclass(frozen=True)
+class Manifest:
+    """Bundle manifest — schema_version=1."""
+
+    schema_version: int
+    upstream_base: str
+    fetched_at: str
+    module_count: int
+    total_bytes: int
+    modules: tuple[ManifestEntry, ...]
+
+
+def write_manifest(manifest: Manifest, path: Path = MANIFEST_PATH) -> None:
+    """Write ``manifest`` as pretty-printed JSON to ``path`` atomically."""
+    payload = json.dumps(dataclasses.asdict(manifest), indent=2, sort_keys=True)
+    write_atomic(path, payload)
+
+
+def load_manifest(path: Path = MANIFEST_PATH) -> Manifest | None:
+    """Load manifest from ``path``, or return ``None`` on missing/corrupt."""
+    if not path.is_file():
+        return None
+    try:
+        raw = path.read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except (OSError, ValueError):
+        return None
+    try:
+        modules_tuple = tuple(ManifestEntry(**m) for m in data["modules"])
+        return Manifest(
+            schema_version=data["schema_version"],
+            upstream_base=data["upstream_base"],
+            fetched_at=data["fetched_at"],
+            module_count=data["module_count"],
+            total_bytes=data["total_bytes"],
+            modules=modules_tuple,
+        )
+    except (KeyError, TypeError):
+        return None
+
+
 __all__ = [
     "BACKOFF_MULTIPLIER",
     "BASE_URL",
@@ -155,8 +215,12 @@ __all__ = [
     "OUTPUT_DIR",
     "SOURCES_URL_TEMPLATE",
     "UPSTREAM_INDEX_URL",
+    "Manifest",
+    "ManifestEntry",
     "discover_modules_from_index",
     "fetch_with_retry",
+    "load_manifest",
     "sha256_text",
     "write_atomic",
+    "write_manifest",
 ]

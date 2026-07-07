@@ -2,13 +2,24 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from scripts.build_idapython_docs import discover_modules_from_index, fetch_with_retry, sha256_text, write_atomic
+from scripts.build_idapython_docs import (
+    MANIFEST_SCHEMA_VERSION,
+    Manifest,
+    ManifestEntry,
+    discover_modules_from_index,
+    fetch_with_retry,
+    load_manifest,
+    sha256_text,
+    write_atomic,
+    write_manifest,
+)
 
 
 class TestDiscoverModules(unittest.TestCase):
@@ -121,6 +132,99 @@ class TestHelpers(unittest.TestCase):
 
     def test_sha256_text_distinguishes_different_inputs(self):
         self.assertNotEqual(sha256_text("hello"), sha256_text("world"))
+
+
+def _sample_entry(name: str = "ida_typeinf") -> ManifestEntry:
+    return ManifestEntry(
+        name=name,
+        file=f"{name}.rst.txt",
+        source_url=f"https://python.docs.hex-rays.com/_sources/{name}/index.rst.txt",
+        sha256="a" * 64,
+        byte_size=12345,
+        fetched_at="2026-07-07T00:00:00Z",
+    )
+
+
+class TestManifestRoundTrip(unittest.TestCase):
+    def test_write_then_load_returns_equal_manifest(self):
+        manifest = Manifest(
+            schema_version=MANIFEST_SCHEMA_VERSION,
+            upstream_base="https://python.docs.hex-rays.com",
+            fetched_at="2026-07-07T00:00:00Z",
+            module_count=2,
+            total_bytes=24690,
+            modules=(_sample_entry("ida_typeinf"), _sample_entry("ida_name")),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "MANIFEST.json"
+            write_manifest(manifest, path=path)
+            loaded = load_manifest(path=path)
+            self.assertIsNotNone(loaded)
+            self.assertEqual(loaded, manifest)
+
+    def test_write_atomic_no_tmp_leftovers(self):
+        manifest = Manifest(
+            schema_version=MANIFEST_SCHEMA_VERSION,
+            upstream_base="https://python.docs.hex-rays.com",
+            fetched_at="2026-07-07T00:00:00Z",
+            module_count=1,
+            total_bytes=100,
+            modules=(_sample_entry(),),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "MANIFEST.json"
+            write_manifest(manifest, path=path)
+            leftovers = list(Path(tmp).glob("*.tmp*"))
+            self.assertEqual(leftovers, [])
+
+    def test_load_missing_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = load_manifest(path=Path(tmp) / "MANIFEST.json")
+            self.assertIsNone(result)
+
+    def test_load_corrupt_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "MANIFEST.json"
+            path.write_text("not valid json {{{", encoding="utf-8")
+            self.assertIsNone(load_manifest(path=path))
+
+    def test_schema_version_preserved_across_writes(self):
+        # If existing MANIFEST exists with schema_version=N, write_manifest
+        # does NOT bump to current MANIFEST_SCHEMA_VERSION blindly —
+        # we just preserve what's passed in.
+        manifest = Manifest(
+            schema_version=99,  # arbitrary
+            upstream_base="https://x",
+            fetched_at="2026-07-07T00:00:00Z",
+            module_count=0,
+            total_bytes=0,
+            modules=(),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "MANIFEST.json"
+            write_manifest(manifest, path=path)
+            loaded = load_manifest(path=path)
+            self.assertEqual(loaded.schema_version, 99)
+
+    def test_json_is_human_readable(self):
+        # Pretty-printed with sort_keys for stable diffs
+        manifest = Manifest(
+            schema_version=1,
+            upstream_base="https://x",
+            fetched_at="t",
+            module_count=1,
+            total_bytes=10,
+            modules=(_sample_entry(),),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "MANIFEST.json"
+            write_manifest(manifest, path=path)
+            raw = path.read_text(encoding="utf-8")
+            # Pretty-printed = multiple lines
+            self.assertGreater(raw.count("\n"), 5)
+            # JSON parseable
+            data = json.loads(raw)
+            self.assertEqual(data["schema_version"], 1)
 
 
 if __name__ == "__main__":
