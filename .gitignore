@@ -20,6 +20,7 @@ build/
 scorecard.png
 
 .kilo/plans/
+.superpowers
 
 rikugan/.kilo/
 
@@ -61,3 +62,7 @@ profile_*.py
 perf.log
 
 MagicMock/
+
+# Atomic-write remnants in bundle directory
+rikugan/data/**/*.tmp
+rikugan/data/**/*.tmp.*
