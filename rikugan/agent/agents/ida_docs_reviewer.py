@@ -50,7 +50,7 @@ A. The bundled ``ida-scripting`` skill.  The skill auto-activates
    Check there FIRST; most APIs are covered including the ``DO NOT
    USE`` anti-hallucination table.
 
-B. The bundled offline docs (preferred — works offline, zero network):
+B. The bundled offline docs (preferred — always try this FIRST):
 
    The offline docs bundle ships inside the plugin at
    ``data/idapython-docs/<module>.rst.txt``. Use the
@@ -69,8 +69,29 @@ B. The bundled offline docs (preferred — works offline, zero network):
    ``ida_xref``, ``ida_segment``, ``ida_kernwin``, ``ida_ua``,
    ``idc``, ``idaapi``. These files return the raw RST source.
 
-C. Hex-Rays Python reference (online FALLBACK only — when the module is
-   not in the bundle, fall back to ``web_fetch``): the Sphinx site behind
+   **Always try ``lookup_idapython_doc`` first** for any module the
+   script touches — even if you're not sure the module is bundled.
+   The tool returns a clear "Module not in offline bundle" error with
+   a list of available modules, so the cost of a miss is one tool call.
+
+C. Hex-Rays Python reference (online FALLBACK — use ONLY after offline fails):
+
+   **Only reach for ``web_fetch`` when ``lookup_idapython_doc`` cannot
+   resolve your verification.** Two scenarios qualify:
+
+   1. The module name is not in the offline bundle (the tool returns
+      "Module 'X' not found in offline bundle"). Common for rare modules
+      not in our 54-module bundle (``ida_pro``, ``ida_lumina``, etc.).
+   2. The offline docs were consulted but did not resolve the question —
+      e.g., the specific function/parameter/edge case isn't documented
+      there, or the docs are ambiguous. Verify you actually READ the
+      relevant section first before falling back.
+
+   Do NOT use ``web_fetch`` as a first attempt. The offline docs cover
+   ~95% of common usage and are deterministic + network-free. Preferring
+   online when offline would have worked wastes time and risks 403 errors.
+
+   When you do fall back, the Sphinx site behind
    ``python.docs.hex-rays.com`` serves raw RST source files.  Each
    file contains the FULL reference for one module — every function,
    every parameter, every note — in a single fetch:

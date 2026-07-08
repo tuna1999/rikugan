@@ -46,6 +46,42 @@ class TestReviewerPromptPrefersTool(unittest.TestCase):
             "Prompt should explain when to fall back to web_fetch",
         )
 
+    def test_prompt_offline_first_priority(self):
+        """Reviewer must explicitly say 'try offline FIRST' — not just 'prefer' it."""
+        from rikugan.agent.agents.ida_docs_reviewer import IDA_DOCS_REVIEWER_PROMPT
+
+        # The prompt must make clear that offline is the first attempt, not just a preferred option
+        self.assertIn(
+            "Always try",
+            IDA_DOCS_REVIEWER_PROMPT,
+            "Prompt should explicitly tell reviewer to ALWAYS try lookup_idapython_doc first",
+        )
+        # And explicitly state that web_fetch should not be the first attempt
+        self.assertIn(
+            "Do NOT use",
+            IDA_DOCS_REVIEWER_PROMPT,
+            "Prompt should explicitly forbid using web_fetch as first attempt",
+        )
+
+    def test_prompt_fallback_after_offline_fails(self):
+        """Fallback trigger must be 'after offline fails', not just 'when module missing'."""
+        from rikugan.agent.agents.ida_docs_reviewer import IDA_DOCS_REVIEWER_PROMPT
+
+        lowered = IDA_DOCS_REVIEWER_PROMPT.lower()
+        # Must mention BOTH fallback scenarios:
+        # 1. Module not in bundle
+        # 2. Offline docs were consulted but did not resolve
+        self.assertIn(
+            "not in",
+            lowered,
+            "Prompt should mention 'not in bundle' as one fallback trigger",
+        )
+        self.assertIn(
+            "did not resolve",
+            lowered,
+            "Prompt should mention offline docs failing to resolve as fallback trigger",
+        )
+
 
 class TestSkillPrefersTool(unittest.TestCase):
     SKILL_PATH = (
@@ -77,6 +113,25 @@ class TestSkillPrefersTool(unittest.TestCase):
         assert len(parts) >= 3, "frontmatter not found"
         fm = yaml.safe_load(parts[1])
         self.assertIn("lookup_idapython_doc", fm.get("allowed_tools", []))
+
+    def test_skill_offline_first_priority(self):
+        """SKILL.md must tell agent to try offline FIRST, web_fetch as last resort."""
+        self.assertIn(
+            "always try",
+            self.body.lower(),
+            "SKILL.md must say 'always try' offline tool first",
+        )
+        self.assertIn(
+            "do **not**",
+            self.body.lower(),
+            "SKILL.md must explicitly forbid using web_fetch as first attempt",
+        )
+
+    def test_skill_fallback_after_offline_fails(self):
+        """SKILL.md fallback trigger must include both 'module not in bundle' AND 'verification still has gaps'."""
+        lowered = self.body.lower()
+        self.assertIn("module not in offline bundle", lowered)
+        self.assertIn("still has gaps", lowered)
 
 
 if __name__ == "__main__":

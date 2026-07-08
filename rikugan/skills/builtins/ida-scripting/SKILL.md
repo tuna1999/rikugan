@@ -313,21 +313,35 @@ cfunc = db.decompile(ea)
 
 The deep static reference below (`## Reference: api-reference.md`) covers ctree,
 microcode, types, xrefs, hooks, and netnodes exhaustively. For per-module
-references **not in the bundled api-reference**, prefer the **offline docs tool**
-(no network needed):
+references, **always try the offline docs tool first**:
 
 ```
 lookup_idapython_doc(module="ida_<module>")
 ```
 
 Reads from the plugin's bundled docs at `data/idapython-docs/<module>.rst.txt`.
+The bundle covers 54 modules (~95% of common usage); the tool returns a clear
+"Module not in offline bundle" error with available modules if it misses.
+
 Common modules: `ida_typeinf`, `ida_name`, `idautils`, `ida_hexrays`,
 `ida_frame`, `ida_funcs`, `ida_bytes`, `ida_xref`, `ida_segment`,
 `ida_kernwin`, `ida_ua`, `idc`, `idaapi`.
 
-> **Fallback:** if a module is not in the bundle, fall back to
+> **Fallback to online only after offline fails.** Use `web_fetch` ONLY when:
+>
+> 1. `lookup_idapython_doc` returned "Module not in offline bundle" (module
+>    name is not in our 54-module bundle — common for rare modules like
+>    `ida_pro`, `ida_lumina`, etc.), OR
+> 2. You consulted the offline docs but the verification still has gaps
+>    (specific function/parameter isn't documented offline, or docs are
+>    ambiguous). Read the relevant section first before falling back.
+>
+> Do **not** use `web_fetch` as a first attempt — preferring online when
+> offline would have worked wastes time and risks 403 errors.
+>
+> Fallback URL pattern:
 > `web_fetch(url="https://python.docs.hex-rays.com/_sources/ida_<module>/index.rst.txt", format="text")`
-> — but only as a last resort (bot protection may return 403).
+> Note: this is the raw RST source format; deep-link HTML pages return 403.
 
 For IDA 9.x migration details, fetch the porting guide:
 `https://docs.hex-rays.com/developer/idapython/idapython-porting-guide-ida-9`
