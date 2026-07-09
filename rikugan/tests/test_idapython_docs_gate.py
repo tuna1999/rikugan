@@ -505,6 +505,45 @@ class TestDocsGateStatusEmission(unittest.TestCase):
         self.assertFalse(approved)
 
 
+# ---------------------------------------------------------------------------
+# _describe_tool_call for execute_python (Task 3)
+# ---------------------------------------------------------------------------
+
+
+class TestDescribeToolCallExecutePython(unittest.TestCase):
+    """The unified ExecutePythonWidget renders its own code block, so
+    ``_describe_tool_call`` must return an empty string for
+    ``execute_python`` (previously it duplicated the first line of code).
+    Other mutating tools keep their human-readable descriptions."""
+
+    def test_execute_python_returns_empty_description(self):
+        from rikugan import constants
+        from rikugan.agent.loop import AgentLoop
+
+        desc = AgentLoop._describe_tool_call(
+            constants.EXECUTE_PYTHON_TOOL_NAME,
+            {"code": "import idautils\nprint(1)\n"},
+        )
+        self.assertEqual(desc, "")
+
+    def test_execute_python_empty_args_returns_empty(self):
+        from rikugan import constants
+        from rikugan.agent.loop import AgentLoop
+
+        desc = AgentLoop._describe_tool_call(constants.EXECUTE_PYTHON_TOOL_NAME, {})
+        self.assertEqual(desc, "")
+
+    def test_other_mutating_tool_still_described(self):
+        from rikugan.agent.loop import AgentLoop
+
+        desc = AgentLoop._describe_tool_call(
+            "rename_function",
+            {"old_name": "sub_1000", "new_name": "process_data"},
+        )
+        self.assertIn("sub_1000", desc)
+        self.assertIn("process_data", desc)
+
+
 def _drain_with_return(gen):
     """Drain a generator that returns a ``(approved, summary)`` tuple.
 

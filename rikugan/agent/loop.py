@@ -1056,12 +1056,10 @@ class AgentLoop:
     def _describe_tool_call(name: str, args: dict[str, Any]) -> str:
         """Generate a brief human-readable description of what a tool will do."""
         if name == constants.EXECUTE_PYTHON_TOOL_NAME:
-            code = args.get("code", args.get("script", ""))
-            lines = code.strip().splitlines()
-            if len(lines) <= 3:
-                return f"Run Python code:\n{code.strip()}"
-            preview = "\n".join(lines[:3])
-            return f"Run Python code ({len(lines)} lines):\n{preview}\n..."
+            # The unified ExecutePythonWidget renders its own code block,
+            # so a description here would duplicate the first line. Return
+            # empty.
+            return ""
         if name in ("rename_function",):
             return f"Rename function {args.get('old_name', '?')} → {args.get('new_name', '?')}"
         if name in ("rename_variable",):
