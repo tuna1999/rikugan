@@ -1239,7 +1239,7 @@ class ExecutePythonWidget(QFrame):
         self._toggle_btn.setObjectName("collapse_button")
         self._toggle_btn.setText("▶")
         self._toggle_btn.setFixedSize(14, 14)
-        self._toggle_btn.clicked.connect(self._toggle_code)
+        self._toggle_btn.clicked.connect(self.toggle_all)
         header.addWidget(self._toggle_btn)
 
         self._bullet = QLabel("●")
@@ -1298,14 +1298,6 @@ class ExecutePythonWidget(QFrame):
         header_row = QHBoxLayout()
         header_row.setContentsMargins(0, 0, 0, 0)
         header_row.setSpacing(4)
-
-        self._status_toggle = QToolButton()
-        self._status_toggle.setObjectName("collapse_button")
-        self._status_toggle.setText("▶")
-        self._status_toggle.setFixedSize(12, 12)
-        self._status_toggle.setVisible(False)
-        self._status_toggle.clicked.connect(self.toggle_docs_gate_detail)
-        header_row.addWidget(self._status_toggle)
 
         self._status_label = QLabel("")
         self._status_label.setWordWrap(True)
@@ -1374,23 +1366,11 @@ class ExecutePythonWidget(QFrame):
         layout.setContentsMargins(6, 3, 6, 3)
         layout.setSpacing(2)
 
-        header_row = QHBoxLayout()
-        header_row.setContentsMargins(0, 0, 0, 0)
-        header_row.setSpacing(4)
-
-        self._result_toggle = QToolButton()
-        self._result_toggle.setObjectName("collapse_button")
-        self._result_toggle.setText("▶")
-        self._result_toggle.setFixedSize(12, 12)
-        self._result_toggle.clicked.connect(self.toggle_result)
-        header_row.addWidget(self._result_toggle)
-
         self._result_header_label = QLabel("Result:")
         self._result_header_label.setStyleSheet(
             f"color: {tool_colors['result_header']}; font-weight: bold; font-size: inherit;"
         )
-        header_row.addWidget(self._result_header_label)
-        layout.addLayout(header_row)
+        layout.addWidget(self._result_header_label)
 
         self._result_label = _HeightCachedLabel()
         self._result_label.setObjectName("tool_content")
@@ -1425,7 +1405,7 @@ class ExecutePythonWidget(QFrame):
             self._code_edit.setFixedHeight(line_height * visible + 16)
         self._code_section().setVisible(True)
         # Default: collapsed (show only when IDLE/auto-allow path).
-        self._set_code_expanded(self._code_expanded)
+        self._set_expanded(self._code_expanded)
 
     def append_args_delta(self, delta: str) -> None:
         """Accumulate streaming args (TOOL_CALL_ARGS_DELTA).
@@ -1476,7 +1456,6 @@ class ExecutePythonWidget(QFrame):
             self._status_icon.setText("✗")
             self._status_detail_text = summary or "The reviewer flagged the script."
             self._status_detail.setStyleSheet(f"color: {tool_colors['status_error']}; font-size: inherit;")
-            self._status_toggle.setVisible(True)
             self._buttons_visible = False
             self._buttons_container.setVisible(False)
         elif state == "failed":
@@ -1488,36 +1467,26 @@ class ExecutePythonWidget(QFrame):
             self._status_text = ""
             self._status_visible = False
 
-        # Non-blocked states never have a detail row or toggle.
+        # Non-blocked states clear the detail text; visibility follows the
+        # single header toggle via _set_expanded.
         if state != "blocked":
-            self._status_toggle.setVisible(False)
             self._status_detail_text = ""
             if self._status_detail_visible:
                 self._status_detail_visible = False
                 self._status_detail.setVisible(False)
-                self._status_toggle.setText("▶")
 
         self._status_label.setText(self._status_text)
         # ``_status_label`` lives inside the status wrapper's header row;
         # show/hide the wrapper itself so the whole row appears/disappears.
         self._status_line.setVisible(self._status_visible)
 
-    def toggle_docs_gate_detail(self) -> None:
-        """Expand/collapse the full blocked-review summary."""
-        if not self._status_detail_text:
-            return
-        self._status_detail_visible = not self._status_detail_visible
-        self._status_detail.setText(self._status_detail_text)
-        self._status_detail.setVisible(self._status_detail_visible)
-        self._status_toggle.setText("▼" if self._status_detail_visible else "▶")
-
     def show_approval_buttons(self) -> None:
         if not self._status_visible or not self._status_text.startswith("✗"):
             # Keep buttons hidden if currently hard-blocked by docs gate.
             self._buttons_visible = True
             self._buttons_container.setVisible(True)
-        # Expand code so the user can review before deciding.
-        self._set_code_expanded(True)
+        # Expand all content so the user can review code/result before deciding.
+        self._set_expanded(True)
 
     def mark_done(self) -> None:
         """Mark the call complete (used by history restore). Safe to call
@@ -1528,8 +1497,8 @@ class ExecutePythonWidget(QFrame):
             self._status_icon.setStyleSheet(f"color: {tool_colors['status_success']}; font-size: inherit;")
 
     def hide_preview(self) -> None:
-        """Collapse the code editor (used by tool grouping)."""
-        self._set_code_expanded(False)
+        """Collapse all content (used by tool grouping)."""
+        self._set_expanded(False)
 
     def set_result(self, result: str, is_error: bool = False) -> None:
         tool_colors = get_tool_colors()
@@ -1547,10 +1516,10 @@ class ExecutePythonWidget(QFrame):
         self._result_label.setText(display)
         self._result_label.pin_height()
         self._result_block.setVisible(True)
-        # Content stays collapsed by default — user expands to read it.
+        # Content stays collapsed by default — user expands via the header
+        # toggle to read it.
         self._result_content_visible = False
         self._result_label.setVisible(False)
-        self._result_toggle.setText("▶")
         # Hide approval buttons after result arrives.
         self._buttons_visible = False
         self._buttons_container.setVisible(False)
@@ -1573,20 +1542,29 @@ class ExecutePythonWidget(QFrame):
         # The code section is the 2nd widget in the main layout.
         return self.layout().itemAt(1).widget()
 
-    def _set_code_expanded(self, expanded: bool) -> None:
+    def _set_expanded(self, expanded: bool) -> None:
+        """Expand or collapse all collapsible content from a single toggle.
+
+        Code, result content, and docs-gate detail all follow the header
+        toggle together so there is one control, not three.
+        """
         self._code_expanded = expanded
         self._code_edit.setVisible(expanded)
         self._code_info_label.setVisible(expanded and bool(self._code))
+
+        self._result_content_visible = expanded and self._result_block_visible
+        self._result_label.setVisible(self._result_content_visible)
+
+        self._status_detail_visible = expanded and bool(self._status_detail_text)
+        if self._status_detail_text:
+            self._status_detail.setText(self._status_detail_text)
+        self._status_detail.setVisible(self._status_detail_visible)
+
         self._toggle_btn.setText("▼" if expanded else "▶")
 
-    def _toggle_code(self) -> None:
-        self._set_code_expanded(not self._code_expanded)
-
-    def toggle_result(self) -> None:
-        """Expand/collapse the result content (header always visible)."""
-        self._result_content_visible = not self._result_content_visible
-        self._result_label.setVisible(self._result_content_visible)
-        self._result_toggle.setText("▼" if self._result_content_visible else "▶")
+    def toggle_all(self) -> None:
+        """Single header toggle: expand/collapse all content at once."""
+        self._set_expanded(not self._code_expanded)
 
     def _disable_buttons(self) -> None:
         self._allow_btn.setEnabled(False)

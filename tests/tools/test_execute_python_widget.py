@@ -78,11 +78,13 @@ class TestDocsGateStatus(unittest.TestCase):
         self.assertFalse(w._status_detail_visible)
 
     def test_blocked_status_expandable(self):
-        """User can expand the blocked status to read the full summary."""
+        """User can expand the blocked status to read the full summary.
+        (Expansion is driven by the single header toggle, not a separate
+        status toggle.)"""
         w = ExecutePythonWidget("tc1")
         w.set_docs_gate_status("blocked", summary="detailed rewrite guidance here")
         self.assertFalse(w._status_detail_visible)
-        w.toggle_docs_gate_detail()
+        w.toggle_all()
         self.assertTrue(w._status_detail_visible)
         self.assertIn("detailed rewrite guidance here", w._status_detail_text)
 
@@ -169,13 +171,34 @@ class TestSetResult(unittest.TestCase):
         self.assertFalse(w._result_content_visible)
 
     def test_result_expandable(self):
-        """User can expand the result to read the full output."""
+        """User can expand the result to read the full output.
+        (Expansion is driven by the single header toggle, not a separate
+        result toggle.)"""
         w = ExecutePythonWidget("tc1")
         w.set_code("print(1)")
         w.set_result("the answer is 42", is_error=False)
         self.assertFalse(w._result_content_visible)
-        w.toggle_result()
+        w.toggle_all()
         self.assertTrue(w._result_content_visible)
+
+    def test_single_header_toggle_controls_all_content(self):
+        """One toggle in the tool header expands/collapses code, result, and
+        status detail together — not three separate toggles."""
+        w = ExecutePythonWidget("tc1")
+        w.set_code("print(1)")
+        w.set_result("output", is_error=False)
+        w.set_docs_gate_status("blocked", summary="detail text")
+        # Collapsed by default.
+        self.assertFalse(w._code_expanded)
+        self.assertFalse(w._result_content_visible)
+        # Expand via the single header toggle.
+        w.toggle_all()
+        self.assertTrue(w._code_expanded)
+        self.assertTrue(w._result_content_visible)
+        # Collapse again.
+        w.toggle_all()
+        self.assertFalse(w._code_expanded)
+        self.assertFalse(w._result_content_visible)
 
     def test_result_error_collapsed_by_default(self):
         """Error results are also collapsed by default."""
