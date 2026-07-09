@@ -64,7 +64,37 @@ class TestDocsGateStatus(unittest.TestCase):
         self.assertTrue(w._buttons_visible)
         w.set_docs_gate_status("blocked", summary="bad API")
         self.assertFalse(w._buttons_visible)
-        self.assertIn("bad API", w._status_text)
+        # Summary now lives in the collapsible detail, not the header.
+        self.assertIn("bad API", w._status_detail_text)
+        self.assertIn("Docs review blocked", w._status_text)
+
+    def test_blocked_status_collapsed_by_default(self):
+        """A blocked review shows a short header by default; the long
+        reviewer summary must not clutter the card until the user expands."""
+        w = ExecutePythonWidget("tc1")
+        w.set_docs_gate_status("blocked", summary="ida_bytes.patch_qword is not a real API" * 5)
+        self.assertTrue(w._status_visible)
+        # Detail (full summary) hidden by default.
+        self.assertFalse(w._status_detail_visible)
+
+    def test_blocked_status_expandable(self):
+        """User can expand the blocked status to read the full summary."""
+        w = ExecutePythonWidget("tc1")
+        w.set_docs_gate_status("blocked", summary="detailed rewrite guidance here")
+        self.assertFalse(w._status_detail_visible)
+        w.toggle_docs_gate_detail()
+        self.assertTrue(w._status_detail_visible)
+        self.assertIn("detailed rewrite guidance here", w._status_detail_text)
+
+    def test_blocked_result_does_not_dup(self):
+        """When the docs gate blocks, the loop emits TOOL_RESULT with the
+        reviewer summary as an error. The widget already shows that summary
+        in the status line, so set_result must NOT render a duplicate
+        result block."""
+        w = ExecutePythonWidget("tc1")
+        w.set_docs_gate_status("blocked", summary="rewrite guidance")
+        w.set_result("rewrite guidance", is_error=True)
+        self.assertFalse(w._result_block_visible)
 
     def test_failed_shows_buttons(self):
         """FAILED (reviewer crash) still lets the user approve."""

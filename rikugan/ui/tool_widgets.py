@@ -1203,6 +1203,7 @@ class ExecutePythonWidget(QFrame):
         self._status_text = ""
         self._result_block_visible = False
         self._is_error = False
+        self._blocked = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 3, 6, 3)
@@ -1210,7 +1211,8 @@ class ExecutePythonWidget(QFrame):
 
         layout.addLayout(self._build_header())
         layout.addWidget(self._build_code_section())
-        layout.addWidget(self._build_status_line())
+        self._status_line = self._build_status_line()
+        layout.addWidget(self._status_line)
         layout.addLayout(self._build_approval_buttons())
         layout.addWidget(self._build_result_block())
 
@@ -1278,11 +1280,56 @@ class ExecutePythonWidget(QFrame):
         section.setVisible(False)
         return section
 
-    def _build_status_line(self) -> QLabel:
+    def _build_status_line(self) -> QWidget:
+        """Build the docs-review status row.
+
+        For ``blocked`` the reviewer summary can be long, so the row is a
+        header + collapsible detail pair: header is always visible, detail
+        (full summary) is hidden until the user expands. Other states
+        (running/approved/failed) show only the header.
+        """
+        tool_colors = get_tool_colors()
+        wrapper = QWidget()
+        wrapper_layout = QVBoxLayout(wrapper)
+        wrapper_layout.setContentsMargins(0, 0, 0, 0)
+        wrapper_layout.setSpacing(0)
+
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(4)
+
+        self._status_toggle = QToolButton()
+        self._status_toggle.setObjectName("collapse_button")
+        self._status_toggle.setText("▶")
+        self._status_toggle.setFixedSize(12, 12)
+        self._status_toggle.setVisible(False)
+        self._status_toggle.clicked.connect(self.toggle_docs_gate_detail)
+        header_row.addWidget(self._status_toggle)
+
         self._status_label = QLabel("")
         self._status_label.setWordWrap(True)
+        self._status_label.setStyleSheet(f"color: {tool_colors['preview']}; font-size: inherit;")
         self._status_label.setVisible(False)
-        return self._status_label
+        header_row.addWidget(self._status_label, 1)
+        wrapper_layout.addLayout(header_row)
+
+        self._status_detail = QLabel("")
+        self._status_detail.setWordWrap(True)
+        self._status_detail.setTextInteractionFlags(
+            Qt.TextInteractionFlag(
+                Qt.TextInteractionFlag.TextSelectableByMouse.value
+                | Qt.TextInteractionFlag.TextSelectableByKeyboard.value
+            )
+        )
+        self._status_detail.setVisible(False)
+        wrapper_layout.addWidget(self._status_detail)
+
+        # Collapsed-state bookkeeping.
+        self._status_detail_visible = False
+        self._status_detail_text = ""
+
+        wrapper.setVisible(False)
+        return wrapper
 
     def _build_approval_buttons(self) -> QHBoxLayout:
         btn_layout = QHBoxLayout()
@@ -1403,11 +1450,17 @@ class ExecutePythonWidget(QFrame):
             )
             self._status_icon.setText("✓")
         elif state == "blocked":
-            self._status_text = f"✗ Docs review blocked: {summary}"
+            self._blocked = True
+            # Short header; full summary lives in the collapsible detail so
+            # the card stays compact. The user expands to read REWRITE_GUIDANCE.
+            self._status_text = "✗ Docs review blocked — click ▶ for details"
             self._status_label.setStyleSheet(
                 f"color: {tool_colors['status_error']}; font-weight: bold; font-size: inherit;"
             )
             self._status_icon.setText("✗")
+            self._status_detail_text = summary or "The reviewer flagged the script."
+            self._status_detail.setStyleSheet(f"color: {tool_colors['status_error']}; font-size: inherit;")
+            self._status_toggle.setVisible(True)
             self._buttons_visible = False
             self._buttons_container.setVisible(False)
         elif state == "failed":
@@ -1419,8 +1472,28 @@ class ExecutePythonWidget(QFrame):
             self._status_text = ""
             self._status_visible = False
 
+        # Non-blocked states never have a detail row or toggle.
+        if state != "blocked":
+            self._status_toggle.setVisible(False)
+            self._status_detail_text = ""
+            if self._status_detail_visible:
+                self._status_detail_visible = False
+                self._status_detail.setVisible(False)
+                self._status_toggle.setText("▶")
+
         self._status_label.setText(self._status_text)
-        self._status_label.setVisible(self._status_visible)
+        # ``_status_label`` lives inside the status wrapper's header row;
+        # show/hide the wrapper itself so the whole row appears/disappears.
+        self._status_line.setVisible(self._status_visible)
+
+    def toggle_docs_gate_detail(self) -> None:
+        """Expand/collapse the full blocked-review summary."""
+        if not self._status_detail_text:
+            return
+        self._status_detail_visible = not self._status_detail_visible
+        self._status_detail.setText(self._status_detail_text)
+        self._status_detail.setVisible(self._status_detail_visible)
+        self._status_toggle.setText("▼" if self._status_detail_visible else "▶")
 
     def show_approval_buttons(self) -> None:
         if not self._status_visible or not self._status_text.startswith("✗"):
@@ -1445,6 +1518,14 @@ class ExecutePythonWidget(QFrame):
     def set_result(self, result: str, is_error: bool = False) -> None:
         tool_colors = get_tool_colors()
         self._is_error = is_error
+        # When the docs gate blocked the script, the loop emits a TOOL_RESULT
+        # carrying the reviewer summary as an error. That summary already
+        # lives in the (collapsible) status line — rendering a separate
+        # "Result:" block would duplicate it. Skip.
+        if self._blocked:
+            self._buttons_visible = False
+            self._buttons_container.setVisible(False)
+            return
         self._result_block_visible = True
         display = result[:_MAX_RESULT_DISPLAY] + "\n... (truncated)" if len(result) > _MAX_RESULT_DISPLAY else result
         self._result_label.setText(display)
