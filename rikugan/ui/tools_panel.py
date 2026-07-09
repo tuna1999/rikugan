@@ -21,6 +21,7 @@ from .styles import (
     get_tools_panel_header_style,
     get_tools_panel_style,
 )
+from .theme.applicator import bind_theme, disconnect_theme
 
 
 class ToolsPanel(QWidget):
@@ -46,9 +47,13 @@ class ToolsPanel(QWidget):
         header_layout = QHBoxLayout(self._header)
         header_layout.setContentsMargins(12, 8, 12, 8)
 
-        title = QLabel("Tools")
-        title.setStyleSheet(get_tools_panel_header_style())
-        header_layout.addWidget(title)
+        # ``_title`` is stored on self so ``_apply_styles`` can
+        # repaint it on a theme change.  Previously the title was a
+        # local variable only, so a theme switch after construction
+        # left the header label on its construction-time palette.
+        self._title = QLabel("Tools")
+        self._title.setStyleSheet(get_tools_panel_header_style())
+        header_layout.addWidget(self._title)
         header_layout.addStretch()
 
         main_layout.addWidget(self._header)
@@ -72,15 +77,20 @@ class ToolsPanel(QWidget):
 
         # Placeholder tabs. Real widgets are injected by
         # ``set_*_widget`` methods called from panel_core.
+        # ``_placeholder_labels`` tracks every QLabel we own so
+        # ``_apply_styles`` can re-paint them on a theme change.
+        self._placeholder_labels: list[QLabel] = []
         self._renamer_placeholder = QLabel("Not loaded")
         self._renamer_placeholder.setStyleSheet(get_placeholder_style())
         self._renamer_placeholder.setWordWrap(True)
         self._tabs.addTab(self._renamer_placeholder, "Renamer")
+        self._placeholder_labels.append(self._renamer_placeholder)
 
         self._agents_placeholder = QLabel("Not loaded")
         self._agents_placeholder.setStyleSheet(get_placeholder_style())
         self._agents_placeholder.setWordWrap(True)
         self._tabs.addTab(self._agents_placeholder, "Agents")
+        self._placeholder_labels.append(self._agents_placeholder)
 
         # A2A bridge placeholder — the real widget is created on
         # first A2A-tab selection so A2A discovery (PATH, config,
@@ -89,6 +99,11 @@ class ToolsPanel(QWidget):
         self._a2a_widget.setStyleSheet(get_placeholder_style())
         self._a2a_widget.setWordWrap(True)
         self._tabs.addTab(self._a2a_widget, "A2A")
+        # ``_a2a_widget`` may be replaced by ``set_a2a_widget`` —
+        # track it for theme refresh separately from the static
+        # placeholders so a real widget replacement is detected.
+        # When replaced, ``set_a2a_widget`` updates this attribute
+        # and ``_apply_styles`` reads the current value.
 
         # Knowledge tab: lazily filled by panel_core from
         # ``_ensure_knowledge_tab_initialized()``. A placeholder
@@ -99,9 +114,51 @@ class ToolsPanel(QWidget):
         self._knowledge_widget.setStyleSheet(get_placeholder_style())
         self._knowledge_widget.setWordWrap(True)
         self._tabs.addTab(self._knowledge_widget, "Knowledge")
+        self._placeholder_labels.append(self._knowledge_widget)
 
         main_layout.addWidget(self._tabs)
+
+        # Subscribe to theme changes now that every visual element
+        # is constructed.  ``bind_theme`` runs the callback
+        # synchronously, so the initial paint reflects the live
+        # palette even when the panel is built during a theme
+        # transition.
+        bind_theme(self, self._apply_styles)
+
         _early_log(f"tools_panel:init:done:elapsed_ms={int((time.monotonic() - _t0) * 1000)}")
+
+    def _apply_styles(self, _tokens: object = None) -> None:
+        """Re-apply panel QSS, header title, and placeholders on theme change.
+
+        Walks both the static placeholder list (``_placeholder_labels``)
+        and the current A2A/Knowledge widget references so a tab that
+        was replaced by ``set_*_widget`` after the placeholder list was
+        built still gets a fresh stylesheet on the next theme switch.
+
+        In host-theme mode the placeholder QSS would normally be
+        cleared by ``maybe_host_stylesheet``; the panel-level QSS
+        already does this for the tools shell itself, so the
+        placeholders follow the same pattern.
+        """
+        # Panel shell QSS (tab widget styling etc.).
+        self.setStyleSheet(get_tools_panel_style())
+        # Header title (was a local var before, now ``self._title``).
+        if getattr(self, "_title", None) is not None:
+            self._title.setStyleSheet(get_tools_panel_header_style())
+        # Static placeholders.
+        for lbl in getattr(self, "_placeholder_labels", []):
+            lbl.setStyleSheet(get_placeholder_style())
+        # A2A widget — may still be a placeholder QLabel or may have
+        # been replaced by ``set_a2a_widget``.  ``QLabel`` placeholders
+        # carry the placeholder style; real A2A widgets manage their
+        # own theme subscription, so we only re-paint placeholders.
+        a2a = getattr(self, "_a2a_widget", None)
+        if isinstance(a2a, QLabel):
+            a2a.setStyleSheet(get_placeholder_style())
+        # Same for the Knowledge slot.
+        kw = getattr(self, "_knowledge_widget", None)
+        if isinstance(kw, QLabel):
+            kw.setStyleSheet(get_placeholder_style())
 
     def _on_tab_changed(self, index: int) -> None:
         """Forward tab selection to panel_core so it can lazy-init that tab.
@@ -200,7 +257,13 @@ class ToolsPanel(QWidget):
         ``shutdown()`` method (the heavy Real widgets — not the
         lightweight ``QLabel`` placeholders). Failures are swallowed
         so a misbehaving tab cannot block panel teardown.
+
+        Also detaches our own theme subscription so a late theme
+        emit during teardown does not dereference a partially
+        destroyed panel.  Tab widgets are responsible for their own
+        ``shutdown`` paths.
         """
+        disconnect_theme(self)
         for index in range(self._tabs.count()):
             widget = self._tabs.widget(index)
             if widget is None:

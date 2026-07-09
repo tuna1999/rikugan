@@ -35,6 +35,7 @@ from .styles import (
     get_tool_approval_header_style,
     get_tool_colors,
 )
+from .theme.applicator import bind_theme, disconnect_theme
 from .theme.manager import ThemeManager
 
 _MAX_ARGS_DISPLAY = 2000
@@ -502,12 +503,82 @@ class ToolCallWidget(QFrame):
 
         # Bordered card background. Subscribed *after* the header is built
         # so an early themeChanged signal finds the widget fully constructed.
-        self._apply_card_style()
-        ThemeManager.instance().themeChanged.connect(self._apply_card_style)
+        # ``bind_theme`` runs the apply callback synchronously so the
+        # initial paint already reflects the live tokens.
+        bind_theme(self, self._apply_styles)
 
-    def _apply_card_style(self, _tokens: object = None) -> None:
-        """Re-apply the border/background QSS on theme change."""
+    def _apply_styles(self, _tokens: object = None) -> None:
+        """Re-apply card QSS and refresh every child label colour.
+
+        The previous implementation only refreshed the outer card QSS;
+        the bullet / name / summary / status / result labels kept
+        their construction-time colours, so a theme switch on a card
+        already on screen left the header glyphs and result text in
+        the previous palette.  This method re-reads both the tool
+        colour (``_TOOL_COLORS`` — kept token-independent because it
+        is brand-specific) and the helper-palette colours (preview,
+        status spinner / error / success) so the entire card paints
+        against the active theme.
+
+        ``_tokens`` is accepted for the ``bind_theme`` contract; the
+        callback always reads ``ThemeManager.tokens()`` itself so the
+        hookup works regardless of which signal path delivered the
+        refresh (Qt ``Signal`` carries the token; ``_DummySignal`` in
+        the headless fallback does not).
+        """
         self.setStyleSheet(_tool_card_css())
+        tool_colors = get_tool_colors()
+        color = _tool_color(self._tool_name)
+        # Bullet / name share the brand colour and don't depend on
+        # success / error state.
+        if getattr(self, "_bullet", None) is not None:
+            self._bullet.setStyleSheet(f"color: {color}; font-size: inherit;")
+        if getattr(self, "_name_label", None) is not None:
+            self._name_label.setStyleSheet(
+                f"color: {color}; font-weight: bold; font-size: inherit;"
+            )
+        if getattr(self, "_summary_label", None) is not None:
+            self._summary_label.setStyleSheet(
+                f"color: {tool_colors['preview']}; font-size: inherit; margin-left: 6px;"
+            )
+        # Status label colour depends on the current state — match
+        # the logic in ``set_result`` / ``mark_done`` so a theme
+        # switch on an in-flight call preserves the spinner colour
+        # and a finished call preserves its ✓ / ✗ outcome.
+        if getattr(self, "_status_label", None) is not None:
+            text = self._status_label.text()
+            if text == "✗":
+                color_key = "status_error"
+            elif text in ("✓", "✓0", "✓1"):
+                color_key = "status_success"
+            else:
+                color_key = "status_spinner"
+            self._status_label.setStyleSheet(
+                f"color: {tool_colors[color_key]}; font-size: inherit;"
+            )
+        # Preview label (collapsed-state args).
+        if getattr(self, "_preview_label", None) is not None:
+            self._preview_label.setStyleSheet(
+                f"color: {tool_colors['preview']}; font-size: inherit; margin-left: 28px;"
+            )
+        # Result header + result label follow the same status colour
+        # mapping as the status label, so a finished error result
+        # stays red and a successful result stays green.
+        if getattr(self, "_result_header", None) is not None:
+            self._result_header.setStyleSheet(
+                f"color: {tool_colors['result_header']}; font-size: inherit; font-weight: bold;"
+            )
+        if getattr(self, "_result_label", None) is not None:
+            if self._is_error:
+                self._result_label.setStyleSheet(
+                    f"color: {tool_colors['status_error']}; font-size: inherit;"
+                )
+            else:
+                # Result text uses the same muted preview colour as the
+                # collapsed state so dark/light consistency is preserved.
+                self._result_label.setStyleSheet(
+                    f"color: {tool_colors['preview']}; font-size: inherit;"
+                )
 
     def _build_header(self, tool_name: str) -> QHBoxLayout:
         """Build the compact header row: toggle ● name  summary  status."""
@@ -697,12 +768,50 @@ class ToolBatchWidget(QFrame):
 
         # Bordered card background (same as ToolCallWidget). Applied after
         # the header is built; refreshed on theme change.
-        self._apply_card_style()
-        ThemeManager.instance().themeChanged.connect(self._apply_card_style)
+        bind_theme(self, self._apply_styles)
 
-    def _apply_card_style(self, _tokens: object = None) -> None:
-        """Re-apply the border/background QSS on theme change."""
+    def _apply_styles(self, _tokens: object = None) -> None:
+        """Refresh card QSS plus every child label colour on theme change.
+
+        Mirrors :meth:`ToolCallWidget._apply_styles` so a theme
+        switch updates the brand-coloured bullet / name, the muted
+        count label, and the status icon all at once.  Per-call
+        entry labels (added by ``add_call``) are also re-painted
+        against the current preview colour so the detail rows stay
+        consistent with the header.
+        """
         self.setStyleSheet(_tool_card_css())
+        tool_colors = get_tool_colors()
+        color = _tool_color(self._tool_name)
+        if getattr(self, "_bullet", None) is not None:
+            self._bullet.setStyleSheet(f"color: {color}; font-size: inherit;")
+        if getattr(self, "_name_label", None) is not None:
+            self._name_label.setStyleSheet(
+                f"color: {color}; font-weight: bold; font-size: inherit;"
+            )
+        if getattr(self, "_count_label", None) is not None:
+            self._count_label.setStyleSheet(
+                f"color: {tool_colors['preview']}; font-size: inherit; margin-left: 6px;"
+            )
+        if getattr(self, "_status_label", None) is not None:
+            text = self._status_label.text()
+            if text.startswith("✗") or "✗" in text:
+                color_key = "status_error"
+            elif text.startswith("✓") or "✓" in text:
+                color_key = "status_success"
+            else:
+                color_key = "status_spinner"
+            self._status_label.setStyleSheet(
+                f"color: {tool_colors[color_key]}; font-size: inherit;"
+            )
+        # Preview label.
+        if getattr(self, "_preview_label", None) is not None:
+            self._preview_label.setStyleSheet(
+                f"color: {tool_colors['preview']}; font-size: inherit; margin-left: 28px;"
+            )
+        # Per-call detail entries.
+        for entry in getattr(self, "_entry_labels", []):
+            entry.setStyleSheet(f"color: {tool_colors['preview']}; font-size: inherit;")
 
     def _build_header(self, tool_name: str) -> QHBoxLayout:
         """Build the compact header row: toggle ● name  count  status."""
@@ -889,6 +998,37 @@ class ToolGroupWidget(QFrame):
         self._body_layout.setSpacing(2)
         self._body.setVisible(False)
         layout.addWidget(self._body)
+
+        # Subscribe to theme changes so the group label / status
+        # label re-paint when the user switches palettes.  Without
+        # this the group header keeps its construction-time colour
+        # even when child tool widgets have already updated.
+        bind_theme(self, self._apply_styles)
+
+    def _apply_styles(self, _tokens: object = None) -> None:
+        """Re-apply header label QSS from the live tokens.
+
+        Mirrors the colour-mapping logic used in
+        :meth:`_update_status` so a theme switch preserves the
+        spin / success / error distinction already on the status
+        label.
+        """
+        tool_colors = get_tool_colors()
+        if getattr(self, "_label", None) is not None:
+            self._label.setStyleSheet(
+                f"color: {tool_colors['preview']}; font-size: inherit; font-weight: bold;"
+            )
+        if getattr(self, "_status_label", None) is not None:
+            text = self._status_label.text()
+            if text.startswith("✗") or "✗" in text:
+                color_key = "status_error"
+            elif text.startswith("✓") or "✓" in text:
+                color_key = "status_success"
+            else:
+                color_key = "status_spinner"
+            self._status_label.setStyleSheet(
+                f"color: {tool_colors[color_key]}; font-size: inherit;"
+            )
 
     def add_widget(self, widget: QWidget, tool_name: str = "") -> None:
         """Add a tool widget into this group."""
@@ -1092,6 +1232,10 @@ class ToolApprovalWidget(QFrame):
             # show. For mutating tools without a ``code`` field the
             # description above already says what will happen.
             self._info = QLabel(f"Python code — {len(code_lines)} line{'s' if len(code_lines) != 1 else ''}")
+            # Default fallback matches the legacy ``#808080`` so a
+            # paint that races the first theme emit still reads;
+            # ``_apply_styles`` overwrites it with the live
+            # ``muted_text`` token.
             self._info.setStyleSheet("color: #808080; font-size: inherit;")
             layout.addWidget(self._info)
 
@@ -1100,6 +1244,66 @@ class ToolApprovalWidget(QFrame):
             layout.addWidget(editor)
 
         layout.addLayout(self._build_approval_buttons())
+
+        # Subscribe to theme changes so the frame border, header,
+        # info label, code editor, and allow/always/deny buttons
+        # all repaint when the user switches palettes.  Disabled
+        # button visuals are also refreshed, but we have to be
+        # careful: ``_apply_styles`` must NOT promote a disabled
+        # button back to its active style.  See the runtime state
+        # check below.
+        bind_theme(self, self._apply_styles)
+
+    def _apply_styles(self, _tokens: object = None) -> None:
+        """Refresh every visual element of the approval widget.
+
+        Disabled buttons keep their disabled-state visual even after
+        a theme change: ``_disable_buttons`` flips ``enabled`` to
+        False and replaces the text + style with the muted disabled
+        style, and ``_apply_styles`` must not overwrite that.  We
+        read ``isEnabled()`` before re-applying each button's
+        stylesheet so a button that was clicked (now disabled with
+        "Allowed" / "Always Allowed" / "Denied" text) stays in the
+        disabled style.
+        """
+        from .theme.manager import ThemeManager
+
+        try:
+            t = ThemeManager.instance().tokens()
+        except Exception:
+            return
+        # Frame / header.
+        self.setStyleSheet(get_tool_approval_frame_style())
+        if getattr(self, "_header", None) is not None:
+            self._header.setStyleSheet(get_tool_approval_header_style())
+        # Info label: use ``muted_text`` (AA on both window and
+        # alt_base) instead of the hardcoded ``#808080``.
+        if getattr(self, "_info", None) is not None:
+            self._info.setStyleSheet(f"color: {t.muted_text}; font-size: inherit;")
+        # Code editor.
+        if getattr(self, "_code_edit", None) is not None:
+            self._code_edit.setStyleSheet(get_tool_approval_code_editor_style())
+        # Buttons — preserve disabled state if the user already
+        # decided.
+        if getattr(self, "_allow_btn", None) is not None:
+            if self._allow_btn.isEnabled():
+                self._allow_btn.setStyleSheet(get_tool_approval_allow_btn_style())
+            else:
+                self._allow_btn.setStyleSheet(get_tool_approval_disabled_btn_style())
+        if getattr(self, "_always_btn", None) is not None:
+            if self._always_btn.isEnabled():
+                self._always_btn.setStyleSheet(get_tool_approval_always_btn_style())
+            else:
+                self._always_btn.setStyleSheet(get_tool_approval_disabled_btn_style())
+        if getattr(self, "_deny_btn", None) is not None:
+            if self._deny_btn.isEnabled():
+                self._deny_btn.setStyleSheet(get_tool_approval_deny_btn_style())
+            else:
+                self._deny_btn.setStyleSheet(get_tool_approval_disabled_btn_style())
+
+    def shutdown(self) -> None:
+        """Detach the theme subscription so teardown does not warn."""
+        disconnect_theme(self)
 
     @staticmethod
     def _extract_code(args_text: str) -> str:

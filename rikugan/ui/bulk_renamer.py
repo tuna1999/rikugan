@@ -39,6 +39,7 @@ from .styles import (
     get_bulk_stop_btn_style,
     get_bulk_table_style,
 )
+from .theme.applicator import bind_theme, disconnect_theme
 
 # Column indices
 _COL_CHECK = 0
@@ -167,9 +168,14 @@ class BulkRenamerWidget(QWidget):
         analysis_bar = QHBoxLayout()
         analysis_bar.setSpacing(6)
 
-        mode_label = QLabel("Mode:")
-        mode_label.setStyleSheet(get_bulk_mode_label_style())
-        analysis_bar.addWidget(mode_label)
+        # Promoted to instance attributes so ``_apply_styles`` can
+        # repaint them on a theme change.  Previously these were
+        # local variables only, which meant a light/dark switch
+        # after construction left the labels on their
+        # construction-time palette.
+        self._mode_label = QLabel("Mode:")
+        self._mode_label.setStyleSheet(get_bulk_mode_label_style())
+        analysis_bar.addWidget(self._mode_label)
 
         self._quick_radio = QRadioButton("Quick")
         self._quick_radio.setStyleSheet(get_bulk_radio_style())
@@ -183,10 +189,10 @@ class BulkRenamerWidget(QWidget):
 
         analysis_bar.addSpacing(12)
 
-        batch_label = QLabel("Batch:")
-        batch_label.setStyleSheet(get_bulk_mode_label_style())
-        batch_label.setToolTip("Quick: functions per LLM prompt. Deep: ignored (1 agent per function).")
-        analysis_bar.addWidget(batch_label)
+        self._batch_label = QLabel("Batch:")
+        self._batch_label.setStyleSheet(get_bulk_mode_label_style())
+        self._batch_label.setToolTip("Quick: functions per LLM prompt. Deep: ignored (1 agent per function).")
+        analysis_bar.addWidget(self._batch_label)
 
         self._batch_input = QLineEdit("10")
         self._batch_input.setStyleSheet(get_bulk_num_input_style())
@@ -197,10 +203,10 @@ class BulkRenamerWidget(QWidget):
         self._batch_input.textChanged.connect(lambda: self._update_selection_count())
         analysis_bar.addWidget(self._batch_input)
 
-        concurrent_label = QLabel("Jobs:")
-        concurrent_label.setStyleSheet(get_bulk_mode_label_style())
-        concurrent_label.setToolTip("Max parallel agents/requests running at the same time")
-        analysis_bar.addWidget(concurrent_label)
+        self._concurrent_label = QLabel("Jobs:")
+        self._concurrent_label.setStyleSheet(get_bulk_mode_label_style())
+        self._concurrent_label.setToolTip("Max parallel agents/requests running at the same time")
+        analysis_bar.addWidget(self._concurrent_label)
 
         self._concurrent_input = QLineEdit("3")
         self._concurrent_input.setStyleSheet(get_bulk_num_input_style())
@@ -266,6 +272,11 @@ class BulkRenamerWidget(QWidget):
         self._entries: list[FunctionEntry] = []
         self._addr_to_entry: dict[int, int] = {}  # address -> index in _entries
         self._paused = False
+
+        # Subscribe to theme changes now that every control is built.
+        # ``bind_theme`` runs the callback synchronously so the
+        # initial paint reflects the active palette.
+        bind_theme(self, self._apply_styles)
 
     def _reposition_header_check(self, _idx: int = 0, _old: int = 0, _new: int = 0) -> None:
         """Keep the header checkbox centred in the first header section."""
@@ -780,3 +791,115 @@ class BulkRenamerWidget(QWidget):
         """Heuristic: detect auto-generated function names."""
         prefixes = ("sub_", "fn_", "loc_", "j_", "nullsub_", "unknown_", "FUN_")
         return name.startswith(prefixes)
+
+    def _apply_styles(self, _tokens: object = None) -> None:
+        """Re-apply every per-widget QSS from the live tokens.
+
+        Walks each known control in order and resets its stylesheet
+        from the matching token-driven getter.  Then re-paints the
+        Status column on existing rows so a theme switch after a
+        batch of jobs are queued / completed updates their colours
+        against the new palette without losing the status text.
+
+        Runtime state that the user has built up is NOT reset:
+        selection count, filter text, header checkbox, progress bar
+        value, button enabled state.  ``_apply_styles`` only touches
+        visual properties.
+        """
+        # Top bar.
+        if getattr(self, "_filter_edit", None) is not None:
+            self._filter_edit.setStyleSheet(get_bulk_filter_style())
+        if getattr(self, "_filter_combo", None) is not None:
+            self._filter_combo.setStyleSheet(get_bulk_combo_style())
+        if getattr(self, "_selection_label", None) is not None:
+            self._selection_label.setStyleSheet(get_bulk_selection_label_style())
+        # Table.
+        if getattr(self, "_table", None) is not None:
+            self._table.setStyleSheet(get_bulk_table_style())
+        if getattr(self, "_header_check", None) is not None:
+            self._header_check.setStyleSheet(get_bulk_check_style())
+        # Analysis bar — promote the previously-local labels so we can
+        # repaint them too.
+        if getattr(self, "_mode_label", None) is not None:
+            self._mode_label.setStyleSheet(get_bulk_mode_label_style())
+        if getattr(self, "_batch_label", None) is not None:
+            self._batch_label.setStyleSheet(get_bulk_mode_label_style())
+        if getattr(self, "_concurrent_label", None) is not None:
+            self._concurrent_label.setStyleSheet(get_bulk_mode_label_style())
+        if getattr(self, "_quick_radio", None) is not None:
+            self._quick_radio.setStyleSheet(get_bulk_radio_style())
+        if getattr(self, "_deep_radio", None) is not None:
+            self._deep_radio.setStyleSheet(get_bulk_radio_style())
+        if getattr(self, "_batch_input", None) is not None:
+            self._batch_input.setStyleSheet(get_bulk_num_input_style())
+        if getattr(self, "_concurrent_input", None) is not None:
+            self._concurrent_input.setStyleSheet(get_bulk_num_input_style())
+        # Action bar.
+        if getattr(self, "_start_btn", None) is not None:
+            self._start_btn.setStyleSheet(get_bulk_start_btn_style())
+        if getattr(self, "_stop_btn", None) is not None:
+            self._stop_btn.setStyleSheet(get_bulk_stop_btn_style())
+        if getattr(self, "_pause_btn", None) is not None:
+            self._pause_btn.setStyleSheet(get_bulk_btn_style())
+        if getattr(self, "_undo_btn", None) is not None:
+            self._undo_btn.setStyleSheet(get_bulk_btn_style())
+        if getattr(self, "_refresh_btn", None) is not None:
+            self._refresh_btn.setStyleSheet(get_bulk_btn_style())
+        if getattr(self, "_loading_label", None) is not None:
+            self._loading_label.setStyleSheet(get_bulk_selection_label_style())
+        if getattr(self, "_progress", None) is not None:
+            self._progress.setStyleSheet(get_bulk_progress_style())
+        if getattr(self, "_progress_label", None) is not None:
+            self._progress_label.setStyleSheet(get_bulk_selection_label_style())
+        # Re-apply status colours on existing rows.  The status text
+        # is read from the cell so the foreground re-tints against
+        # the new palette without losing the in-flight result.
+        self._refresh_row_status_colors()
+
+    def _refresh_row_status_colors(self) -> None:
+        """Repaint the Status column on every visible row.
+
+        Walks ``self._table`` row-by-row, reads the cell text, and
+        looks up the matching colour in the current
+        ``BULK_STATUS_COLORS`` dict.  Rows with an empty status
+        cell are skipped (their foreground defaults to the table's
+        inherited text colour).
+
+        Block-table signals for the duration of the walk so a
+        status refresh does not re-fire ``_on_item_changed`` and
+        mutate selection counts.
+        """
+        if getattr(self, "_table", None) is None:
+            return
+        try:
+            from .qt_compat import QColor
+        except Exception:
+            return
+        status_colors = get_bulk_status_colors()
+        self._table.blockSignals(True)
+        try:
+            for row in range(self._table.rowCount()):
+                item = self._table.item(row, _COL_STATUS)
+                if item is None or not item.text():
+                    continue
+                # Map the displayed text back to a status key.
+                # The cell text is the status name itself, except
+                # for ``error`` rows where ``update_job`` writes the
+                # error message instead of the status.  In that case
+                # fall back to the ``error`` colour.
+                text = item.text()
+                color = status_colors.get(text, status_colors.get("error", "#d4d4d4"))
+                item.setForeground(QColor(color))
+        finally:
+            self._table.blockSignals(False)
+
+    def shutdown(self) -> None:
+        """Detach the theme subscription (idempotent).
+
+        Matches the panel-level teardown contract: callers do not
+        need to handle ``disconnect_theme`` exceptions because
+        :func:`rikugan.ui.theme.applicator.disconnect_theme` already
+        swallows the ``RuntimeError``/``TypeError``/``SystemError``
+        family that PySide6 raises during teardown.
+        """
+        disconnect_theme(self)

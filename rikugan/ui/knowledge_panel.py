@@ -39,6 +39,7 @@ from .qt_compat import (
     Signal,
 )
 from .styles import get_placeholder_style
+from .theme.applicator import bind_theme, disconnect_theme
 
 _TYPE_FILTERS = ("All", "Memories", "Entities", "Relations", "Notes")
 
@@ -136,6 +137,33 @@ class KnowledgePanel(QWidget):
         # Internal state
         self._rows: list[_Row] = []
         self._disabled: bool = False
+
+        # Subscribe to theme changes so the counts label and the
+        # optional disabled-state banner re-paint when the user
+        # switches palettes.  The table / detail pane rely on Qt's
+        # palette cascade (no widget-local stylesheet), so they
+        # follow automatically.
+        bind_theme(self, self._apply_styles)
+
+    def _apply_styles(self, _tokens: object = None) -> None:
+        """Re-apply the counts label and the disabled-state banner.
+
+        The table and detail pane intentionally have no widget-local
+        stylesheets — they rely on the parent's palette cascade so a
+        theme switch updates them through ``QApplication.setStyle``
+        automatically.  The counts label and banner, however, had
+        a hardcoded ``get_placeholder_style()`` stylesheet applied
+        at construction; we re-issue it here so they don't get
+        stuck on the old palette.
+        """
+        if getattr(self, "_counts_label", None) is not None:
+            self._counts_label.setStyleSheet(get_placeholder_style())
+        if getattr(self, "_banner_label", None) is not None:
+            self._banner_label.setStyleSheet(get_placeholder_style())
+
+    def shutdown(self) -> None:
+        """Detach the theme subscription (idempotent)."""
+        disconnect_theme(self)
 
     # ------------------------------------------------------------------
     # Public API

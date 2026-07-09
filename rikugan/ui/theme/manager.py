@@ -315,9 +315,81 @@ class ThemeManager(QObject):  # type: ignore[misc, valid-type]
             return None
         return QApplication.instance()
 
+    def _sync_legacy_theme_helpers(self, tokens: ThemeTokens) -> None:
+        """Mirror the live mode into the legacy ``styles`` helpers.
+
+        ``styles._current_theme`` / ``styles._effective_theme`` are
+        read by inline-styled widgets (e.g. ``get_tool_colors``,
+        ``get_agent_status_colors``) and by ``is_host_theme()`` /
+        ``is_dark_theme()``.  Until this hook ran inside
+        ``_apply_now``, every theme change that originated from
+        ``ThemeManager.set_mode`` (rather than
+        ``RikuganPanelCore.set_theme``) left the legacy module-level
+        variables stale, so helper-palette colours continued to
+        report the *previous* mode.
+
+        The legacy mapping preserves the user-visible semantics:
+
+        - ``ThemeMode.IDA_NATIVE`` -> legacy ``"ida"`` (so
+          ``is_host_theme()`` returns True).
+        - ``ThemeMode.AUTO`` -> legacy ``"ida"`` too (legacy helpers
+          do not distinguish auto from ida; the effective palette is
+          decided by the live QApplication).
+        - ``ThemeMode.DARK`` / ``ThemeMode.LIGHT`` -> legacy
+          ``"dark"`` / ``"light"`` so ``is_dark_theme()`` and the
+          branch-keyed colour dicts (``TOOL_COLORS``,
+          ``BULK_STATUS_COLORS``, ``AGENT_STATUS_COLORS``) flip with
+          the user's choice.
+
+        The helper must run *before* ``themeChanged.emit`` so any
+        listener that consults ``styles.is_dark_theme()`` during the
+        emit observes the new value.
+        """
+        try:
+            from ..styles import set_current_theme
+        except Exception as exc:
+            logger.debug("set_current_theme import failed; legacy helpers stay stale", exc_info=exc)
+            return
+
+        try:
+            if self._mode in (ThemeMode.IDA_NATIVE, ThemeMode.AUTO):
+                legacy_value = "ida"
+            else:
+                legacy_value = self._mode.value
+            effective = "dark" if is_dark_tokens(tokens) else "light"
+            # Outside IDA, ``IDA_NATIVE`` falls back to DARK_TOKENS
+            # (and ``AUTO`` outside IDA also falls back to DARK).
+            # In that case the user picked the host-theme *mode*
+            # but the resolved palette is dark, so legacy helpers
+            # that gate on ``is_host_theme()`` would still report
+            # host.  Force the effective branch to "dark" so the
+            # two legacy helpers agree (host-mode + dark palette =
+            # both True) and inline widgets read the dark dict.
+            try:
+                from ...core.host import is_ida
+            except Exception:
+                def is_ida() -> bool:  # type: ignore[no-redef]
+                    return False
+            if not is_ida() and self._mode in (ThemeMode.IDA_NATIVE, ThemeMode.AUTO):
+                effective = "dark"
+            set_current_theme(legacy_value, effective_theme=effective)
+        except Exception as exc:
+            logger.debug("legacy theme helper sync failed", exc_info=exc)
+
     def _apply_now(self) -> None:
-        """Compute current tokens and emit ``themeChanged``."""
+        """Compute current tokens and emit ``themeChanged``.
+
+        Order of operations matters here: the legacy
+        ``styles._current_theme`` / ``_effective_theme`` mirror must
+        be updated **before** the ``themeChanged`` emit so that any
+        listener that consults ``styles.is_dark_theme()`` (e.g.
+        ``get_tool_colors``, ``get_bulk_status_colors``,
+        ``get_agent_status_colors``) sees the new branch during the
+        call.  See :meth:`_sync_legacy_theme_helpers` for the
+        mapping table.
+        """
         tokens = self.tokens()
+        self._sync_legacy_theme_helpers(tokens)
         try:
             # In real PySide6, ``themeChanged`` is a class-level
             # ``Signal`` descriptor bound to this instance.  In the

@@ -43,6 +43,7 @@ from .styles import (
     get_ok_status_style,
     get_settings_btn_style,
 )
+from .theme.applicator import disconnect_theme
 from .theme.manager import ThemeManager
 
 _DEFAULT_MINIMAX_URL = "https://api.minimax.io/anthropic"
@@ -252,6 +253,33 @@ class SettingsDialog(QDialog):
         self.setMinimumWidth(400)
         self._build_ui()
         self._remove_provider_btn.setEnabled(self._config.is_custom_provider(self._config.provider.name))
+
+        # Subscribe to theme changes immediately so a user who
+        # opens the dialog, leaves it open while changing the theme
+        # in another panel, or switches themes via the settings
+        # combo sees the dialog repaint against the new palette
+        # without needing a close-and-reopen cycle.
+        #
+        # The previous revision wired the subscription inside
+        # ``showEvent`` behind a ``_theme_signal_connected`` flag.
+        # That left a window where the dialog was constructed but
+        # not yet shown, during which a theme change would not
+        # update the visible stylesheet (e.g. tests that build a
+        # dialog but never show it).  Connecting here also matches
+        # the new ``bind_theme`` pattern used by every other
+        # themed widget so the disconnect path in ``done`` is
+        # symmetric.
+        try:
+            ThemeManager.instance().themeChanged.connect(self._apply_theme_styles)
+        except Exception:
+            # Subscription is best-effort; if the manager has been
+            # torn down already (rare test path), the dialog will
+            # still work, just without live theme refresh.
+            pass
+        # Apply the current theme immediately so the dialog body
+        # paints against the live palette even when constructed in
+        # a hidden state (dockable forms, tests).
+        self._apply_theme_styles()
 
         # Poll timer for fetcher results — NO cross-thread signals
         self._poll_timer = QTimer(self)
@@ -785,19 +813,10 @@ class SettingsDialog(QDialog):
         # light/dark switch performed while the dialog was hidden
         # becomes visible immediately, and so the dialog is
         # theme-consistent after restoration from a saved layout.
+        # The theme subscription itself is wired in ``__init__`` so
+        # it is in place even when the dialog is constructed but
+        # never shown (tests, dockable forms).
         self._apply_theme_styles()
-        # Subscribe (idempotently) to subsequent theme changes so the
-        # QSS updates without requiring the user to close and
-        # reopen the dialog.  ``hasattr`` is the cheap guard against
-        # repeated connection — ``connect`` itself would not
-        # de-duplicate, and double-connecting would call
-        # ``_apply_theme_styles`` twice per ``themeChanged`` emit.
-        if not getattr(self, "_theme_signal_connected", False):
-            try:
-                ThemeManager.instance().themeChanged.connect(self._apply_theme_styles)
-                self._theme_signal_connected = True
-            except Exception:
-                pass
 
     def _deferred_init(self) -> None:
         """Runs after the dialog is fully painted. Safe for subprocesses/threads.
@@ -924,6 +943,11 @@ class SettingsDialog(QDialog):
         except RuntimeError as e:
             log_debug(f"SettingsDialog.done timer cleanup: {e}")
         self._fetcher.shutdown()
+        # Detach the theme subscription so the singleton doesn't
+        # keep a dangling reference to a closed dialog.  The
+        # ``disconnect_theme`` helper swallows the broad set of
+        # disconnect-time errors PySide6 can raise during teardown.
+        disconnect_theme(self)
         # Cancel: the user discarded the dialog, so roll the live config
         # back to its pre-dialog state. Without this the eager UI→config
         # syncs (provider switch, key edits) would persist despite Cancel.

@@ -24,6 +24,7 @@ from .styles import (
     get_mutation_title_style,
     get_mutation_undo_btn_style,
 )
+from .theme.applicator import bind_theme, disconnect_theme
 
 if TYPE_CHECKING:
     from ..agent.mutation import MutationRecord
@@ -62,9 +63,30 @@ class MutationEntryWidget(QFrame):
         self._tool_badge.setStyleSheet(get_mutation_badge_style())
         layout.addWidget(self._tool_badge)
 
+    def shutdown(self) -> None:
+        """Detach the theme subscription (idempotent)."""
+        disconnect_theme(self)
+
     @property
     def record(self) -> MutationRecord:
         return self._record
+
+    def _apply_styles(self, _tokens: object = None) -> None:
+        """Re-apply indicator / description / badge styles from the live tokens.
+
+        ``record`` is fixed at construction time, so we read
+        ``reversible`` from it directly when repainting the indicator
+        glyph (success colour for reversible, muted_text for
+        irreversible).  Description and badge always use the
+        token-driven getters so a theme switch updates them
+        immediately.
+        """
+        if getattr(self, "_indicator", None) is not None:
+            self._indicator.setStyleSheet(get_mutation_indicator_style(self._record.reversible))
+        if getattr(self, "_desc", None) is not None:
+            self._desc.setStyleSheet(get_mutation_desc_style())
+        if getattr(self, "_tool_badge", None) is not None:
+            self._tool_badge.setStyleSheet(get_mutation_badge_style())
 
 
 class MutationLogPanel(QFrame):
@@ -121,10 +143,24 @@ class MutationLogPanel(QFrame):
 
         self._entries: list[MutationEntryWidget] = []
 
+        # Subscribe to theme changes now that every visual element is
+        # built.  ``bind_theme`` runs the callback synchronously so the
+        # initial paint reflects the active palette.  Entries added via
+        # :meth:`add_mutation` are wired to the same signal by the
+        # parent's ``_apply_styles`` walker (each entry subscribes to
+        # the theme signal on its own so it survives a panel teardown
+        # that drops the parent subscription first).
+        bind_theme(self, self._apply_styles)
+
     def add_mutation(self, record: MutationRecord) -> None:
         """Add a new mutation entry to the log."""
         index = len(self._entries)
         entry = MutationEntryWidget(index, record, self._entries_widget)
+        # Apply the current theme to the new entry immediately so
+        # it doesn't render with stale construction-time colours if
+        # the theme changed between panel construction and the first
+        # mutation.
+        entry._apply_styles()
         # Insert before the stretch
         self._entries_layout.insertWidget(self._entries_layout.count() - 1, entry)
         self._entries.append(entry)
@@ -150,3 +186,24 @@ class MutationLogPanel(QFrame):
         n = len(self._entries)
         self._count_label.setText(f"{n} mutation{'s' if n != 1 else ''}")
         self._undo_btn.setEnabled(n > 0 and any(e.record.reversible for e in self._entries))
+
+    def _apply_styles(self, _tokens: object = None) -> None:
+        """Refresh panel chrome (title / count / undo button) and walk entries.
+
+        The undo button's enabled state is intentionally NOT touched
+        here — it depends on the entries' reversibility, not on the
+        theme.  ``_update_count`` is the single owner of that flag,
+        and the constructor sets the initial disabled state.
+        """
+        if getattr(self, "_title", None) is not None:
+            self._title.setStyleSheet(get_mutation_title_style())
+        if getattr(self, "_count_label", None) is not None:
+            self._count_label.setStyleSheet(get_mutation_count_style())
+        if getattr(self, "_undo_btn", None) is not None:
+            self._undo_btn.setStyleSheet(get_mutation_undo_btn_style())
+        for entry in self._entries:
+            entry._apply_styles()
+
+    def shutdown(self) -> None:
+        """Detach the theme subscription (idempotent)."""
+        disconnect_theme(self)

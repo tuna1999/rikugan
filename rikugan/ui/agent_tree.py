@@ -26,6 +26,7 @@ from .styles import (
     get_agent_status_label_style,
     get_agent_tree_style,
 )
+from .theme.applicator import bind_theme, disconnect_theme
 
 
 @dataclass
@@ -120,6 +121,11 @@ class AgentTreeWidget(QWidget):
         # Incremental status counters
         self._running_count: int = 0
         self._completed_count: int = 0
+
+        # Subscribe to theme changes so the tree, preview, combo,
+        # buttons, and per-row status colours all repaint when the
+        # user switches palettes.
+        bind_theme(self, self._apply_styles)
 
     def _on_kill_selected(self) -> None:
         """Cancel the currently selected agent(s)."""
@@ -267,3 +273,53 @@ class AgentTreeWidget(QWidget):
         mins = int(seconds) // 60
         secs = int(seconds) % 60
         return f"{mins}:{secs:02d}"
+
+    def _apply_styles(self, _tokens: object = None) -> None:
+        """Re-apply toolbar / tree / preview styles from the live tokens.
+
+        Also walks every existing tree item and refreshes its
+        status-cell foreground colour against the new palette.  The
+        running / completed counters are not touched — they are
+        runtime state owned by ``update_agent`` and must survive
+        the theme switch.
+        """
+        if getattr(self, "_kill_btn", None) is not None:
+            self._kill_btn.setStyleSheet(get_agent_btn_style())
+        if getattr(self, "_clean_btn", None) is not None:
+            self._clean_btn.setStyleSheet(get_agent_btn_style())
+        if getattr(self, "_filter_combo", None) is not None:
+            self._filter_combo.setStyleSheet(get_agent_combo_style())
+        if getattr(self, "_status_label", None) is not None:
+            self._status_label.setStyleSheet(get_agent_status_label_style())
+        if getattr(self, "_tree", None) is not None:
+            self._tree.setStyleSheet(get_agent_tree_style())
+        if getattr(self, "_preview", None) is not None:
+            self._preview.setStyleSheet(get_agent_preview_style())
+        # Refresh per-row status colours.  Existing items keep their
+        # text — only the status-cell foreground changes.
+        self._refresh_row_status_colors()
+
+    def _refresh_row_status_colors(self) -> None:
+        """Repaint the status column on every known tree item.
+
+        Reads each item's stored ``AgentInfo.status`` (via
+        ``self._agents`` keyed by the item's ``UserRole`` data) and
+        looks the colour up in the current ``AGENT_STATUS_COLORS``
+        dict.  Items whose agent has been removed are skipped so a
+        mid-clean theme switch does not crash.
+        """
+        try:
+            from .qt_compat import QColor
+        except Exception:
+            return
+        status_colors = get_agent_status_colors()
+        for agent_id, item in self._items.items():
+            info = self._agents.get(agent_id)
+            if info is None:
+                continue
+            color = status_colors.get(info.status, "#d4d4d4")
+            item.setForeground(2, QColor(color))
+
+    def shutdown(self) -> None:
+        """Detach the theme subscription (idempotent)."""
+        disconnect_theme(self)

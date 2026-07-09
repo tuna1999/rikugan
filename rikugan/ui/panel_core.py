@@ -688,6 +688,17 @@ class RikuganPanelCore(QWidget):
         user can switch between AUTO/IDA_NATIVE (host styles win) and
         DARK/LIGHT (Rikugan styles win) at runtime. ``_use_native_host_theme``
         is set once at construction and would be stale in that case.
+
+        Long-lived panels that are *not* embedded inside a
+        :class:`ChatView` (tools panel, mutation log, renamer, agent
+        tree, knowledge panel, and any external tools form) subscribe
+        to ``ThemeManager.themeChanged`` on their own, so this hook
+        is a safety net — it calls their public ``_apply_styles``
+        method directly to catch panels that have not been refreshed
+        for whatever reason (e.g. the user opened the tools panel
+        after the theme change).  Each call is wrapped in a
+        ``try/except`` so a misbehaving panel cannot block the
+        others.
         """
         if not use_native_host_theme():
             # Re-apply the global QSS template with the new token values.
@@ -708,6 +719,36 @@ class RikuganPanelCore(QWidget):
             add_btn = getattr(tab_bar, "_add_btn", None) if tab_bar is not None else None
             if add_btn is not None:
                 tab_bar._apply_styles()
+            # Tools-panel shell (title / placeholders / tab widget chrome).
+            tools_panel = getattr(self, "_tools_panel", None)
+            if tools_panel is not None:
+                try:
+                    tools_panel._apply_styles()
+                except Exception as e:  # best-effort refresh
+                    log_debug(f"ToolsPanel._apply_styles failed: {e}")
+            # Per-tab heavy widgets (built lazily — may be absent
+            # until the user first selects that tab).
+            for attr in ("_bulk_renamer", "_agent_tree", "_knowledge_panel", "_a2a_bridge_widget"):
+                widget = getattr(self, attr, None)
+                if widget is None:
+                    continue
+                apply = getattr(widget, "_apply_styles", None)
+                if not callable(apply):
+                    continue
+                try:
+                    apply()
+                except Exception as e:  # best-effort refresh
+                    log_debug(f"{attr}._apply_styles failed: {e}")
+            # Mutation log panel (a sibling of the chat tabs in the
+            # main splitter, not a child of any ChatView).
+            mutation_panel = getattr(self, "_mutation_panel", None)
+            if mutation_panel is not None:
+                apply = getattr(mutation_panel, "_apply_styles", None)
+                if callable(apply):
+                    try:
+                        apply()
+                    except Exception as e:  # best-effort refresh
+                        log_debug(f"MutationLogPanel._apply_styles failed: {e}")
         # Inline-styled widgets (ToolCallWidget, UserMessageWidget, code
         # blocks, etc.) cache their colors at construction time.  Pushing
         # a theme change must refresh them so they pick up the new tokens.
