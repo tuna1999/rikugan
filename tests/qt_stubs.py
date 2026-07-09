@@ -51,6 +51,66 @@ def _qt_class(name: str) -> type:
     def _max_h_getter(self):
         return getattr(self, "_max_h", 0)
 
+    def _font_metrics(self, *a, **k):
+        """Return a stub QFontMetrics whose ``lineSpacing()`` is a fixed value.
+
+        Used by code editor sizing in tool widgets. Production code calls
+        ``self._code_edit.fontMetrics().lineSpacing()`` to compute visible
+        row height; the stub returns a sensible default so widget
+        construction does not blow up.
+        """
+
+        class _FontMetrics:
+            def lineSpacing(self):
+                return 14
+
+        return _FontMetrics()
+
+    def _layout_getter(self):
+        """Return the QLayout attached via ``setLayout``.
+
+        tool_widgets walks its own layout via ``layout().itemAt(i).widget()``
+        to look up the code section, so the stub must preserve the set layout.
+        """
+        return getattr(self, "_layout", None)
+
+    def _layout_setter(self, layout):
+        self._layout = layout
+
+    def _layout_add_widget(self, w, *a, **k):
+        items = getattr(self, "_items", None)
+        if items is None:
+            items = []
+            self._items = items
+        items.append(w)
+
+    def _layout_add_layout(self, layout):
+        items = getattr(self, "_items", None)
+        if items is None:
+            items = []
+            self._items = items
+        items.append(layout)
+
+    def _layout_add_stretch(self, *a, **k):
+        return None
+
+    def _layout_item_at(self, index):
+        items = getattr(self, "_items", [])
+
+        class _Item:
+            def __init__(self, w):
+                self._w = w
+
+            def widget(self):
+                return self._w
+
+            def layout(self):
+                return None
+
+        if index < 0 or index >= len(items):
+            return _Item(None)
+        return _Item(items[index])
+
     class _HeaderStub:
         """Stub for QHeaderView (returned by QTableWidget.verticalHeader()/.horizontalHeader()).
 
@@ -96,10 +156,12 @@ def _qt_class(name: str) -> type:
         "setToolTip": _noop,
         "setStatusTip": _noop,
         "setWhatsThis": _noop,
-        "addLayout": _noop,
-        "addWidget": _noop,
-        "addStretch": _noop,
-        "addItem": _noop,
+        "addLayout": _layout_add_layout,
+        "addWidget": _layout_add_widget,
+        "addStretch": _layout_add_stretch,
+        "addItem": _layout_add_widget,
+        "itemAt": _layout_item_at,
+        "layout": _layout_getter,
         "setToolButtonStyle": _noop,
         "setArrowType": _noop,
         "setPopupMode": _noop,
@@ -110,6 +172,7 @@ def _qt_class(name: str) -> type:
         "setPlaceholderText": _noop,
         "setEchoMode": _noop,
         "setReadOnly": _noop,
+        "fontMetrics": _font_metrics,
         "setRange": _noop,
         "setPrefix": _noop,
         "setSuffix": _noop,
@@ -274,7 +337,7 @@ def _qt_class(name: str) -> type:
         "returnPressed": _Signal(),
         "setVisible": _noop,
         "setParent": _noop,
-        "setLayout": _noop,
+        "setLayout": _layout_setter,
         "resize": _noop,
         "sizeHint": lambda self: None,
         # QWidget window-related (used by QDialog subclasses)
@@ -620,6 +683,27 @@ def ensure_pyside6_stubs() -> None:
     _widget_stubs = {n: _qt_class(n) for n in _WIDGET_NAMES}
     _widget_stubs["QSizePolicy"] = _size_policy
 
+    # QLayout subclasses (QVBoxLayout / QHBoxLayout / QFormLayout) call
+    # ``QLayout(parent)`` to wire the layout to a widget. production code
+    # then calls ``widget.layout()`` to look it back up. The standard
+    # ``__init__`` is a no-op, so we replace it for these four classes to
+    # auto-register with the parent.
+    def _layout_init(self, parent=None, *a, **k):
+        # Initialise items list once for this instance.
+        self._items = []
+        if parent is not None:
+            parent.setLayout(self)
+
+    for _layout_name in (
+        "QVBoxLayout",
+        "QHBoxLayout",
+        "QFormLayout",
+        "QGridLayout",
+        "QStackedLayout",
+    ):
+        if _layout_name in _widget_stubs:
+            _widget_stubs[_layout_name].__init__ = _layout_init
+
     # QLineEdit needs a nested EchoMode enum (used by setEchoMode).
     _widget_stubs["QLineEdit"].EchoMode = type(
         "_LineEditEchoMode",
@@ -668,6 +752,17 @@ def ensure_pyside6_stubs() -> None:
     _widget_stubs["QDialog"].done = lambda self, r: None
     _widget_stubs["QDialog"].exec = lambda self: 0
     _widget_stubs["QDialog"].open = lambda self: None
+    # QPlainTextEdit.LineWrapMode is referenced by tool_widgets to disable
+    # word wrap on the code editor (``QPlainTextEdit.LineWrapMode.NoWrap``).
+    _widget_stubs["QPlainTextEdit"].LineWrapMode = type(
+        "_LineWrapMode",
+        (),
+        {"NoWrap": 0, "WidgetWidth": 1, "FixedPixelWidth": 2},
+    )()
+    # tool_widgets passes ``self._code_edit.document()`` to the Python
+    # syntax highlighter; the stub just returns a sentinel object — the
+    # highlighter doesn't introspect it during construction.
+    _widget_stubs["QPlainTextEdit"].document = lambda self: object()
     _widget_stubs["QDialogButtonBox"].StandardButton = type(
         "_DialogBoxStandardButton",
         (),

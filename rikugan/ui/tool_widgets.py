@@ -1173,3 +1173,439 @@ class ToolApprovalWidget(QFrame):
         self._deny_btn.setText("  Denied  ")
         self._deny_btn.setStyleSheet(get_tool_approval_disabled_btn_style())
         self.approved.emit(self._tool_call_id, "deny")
+
+
+# ---------------------------------------------------------------------------
+# Unified execute_python lifecycle widget
+# ---------------------------------------------------------------------------
+
+
+class ExecutePythonWidget(QFrame):
+    """Unified lifecycle widget for the ``execute_python`` tool.
+
+    Renders code, an optional docs-review status line, approval buttons,
+    and the execution result — all in one card.  State is inferred from
+    the events received (no auto-approve flag): the widget starts IDLE,
+    shows buttons only when ``show_approval_buttons()`` is called (driven
+    by TOOL_APPROVAL_REQUEST), and shows the result after ``set_result()``.
+    """
+
+    approved = Signal(str, str)  # (tool_call_id, "allow"/"allow_all"/"deny")
+
+    def __init__(self, tool_call_id: str, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setObjectName("message_tool")
+        self._tool_call_id = tool_call_id
+        self._code = ""
+        self._code_expanded = False
+        self._buttons_visible = False
+        self._status_visible = False
+        self._status_text = ""
+        self._result_block_visible = False
+        self._result_content_visible = False
+        self._result_header_visible = False
+        self._result_block_visible_current = False
+        self._is_error = False
+        self._blocked = False
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(6, 3, 6, 3)
+        layout.setSpacing(2)
+
+        layout.addLayout(self._build_header())
+        layout.addWidget(self._build_code_section())
+        self._status_line = self._build_status_line()
+        layout.addWidget(self._status_line)
+        layout.addLayout(self._build_approval_buttons())
+        layout.addWidget(self._build_result_block())
+
+        self._apply_card_style()
+        ThemeManager.instance().themeChanged.connect(self._apply_card_style)
+
+    # ------------------------------------------------------------------
+    # Builders
+    # ------------------------------------------------------------------
+
+    def _apply_card_style(self, _tokens: object = None) -> None:
+        self.setStyleSheet(_tool_card_css())
+
+    def _build_header(self) -> QHBoxLayout:
+        tool_colors = get_tool_colors()
+        color = _tool_color(constants.EXECUTE_PYTHON_TOOL_NAME)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(0)
+
+        self._toggle_btn = QToolButton()
+        self._toggle_btn.setObjectName("collapse_button")
+        self._toggle_btn.setText("▶")
+        self._toggle_btn.setFixedSize(14, 14)
+        self._toggle_btn.clicked.connect(self.toggle_all)
+        header.addWidget(self._toggle_btn)
+
+        self._bullet = QLabel("●")
+        self._bullet.setStyleSheet(f"color: {color}; font-size: inherit;")
+        self._bullet.setFixedWidth(14)
+        header.addWidget(self._bullet)
+
+        self._name_label = QLabel(_strip_mcp_prefix(constants.EXECUTE_PYTHON_TOOL_NAME))
+        self._name_label.setStyleSheet(f"color: {color}; font-weight: bold; font-size: inherit;")
+        header.addWidget(self._name_label)
+
+        header.addStretch()
+
+        self._status_icon = QLabel("")
+        self._status_icon.setStyleSheet(f"color: {tool_colors['status_spinner']}; font-size: inherit;")
+        header.addWidget(self._status_icon)
+
+        return header
+
+    def _build_code_section(self) -> QWidget:
+        section = QWidget()
+        layout = QVBoxLayout(section)
+        layout.setContentsMargins(28, 2, 0, 2)
+        layout.setSpacing(2)
+
+        self._code_info_label = QLabel("")
+        self._code_info_label.setStyleSheet("color: #808080; font-size: inherit;")
+        self._code_info_label.setVisible(False)
+        layout.addWidget(self._code_info_label)
+
+        self._code_edit = QPlainTextEdit()
+        self._code_edit.setReadOnly(True)
+        self._code_edit.setStyleSheet(get_tool_approval_code_editor_style())
+        self._code_edit.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self._code_edit.setVisible(False)
+        layout.addWidget(self._code_edit)
+        self._code_highlighter = _PythonHighlighter(self._code_edit.document())
+
+        section.setVisible(False)
+        return section
+
+    def _build_status_line(self) -> QWidget:
+        """Build the docs-review status row.
+
+        For ``blocked`` the reviewer summary can be long, so the row is a
+        header + collapsible detail pair: header is always visible, detail
+        (full summary) is hidden until the user expands. Other states
+        (running/approved/failed) show only the header.
+        """
+        tool_colors = get_tool_colors()
+        wrapper = QWidget()
+        wrapper_layout = QVBoxLayout(wrapper)
+        wrapper_layout.setContentsMargins(0, 0, 0, 0)
+        wrapper_layout.setSpacing(0)
+
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(4)
+
+        self._status_label = QLabel("")
+        self._status_label.setWordWrap(True)
+        self._status_label.setStyleSheet(f"color: {tool_colors['preview']}; font-size: inherit;")
+        self._status_label.setVisible(False)
+        header_row.addWidget(self._status_label, 1)
+        wrapper_layout.addLayout(header_row)
+
+        self._status_detail = QLabel("")
+        self._status_detail.setWordWrap(True)
+        self._status_detail.setTextInteractionFlags(
+            Qt.TextInteractionFlag(
+                Qt.TextInteractionFlag.TextSelectableByMouse.value
+                | Qt.TextInteractionFlag.TextSelectableByKeyboard.value
+            )
+        )
+        self._status_detail.setVisible(False)
+        wrapper_layout.addWidget(self._status_detail)
+
+        # Collapsed-state bookkeeping.
+        self._status_detail_visible = False
+        self._status_detail_text = ""
+
+        wrapper.setVisible(False)
+        return wrapper
+
+    def _build_approval_buttons(self) -> QHBoxLayout:
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(8)
+
+        self._allow_btn = QToolButton()
+        self._allow_btn.setText("  Allow  ")
+        self._allow_btn.setStyleSheet(get_tool_approval_allow_btn_style())
+        self._allow_btn.clicked.connect(self._on_allow)
+        btn_layout.addWidget(self._allow_btn)
+
+        self._always_btn = QToolButton()
+        self._always_btn.setText("  Always Allow  ")
+        self._always_btn.setStyleSheet(get_tool_approval_always_btn_style())
+        self._always_btn.clicked.connect(self._on_always_allow)
+        btn_layout.addWidget(self._always_btn)
+
+        self._deny_btn = QToolButton()
+        self._deny_btn.setText("  Deny  ")
+        self._deny_btn.setStyleSheet(get_tool_approval_deny_btn_style())
+        self._deny_btn.clicked.connect(self._on_deny)
+        btn_layout.addWidget(self._deny_btn)
+
+        btn_layout.addStretch()
+
+        # Wrap in a container so we can toggle visibility as a unit.
+        self._buttons_container = QWidget()
+        self._buttons_container.setLayout(btn_layout)
+        self._buttons_container.setVisible(False)
+        # Return a layout-like wrapper: embed the container in a layout.
+        wrapper = QHBoxLayout()
+        wrapper.setContentsMargins(0, 0, 0, 0)
+        wrapper.addWidget(self._buttons_container)
+        return wrapper
+
+    def _build_result_block(self) -> QWidget:
+        tool_colors = get_tool_colors()
+        self._result_block = QFrame()
+        self._result_block.setStyleSheet(_tool_card_css())
+        layout = QVBoxLayout(self._result_block)
+        layout.setContentsMargins(6, 3, 6, 3)
+        layout.setSpacing(2)
+
+        self._result_header_label = QLabel("Result:")
+        self._result_header_label.setStyleSheet(
+            f"color: {tool_colors['result_header']}; font-weight: bold; font-size: inherit;"
+        )
+        layout.addWidget(self._result_header_label)
+
+        self._result_label = _HeightCachedLabel()
+        self._result_label.setObjectName("tool_content")
+        self._result_label.setWordWrap(True)
+        self._result_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag(
+                Qt.TextInteractionFlag.TextSelectableByMouse.value
+                | Qt.TextInteractionFlag.TextSelectableByKeyboard.value
+            )
+        )
+        # Content is collapsed by default — only the header shows so a long
+        # script output doesn't dominate the card.
+        self._result_label.setVisible(False)
+        layout.addWidget(self._result_label)
+
+        self._result_block.setVisible(False)
+        return self._result_block
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def set_code(self, code: str) -> None:
+        self._code = code
+        self._code_edit.setPlainText(code)
+        lines = code.strip().splitlines() if code.strip() else []
+        if lines:
+            self._code_info_label.setText(f"Python code — {len(lines)} line{'s' if len(lines) != 1 else ''}")
+            self._code_info_label.setVisible(True)
+            visible = min(len(lines), 15)
+            line_height = self._code_edit.fontMetrics().lineSpacing()
+            self._code_edit.setFixedHeight(line_height * visible + 16)
+        self._code_section().setVisible(True)
+        # Default: collapsed (show only when IDLE/auto-allow path).
+        self._set_expanded(self._code_expanded)
+
+    def append_args_delta(self, delta: str) -> None:
+        """Accumulate streaming args (TOOL_CALL_ARGS_DELTA).
+
+        ExecutePythonWidget renders code only after ``set_arguments()`` parses
+        the complete JSON on TOOL_CALL_DONE, so deltas are a no-op here — but
+        ChatView calls this unconditionally for every tool widget.
+        """
+        # No-op: code is extracted and rendered in set_arguments() on TOOL_CALL_DONE.
+
+    def set_arguments(self, args_text: str) -> None:
+        """Parse JSON args and extract the code (compat with ToolCallWidget API)."""
+        try:
+            args = json.loads(args_text) if args_text.strip() else {}
+            code = args.get("code", args.get("script", "")) or args_text
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            code = args_text
+        self.set_code(code)
+
+    def set_docs_gate_status(
+        self,
+        state: str,
+        reasons: tuple[str, ...] = (),
+        summary: str = "",
+    ) -> None:
+        self._status_visible = True
+        tool_colors = get_tool_colors()
+        if state == "running":
+            self._status_text = "\U0001f50d Reviewing script..."
+            if reasons:
+                self._status_text += f" (complex: {', '.join(reasons[:3])})"
+            self._status_label.setStyleSheet(f"color: {tool_colors['preview']}; font-size: inherit;")
+            self._status_icon.setText("⟳")
+        elif state == "approved":
+            self._status_text = "✓ Docs review passed"
+            self._status_label.setStyleSheet(
+                f"color: {tool_colors['status_success']}; font-size: inherit; opacity: 0.7;"
+            )
+            self._status_icon.setText("✓")
+        elif state == "blocked":
+            self._blocked = True
+            # Short header; full summary lives in the collapsible detail so
+            # the card stays compact. The user expands to read REWRITE_GUIDANCE.
+            self._status_text = "✗ Docs review blocked — click ▶ for details"
+            self._status_label.setStyleSheet(
+                f"color: {tool_colors['status_error']}; font-weight: bold; font-size: inherit;"
+            )
+            self._status_icon.setText("✗")
+            self._status_detail_text = summary or "The reviewer flagged the script."
+            self._status_detail.setStyleSheet(f"color: {tool_colors['status_error']}; font-size: inherit;")
+            self._buttons_visible = False
+            self._buttons_container.setVisible(False)
+        elif state == "failed":
+            self._status_text = f"⚠ Docs review error — review manually. ({summary})"
+            self._status_label.setStyleSheet(f"color: {tool_colors['status_spinner']}; font-size: inherit;")
+            self._status_icon.setText("⚠")
+            # FAILED keeps buttons visible so the user can still approve.
+        else:
+            self._status_text = ""
+            self._status_visible = False
+
+        # Non-blocked states clear the detail text; visibility follows the
+        # single header toggle via _set_expanded.
+        if state != "blocked":
+            self._status_detail_text = ""
+            if self._status_detail_visible:
+                self._status_detail_visible = False
+                self._status_detail.setVisible(False)
+
+        self._status_label.setText(self._status_text)
+        # ``_status_label`` lives inside the status wrapper's header row;
+        # show/hide the wrapper itself so the whole row appears/disappears.
+        self._status_line.setVisible(self._status_visible)
+
+    def show_approval_buttons(self) -> None:
+        if not self._status_visible or not self._status_text.startswith("✗"):
+            # Keep buttons hidden if currently hard-blocked by docs gate.
+            self._buttons_visible = True
+            self._buttons_container.setVisible(True)
+        # Expand all content so the user can review code/result before deciding.
+        self._set_expanded(True)
+
+    def mark_done(self) -> None:
+        """Mark the call complete (used by history restore). Safe to call
+        multiple times."""
+        if self._status_icon.text() not in ("✓", "✗"):
+            tool_colors = get_tool_colors()
+            self._status_icon.setText("✓")
+            self._status_icon.setStyleSheet(f"color: {tool_colors['status_success']}; font-size: inherit;")
+
+    def hide_preview(self) -> None:
+        """Collapse all content (used by tool grouping)."""
+        self._set_expanded(False)
+
+    def set_result(self, result: str, is_error: bool = False) -> None:
+        tool_colors = get_tool_colors()
+        self._is_error = is_error
+        # When the docs gate blocked the script, the loop emits a TOOL_RESULT
+        # carrying the reviewer summary as an error. That summary already
+        # lives in the (collapsible) status line — rendering a separate
+        # "Result:" block would duplicate it. Skip.
+        if self._blocked:
+            self._buttons_visible = False
+            self._buttons_container.setVisible(False)
+            return
+        self._result_block_visible = True
+        display = result[:_MAX_RESULT_DISPLAY] + "\n... (truncated)" if len(result) > _MAX_RESULT_DISPLAY else result
+        self._result_label.setText(display)
+        self._result_label.pin_height()
+        # Content stays collapsed by default — user expands via the header
+        # toggle to read it. The block frame follows content visibility
+        # (see _set_expanded), so it hides when collapsed and does not
+        # reserve a gap.
+        self._result_content_visible = False
+        self._result_label.setVisible(False)
+        self._result_header_visible = False
+        self._result_header_label.setVisible(False)
+        self._result_block_visible_current = False
+        self._result_block.setVisible(False)
+        # Hide approval buttons after result arrives.
+        self._buttons_visible = False
+        self._buttons_container.setVisible(False)
+
+        if is_error:
+            self._result_label.setStyleSheet(f"color: {tool_colors['status_error']}; font-size: inherit;")
+            self._status_icon.setText("✗")
+            self._status_icon.setStyleSheet(f"color: {tool_colors['status_error']}; font-size: inherit;")
+            self._bullet.setStyleSheet(f"color: {tool_colors['status_error']}; font-size: inherit;")
+        else:
+            self._result_label.setStyleSheet(f"color: {tool_colors['preview']}; font-size: inherit;")
+            self._status_icon.setText("✓")
+            self._status_icon.setStyleSheet(f"color: {tool_colors['status_success']}; font-size: inherit;")
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _code_section(self) -> QWidget:
+        # The code section is the 2nd widget in the main layout.
+        return self.layout().itemAt(1).widget()
+
+    def _set_expanded(self, expanded: bool) -> None:
+        """Expand or collapse all collapsible content from a single toggle.
+
+        Code, result content, and docs-gate detail all follow the header
+        toggle together so there is one control, not three.
+        """
+        self._code_expanded = expanded
+        # Toggle the whole code section (not just the editor): an empty
+        # section widget still reserves layout margins/spacing, which leaves
+        # a gap below the widget when collapsed.
+        show_code = expanded and bool(self._code)
+        self._code_section().setVisible(show_code)
+        self._code_edit.setVisible(show_code)
+        self._code_info_label.setVisible(show_code)
+
+        self._result_content_visible = expanded and self._result_block_visible
+        self._result_label.setVisible(self._result_content_visible)
+        # The "Result:" label only shows alongside its content — when
+        # collapsed the tool header's ✓/✗ already conveys the status, so a
+        # stray label with nothing underneath is noise.
+        self._result_header_visible = self._result_content_visible
+        self._result_header_label.setVisible(self._result_header_visible)
+        # Only show the result block frame when it has visible content;
+        # otherwise the empty frame + margins reserve a gap.
+        self._result_block_visible_current = self._result_content_visible
+        self._result_block.setVisible(self._result_block_visible_current)
+
+        self._status_detail_visible = expanded and bool(self._status_detail_text)
+        if self._status_detail_text:
+            self._status_detail.setText(self._status_detail_text)
+        self._status_detail.setVisible(self._status_detail_visible)
+
+        self._toggle_btn.setText("▼" if expanded else "▶")
+
+    def toggle_all(self) -> None:
+        """Single header toggle: expand/collapse all content at once."""
+        self._set_expanded(not self._code_expanded)
+
+    def _disable_buttons(self) -> None:
+        self._allow_btn.setEnabled(False)
+        self._always_btn.setEnabled(False)
+        self._deny_btn.setEnabled(False)
+
+    def _on_allow(self) -> None:
+        self._disable_buttons()
+        self._allow_btn.setText("  Allowed  ")
+        self._allow_btn.setStyleSheet(get_tool_approval_disabled_btn_style())
+        self.approved.emit(self._tool_call_id, "allow")
+
+    def _on_always_allow(self) -> None:
+        self._disable_buttons()
+        self._always_btn.setText("  Always Allowed  ")
+        self._always_btn.setStyleSheet(get_tool_approval_disabled_btn_style())
+        self.approved.emit(self._tool_call_id, "allow_all")
+
+    def _on_deny(self) -> None:
+        self._disable_buttons()
+        self._deny_btn.setText("  Denied  ")
+        self._deny_btn.setStyleSheet(get_tool_approval_disabled_btn_style())
+        self.approved.emit(self._tool_call_id, "deny")
