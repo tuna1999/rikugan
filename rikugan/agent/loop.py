@@ -1056,12 +1056,10 @@ class AgentLoop:
     def _describe_tool_call(name: str, args: dict[str, Any]) -> str:
         """Generate a brief human-readable description of what a tool will do."""
         if name == constants.EXECUTE_PYTHON_TOOL_NAME:
-            code = args.get("code", args.get("script", ""))
-            lines = code.strip().splitlines()
-            if len(lines) <= 3:
-                return f"Run Python code:\n{code.strip()}"
-            preview = "\n".join(lines[:3])
-            return f"Run Python code ({len(lines)} lines):\n{preview}\n..."
+            # The unified ExecutePythonWidget renders its own code block,
+            # so a description here would duplicate the first line. Return
+            # empty.
+            return ""
         if name in ("rename_function",):
             return f"Rename function {args.get('old_name', '?')} → {args.get('new_name', '?')}"
         if name in ("rename_variable",):
@@ -1162,9 +1160,10 @@ class AgentLoop:
         task = "\n".join(task_lines)
 
         # Notify the chat that the gate is firing.
-        yield TurnEvent.text_delta(
-            "\n[IDA docs review] Gate fired for complex `execute_python` script. "
-            f"Reasons:\n{reasons_block}\nSpawning docs reviewer...\n"
+        yield TurnEvent.docs_gate_status(
+            tc.id,
+            state="running",
+            reasons=complexity.reasons,
         )
 
         runner = SubagentRunner(
@@ -1190,13 +1189,16 @@ class AgentLoop:
             raise
         except Exception as e:
             log_error(f"docs reviewer failed: {e}")
-            msg = (
-                f"IDA docs review failed: {type(e).__name__}: {e}. "
-                "The script was NOT executed. Either retry, rewrite the script, "
-                "or disable `require_ida_docs_for_complex_scripts` in Settings."
+            yield TurnEvent.docs_gate_status(
+                tc.id,
+                state="failed",
+                summary=f"{type(e).__name__}: {e}",
             )
-            yield TurnEvent.error_event(msg)
-            return (False, msg)
+            # Behavior change (Decision #6): a reviewer crash is an
+            # infrastructure fault, not a script fault.  Fall through to
+            # user approval so the user can still decide.  Return
+            # (True, "") — the caller proceeds to _wait_for_approval.
+            return (True, "")
 
         # Parse the verdict block.  Be lenient: the LLM may emit prose
         # around it.  Look for the prefix anywhere in the final summary.
@@ -1217,18 +1219,22 @@ class AgentLoop:
             verdict = "REWRITE_REQUIRED"
 
         if approved:
-            yield TurnEvent.text_delta("\n[IDA docs review] VERDICT: APPROVED. Proceeding to user approval.\n")
+            yield TurnEvent.docs_gate_status(tc.id, state="approved")
             return (True, summary or "")
 
         reason_msg = verdict or "REWRITE_REQUIRED"
-        msg = (
+        yield TurnEvent.docs_gate_status(
+            tc.id,
+            state="blocked",
+            summary=summary or reason_msg,
+        )
+        return (
+            False,
             f"IDA docs review verdict: {reason_msg}. "
             "The script was NOT executed. "
             "Review the reviewer's REWRITE_GUIDANCE and resubmit a corrected script.\n\n"
-            f"--- Reviewer summary ---\n{summary or '(no summary returned)'}\n--- end ---"
+            f"--- Reviewer summary ---\n{summary or '(no summary returned)'}\n--- end ---",
         )
-        yield TurnEvent.text_delta("\n[IDA docs review] " + reason_msg + " — script blocked.\n")
-        return (False, msg)
 
     def _execute_single_tool(self, tc: ToolCall) -> Generator[TurnEvent, None, ToolResult]:
         """Handle approval gating, mutation tracking, and execution of a real tool."""

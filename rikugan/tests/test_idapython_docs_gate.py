@@ -352,7 +352,12 @@ class TestDocsGate(unittest.TestCase):
         finally:
             loop_mod.SubagentRunner = original_runner
 
-    def test_reviewer_crash_blocks_execution(self):
+    def test_reviewer_crash_falls_through(self):
+        """Behavior change (Decision #6): a reviewer crash is an
+        infrastructure fault, not a script fault.  The gate now
+        emits a ``DOCS_GATE_STATUS`` ``failed`` event and returns
+        ``(True, "")`` so the caller proceeds to user approval
+        instead of hard-blocking."""
         loop = _make_loop(gate_enabled=True)
         runner = _FakeRunner(raise_on_run=RuntimeError("provider down"))
         import rikugan.agent.loop as loop_mod
@@ -373,10 +378,25 @@ class TestDocsGate(unittest.TestCase):
             complexity = classify_idapython_script(code, validation)
             self.assertTrue(complexity.is_complex)
 
+            events: list = []
             gen = loop._review_complex_idapython_script(tc, complexity, validation)
-            approved, summary = _drain_with_return(gen)
-            self.assertFalse(approved)
-            self.assertIn("docs review failed", summary)
+            while True:
+                try:
+                    events.append(next(gen))
+                except StopIteration as stop:
+                    approved, summary = stop.value
+                    break
+
+            from rikugan.agent.turn import TurnEventType
+
+            gate_events = [e for e in events if e.type == TurnEventType.DOCS_GATE_STATUS]
+            self.assertTrue(
+                any(e.metadata.get("docs_gate_state") == "failed" for e in gate_events),
+                "No 'failed' DOCS_GATE_STATUS event emitted on reviewer crash",
+            )
+            # Fall-through to user approval
+            self.assertTrue(approved)
+            self.assertEqual(summary, "")
         finally:
             loop_mod.SubagentRunner = original_runner
 
@@ -416,6 +436,112 @@ class TestDocsGate(unittest.TestCase):
             self.assertFalse(approved)
         finally:
             loop_mod.SubagentRunner = original_runner
+
+
+# ---------------------------------------------------------------------------
+# DOCS_GATE_STATUS event emission tests (Task 2)
+# ---------------------------------------------------------------------------
+
+# A script the classifier flags as complex: multi-module + multi-line.
+_COMPLEX_EMISSION_SCRIPT = ("import idautils\nimport idc\nfor ea in idautils.Functions():\n    print(ea)\n") * 3
+
+
+class TestDocsGateStatusEmission(unittest.TestCase):
+    """The review path emits ``DOCS_GATE_STATUS``, never ``TEXT_DELTA``."""
+
+    def _review(self, script: str, verdict_text: str):
+        from rikugan.core.types import ToolCall
+
+        loop = _make_loop(gate_enabled=True)
+        runner = _FakeRunner(final_text=verdict_text)
+        import rikugan.agent.loop as loop_mod
+
+        original_runner = loop_mod.SubagentRunner
+        loop_mod.SubagentRunner = lambda *a, **kw: runner
+        try:
+            tc = ToolCall(id="tc1", name="execute_python", arguments={"code": script})
+            validation = validate_idapython(script)
+            complexity = classify_idapython_script(script, validation)
+
+            events: list = []
+            gen = loop._review_complex_idapython_script(tc, complexity, validation)
+            while True:
+                try:
+                    events.append(next(gen))
+                except StopIteration as stop:
+                    result = stop.value
+                    break
+            return events, result
+        finally:
+            loop_mod.SubagentRunner = original_runner
+
+    def test_approved_emits_docs_gate_status_not_text_delta(self):
+        from rikugan.agent.turn import TurnEventType
+
+        events, (approved, _summary) = self._review(_COMPLEX_EMISSION_SCRIPT, "VERDICT: APPROVED\nLooks good.")
+        event_types = [e.type for e in events]
+        self.assertIn(TurnEventType.DOCS_GATE_STATUS, event_types)
+        self.assertNotIn(TurnEventType.TEXT_DELTA, event_types)
+        self.assertTrue(approved)
+
+    def test_running_state_emitted_before_verdict(self):
+        from rikugan.agent.turn import TurnEventType
+
+        events, _result = self._review(_COMPLEX_EMISSION_SCRIPT, "VERDICT: APPROVED")
+        gate_events = [e for e in events if e.type == TurnEventType.DOCS_GATE_STATUS]
+        self.assertGreaterEqual(len(gate_events), 2)
+        self.assertEqual(gate_events[0].metadata["docs_gate_state"], "running")
+        self.assertEqual(gate_events[-1].metadata["docs_gate_state"], "approved")
+
+    def test_blocked_emits_blocked_state_and_returns_false(self):
+        from rikugan.agent.turn import TurnEventType
+
+        events, (approved, _summary) = self._review(_COMPLEX_EMISSION_SCRIPT, "VERDICT: REWRITE_REQUIRED\nBad API.")
+        gate_events = [e for e in events if e.type == TurnEventType.DOCS_GATE_STATUS]
+        self.assertTrue(
+            any(e.metadata["docs_gate_state"] == "blocked" for e in gate_events),
+            f"No blocked event: {[e.metadata.get('docs_gate_state') for e in gate_events]}",
+        )
+        self.assertFalse(approved)
+
+
+# ---------------------------------------------------------------------------
+# _describe_tool_call for execute_python (Task 3)
+# ---------------------------------------------------------------------------
+
+
+class TestDescribeToolCallExecutePython(unittest.TestCase):
+    """The unified ExecutePythonWidget renders its own code block, so
+    ``_describe_tool_call`` must return an empty string for
+    ``execute_python`` (previously it duplicated the first line of code).
+    Other mutating tools keep their human-readable descriptions."""
+
+    def test_execute_python_returns_empty_description(self):
+        from rikugan import constants
+        from rikugan.agent.loop import AgentLoop
+
+        desc = AgentLoop._describe_tool_call(
+            constants.EXECUTE_PYTHON_TOOL_NAME,
+            {"code": "import idautils\nprint(1)\n"},
+        )
+        self.assertEqual(desc, "")
+
+    def test_execute_python_empty_args_returns_empty(self):
+        from rikugan import constants
+        from rikugan.agent.loop import AgentLoop
+
+        desc = AgentLoop._describe_tool_call(constants.EXECUTE_PYTHON_TOOL_NAME, {})
+        self.assertEqual(desc, "")
+
+    def test_other_mutating_tool_still_described(self):
+        from rikugan.agent.loop import AgentLoop
+
+        desc = AgentLoop._describe_tool_call(
+            "rename_function",
+            {"old_name": "sub_1000", "new_name": "process_data"},
+        )
+        self.assertIn("sub_1000", desc)
+        self.assertIn("process_data", desc)
 
 
 def _drain_with_return(gen):

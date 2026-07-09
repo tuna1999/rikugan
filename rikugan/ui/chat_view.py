@@ -6,6 +6,7 @@ import json
 import time
 from dataclasses import dataclass, field
 
+from .. import constants
 from ..agent.turn import TurnEvent, TurnEventType
 from ..core.types import Message, Role, ToolResult
 from .markdown import md_to_html
@@ -46,7 +47,7 @@ from .styles import (
     get_history_nav_label_style,
     is_host_theme,
 )
-from .tool_widgets import ToolApprovalWidget, ToolCallWidget, ToolGroupWidget
+from .tool_widgets import ExecutePythonWidget, ToolApprovalWidget, ToolCallWidget, ToolGroupWidget
 
 _THINKING_MIN_DISPLAY_MS = 500
 
@@ -502,7 +503,7 @@ class ChatView(QScrollArea):
         # Track current assistant widget for streaming
         self._current_assistant: AssistantMessageWidget | None = None
         self._message_thinking: _ThinkingBlock | None = None  # For message content thinking
-        self._tool_widgets: dict[str, ToolCallWidget] = {}
+        self._tool_widgets: dict[str, ToolCallWidget | ExecutePythonWidget] = {}
         self._thinking: ThinkingWidget | None = None
         self._thinking_shown_at: float = 0.0
         self._plan_view: PlanView | None = None
@@ -805,6 +806,11 @@ class ChatView(QScrollArea):
             self._reset_tool_run()
             self._insert_widget(ErrorMessageWidget(event.error or "Unknown error"))
             self._scroll_to_bottom()
+        elif etype == TurnEventType.DOCS_GATE_STATUS:
+            # UI-only signal: route into the matching tool widget's
+            # status line. Routed here (not in ``_handle_tool_event``)
+            # because it never carries args/result/approval semantics.
+            self._handle_docs_gate_status(event)
 
     def _handle_text_event(self, event: TurnEvent) -> None:
         self._hide_thinking()
@@ -931,7 +937,14 @@ class ChatView(QScrollArea):
         etype = event.type
         if etype == TurnEventType.TOOL_CALL_START:
             self._hide_thinking()
-            tw = ToolCallWidget(event.tool_name, event.tool_call_id)
+            # ``execute_python`` uses the unified lifecycle widget that
+            # also renders the docs-review status, the approval buttons,
+            # and the result. All other tools keep the compact
+            # ``ToolCallWidget`` + separate ``ToolApprovalWidget`` flow.
+            if event.tool_name == constants.EXECUTE_PYTHON_TOOL_NAME:
+                tw: ToolCallWidget | ExecutePythonWidget = ExecutePythonWidget(event.tool_call_id)
+            else:
+                tw = ToolCallWidget(event.tool_name, event.tool_call_id)
             self._tool_widgets[event.tool_call_id] = tw
             self._register_tool_widget(event.tool_name, event.tool_call_id, tw)
             self._scroll_to_bottom()
@@ -955,14 +968,82 @@ class ChatView(QScrollArea):
         elif etype == TurnEventType.TOOL_APPROVAL_REQUEST:
             self._hide_thinking()
             self._reset_tool_run()
-            widget = ToolApprovalWidget(
-                event.tool_call_id,
-                event.tool_name,
-                event.tool_args,
-                event.text,
+            # If the corresponding ``ExecutePythonWidget`` already exists
+            # (created during TOOL_CALL_START), drive its approval flow
+            # inline rather than spawning a separate ``ToolApprovalWidget``
+            # — the unified widget renders code + status + buttons + result
+            # in one card, so a second approval widget would duplicate the
+            # code preview and confuse the user.
+            existing = self._tool_widgets.get(event.tool_call_id)
+            if isinstance(existing, ExecutePythonWidget):
+                # If this widget was nested inside a collapsed ToolGroupWidget
+                # (because it was part of a multi-tool run), surface it now —
+                # the Allow button must stay visible regardless of the group's
+                # collapsed state, or the user sees a "hanging" group with no
+                # clue that action is pending.
+                self._promote_widget_out_of_group(event.tool_call_id)
+                existing.show_approval_buttons()
+                existing.approved.connect(self._on_tool_approval)
+            else:
+                widget = ToolApprovalWidget(
+                    event.tool_call_id,
+                    event.tool_name,
+                    event.tool_args,
+                    event.text,
+                )
+                widget.approved.connect(self._on_tool_approval)
+                self._insert_widget(widget)
+            self._scroll_to_bottom()
+
+    def _promote_widget_out_of_group(self, tool_call_id: str) -> None:
+        """Re-parent a tool widget out of its ToolGroupWidget into the main layout.
+
+        Called when a widget nested inside a *collapsed* group needs the user's
+        attention (e.g. an ``execute_python`` approval request).  Leaving the
+        widget inside the collapsed group hides its Allow/Deny buttons, which
+        looks like a hang — the agent loop is blocked on approval while the
+        user sees nothing actionable.
+
+        After promotion: the widget is re-parented to the container, inserted
+        into the main layout before the stretch, and dropped from
+        ``_group_map`` so a later ``TOOL_RESULT`` for this id routes to the
+        widget directly (not the now-detached group).
+        """
+        group = self._group_map.pop(tool_call_id, None)
+        widget = self._tool_widgets.get(tool_call_id)
+        if group is None or widget is None:
+            return
+        # Remove from the group's body, re-parent to the container, and
+        # insert into the main layout. ``setParent(container)`` detaches it
+        # from the group's layout; ``_insert_widget`` re-adds it before the
+        # trailing stretch. Guard ``_container`` for test paths that bypass
+        # ``__init__``.
+        container = getattr(self, "_container", None)
+        widget.setParent(container)
+        self._insert_widget(widget)
+
+    def _handle_docs_gate_status(self, event: TurnEvent) -> None:
+        """Route a docs-review gate status update to the matching widget.
+
+        The metadata payload carries ``docs_gate_state`` (one of
+        ``running`` | ``approved`` | ``blocked`` | ``failed``), an
+        optional tuple of ``docs_gate_reasons`` (for ``running``), and a
+        ``docs_gate_summary`` (for ``blocked``/``failed``).  The signal
+        is dropped silently when no matching widget exists — the docs
+        gate only ever fires for ``execute_python``, which is always
+        preceded by a TOOL_CALL_START that creates the
+        :class:`ExecutePythonWidget`.  An orphan event therefore means
+        the call was already torn down (clear_chat / cancel / new
+        restore), so dropping is the right behaviour.
+        """
+        md = event.metadata or {}
+        tw = self._tool_widgets.get(event.tool_call_id)
+        if isinstance(tw, ExecutePythonWidget):
+            tw.set_docs_gate_status(
+                md.get("docs_gate_state", ""),
+                reasons=tuple(md.get("docs_gate_reasons", [])),
+                summary=md.get("docs_gate_summary", ""),
             )
-            widget.approved.connect(self._on_tool_approval)
-            self._insert_widget(widget)
             self._scroll_to_bottom()
 
     def _handle_lifecycle_event(self, event: TurnEvent) -> None:
@@ -2085,9 +2166,12 @@ class ChatView(QScrollArea):
         """
         if not tool_specs:
             return []
-        tool_widgets: list[ToolCallWidget] = []
+        tool_widgets: list[ToolCallWidget | ExecutePythonWidget] = []
         for ts in tool_specs:
-            tw = ToolCallWidget(ts.name, ts.id, parent=self._container)
+            if ts.name == constants.EXECUTE_PYTHON_TOOL_NAME:
+                tw = ExecutePythonWidget(ts.id, parent=self._container)
+            else:
+                tw = ToolCallWidget(ts.name, ts.id, parent=self._container)
             tw.set_arguments(ts.arguments_json)
             tw.mark_done()
             if ts.result_content or ts.result_is_error:
