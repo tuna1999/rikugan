@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.1] — 2026-07-10
+
+### Fixed
+- **Double-spacing between paragraphs** — each paragraph `<div>` ended with a trailing `<br>` on top of its block-level close tag, so Qt rich text rendered a second blank line. Surfaced as a visible extra blank line between every two paragraphs in the thinking block and the assistant bubble. Removed the trailing `<br>`.
+- **Large empty gap inside assistant bubbles after restore/resize** — `QLabel.setFixedHeight` poisons `heightForWidth`: once a fixed height is set, a later `heightForWidth(w)` echoes the cached value for any width instead of recomputing. On the restore path (and after a resize) `_HeightCachedLabel.pin_height` ran again with a different width, but the poisoned call returned the stale height, so the wrong height was re-locked and the bubble rendered far taller than its text (a ~150-240px gap on the last assistant message). `pin_height` now clears the min/max height constraints before measuring, and re-pins inside `resizeEvent` so the height tracks subsequent width changes. `hasHeightForWidth` stays `False`, preserving the O(N × msg_length) layout-cascade optimisation.
+
 ## [1.10.0] — 2026-07-09
 
 ### Added
