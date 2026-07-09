@@ -344,13 +344,14 @@ class QtRenderer:
                 continue
             if ttype == "paragraph_open":
                 inner = self._render_inline(self._inline_children_after(tokens, i))
-                # Trailing ``<br>`` preserves the legacy
-                # behaviour where a blank line in the source
-                # became a visible break between paragraphs
-                # (the css ``margin:2px 0`` does the visual
-                # gap; the ``<br>`` is the inline marker the
-                # rest of the suite and older code keys on).
-                out.append(f'<div style="margin:2px 0;">{inner}<br></div>')
+                # No trailing ``<br>``: in Qt rich text a ``<div>`` is
+                # already block-level, so the closing tag alone produces
+                # a single inter-paragraph gap. A trailing ``<br>``
+                # previously added an *extra* blank line between
+                # consecutive paragraphs, which surfaced as visible
+                # double-spacing in the thinking block and assistant
+                # bubble (the ``margin:2px 0`` already sizes the gap).
+                out.append(f'<div style="margin:2px 0;">{inner}</div>')
                 i += 3  # paragraph_open, inline, paragraph_close
                 continue
             if ttype == "bullet_list_open":

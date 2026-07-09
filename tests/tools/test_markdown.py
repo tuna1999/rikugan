@@ -253,14 +253,36 @@ class TestMdToHtmlFencedCodeBlockEmojiStrip(unittest.TestCase):
 
 
 class TestMdToHtmlParagraph(unittest.TestCase):
-    def test_empty_line_becomes_br(self):
-        result = md_to_html("para one\n\npara two")
-        self.assertIn("<br>", result)
-
     def test_multiple_empty_lines_collapsed(self):
         result = md_to_html("a\n\n\n\nb")
         # Three or more consecutive <br> should be collapsed to two
         self.assertNotIn("<br><br><br>", result)
+
+    def test_paragraph_div_does_not_end_with_br(self):
+        # Regression: each paragraph ``<div>`` used to carry a trailing
+        # ``<br>`` (``<div ...>inner<br></div>``). In Qt rich text a
+        # ``<div>`` is already block-level, so the ``<br>`` adds an
+        # extra blank line between consecutive paragraphs — visually
+        # double-spacing that was reported as "thinking content has a
+        # blank line inserted between every two lines". The fix removes
+        # the trailing ``<br>``; the block break of ``<div>`` alone
+        # produces the correct single inter-paragraph gap.
+        result = md_to_html("para one\n\npara two")
+        self.assertNotIn(
+            "<br></div>",
+            result,
+            "Paragraph divs must not end with a trailing <br>; the "
+            "block-level <div> already provides the inter-paragraph break "
+            "in Qt rich text and the <br> causes visible double-spacing.",
+        )
+
+    def test_two_paragraphs_render_as_two_separate_divs(self):
+        # Sanity: after removing the trailing <br>, the two paragraphs
+        # must still render as distinct block-level elements (not merged).
+        result = md_to_html("para one\n\npara two")
+        self.assertEqual(result.count('<div style="margin:2px 0;">'), 2)
+        self.assertIn("para one", result)
+        self.assertIn("para two", result)
 
 
 class TestInlineFormatting(unittest.TestCase):
