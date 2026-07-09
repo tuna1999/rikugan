@@ -185,6 +185,18 @@ class TestSetResult(unittest.TestCase):
         self.assertTrue(w._result_content_visible)
         self.assertTrue(w._result_header_visible)
 
+    def test_result_block_hidden_when_collapsed(self):
+        """A collapsed result must not leave an empty frame reserving a gap
+        below the widget — the whole result block hides until expand."""
+        w = ExecutePythonWidget("tc1")
+        w.set_code("print(1)")
+        w.set_result("output", is_error=False)
+        # Collapsed: result block frame hidden (no content → no gap).
+        self.assertFalse(w._result_block_visible_current)
+        w.toggle_all()
+        # Expanded: block frame visible alongside content.
+        self.assertTrue(w._result_block_visible_current)
+
     def test_result_expandable(self):
         """User can expand the result to read the full output.
         (Expansion is driven by the single header toggle, not a separate

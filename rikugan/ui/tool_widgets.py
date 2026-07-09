@@ -1204,6 +1204,7 @@ class ExecutePythonWidget(QFrame):
         self._result_block_visible = False
         self._result_content_visible = False
         self._result_header_visible = False
+        self._result_block_visible_current = False
         self._is_error = False
         self._blocked = False
 
@@ -1516,11 +1517,16 @@ class ExecutePythonWidget(QFrame):
         display = result[:_MAX_RESULT_DISPLAY] + "\n... (truncated)" if len(result) > _MAX_RESULT_DISPLAY else result
         self._result_label.setText(display)
         self._result_label.pin_height()
-        self._result_block.setVisible(True)
         # Content stays collapsed by default — user expands via the header
-        # toggle to read it.
+        # toggle to read it. The block frame follows content visibility
+        # (see _set_expanded), so it hides when collapsed and does not
+        # reserve a gap.
         self._result_content_visible = False
         self._result_label.setVisible(False)
+        self._result_header_visible = False
+        self._result_header_label.setVisible(False)
+        self._result_block_visible_current = False
+        self._result_block.setVisible(False)
         # Hide approval buttons after result arrives.
         self._buttons_visible = False
         self._buttons_container.setVisible(False)
@@ -1550,8 +1556,13 @@ class ExecutePythonWidget(QFrame):
         toggle together so there is one control, not three.
         """
         self._code_expanded = expanded
-        self._code_edit.setVisible(expanded)
-        self._code_info_label.setVisible(expanded and bool(self._code))
+        # Toggle the whole code section (not just the editor): an empty
+        # section widget still reserves layout margins/spacing, which leaves
+        # a gap below the widget when collapsed.
+        show_code = expanded and bool(self._code)
+        self._code_section().setVisible(show_code)
+        self._code_edit.setVisible(show_code)
+        self._code_info_label.setVisible(show_code)
 
         self._result_content_visible = expanded and self._result_block_visible
         self._result_label.setVisible(self._result_content_visible)
@@ -1560,6 +1571,10 @@ class ExecutePythonWidget(QFrame):
         # stray label with nothing underneath is noise.
         self._result_header_visible = self._result_content_visible
         self._result_header_label.setVisible(self._result_header_visible)
+        # Only show the result block frame when it has visible content;
+        # otherwise the empty frame + margins reserve a gap.
+        self._result_block_visible_current = self._result_content_visible
+        self._result_block.setVisible(self._result_block_visible_current)
 
         self._status_detail_visible = expanded and bool(self._status_detail_text)
         if self._status_detail_text:
