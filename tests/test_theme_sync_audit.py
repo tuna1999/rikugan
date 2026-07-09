@@ -335,9 +335,15 @@ class TestToolCallWidgetThemeRefresh(unittest.TestCase):
         # before ``_apply_styles`` calls it.
         widget.setStyleSheet = MagicMock()  # type: ignore[attr-defined]
         self._qss_calls: dict[str, str] = {}
-        for attr in ("_bullet", "_name_label", "_summary_label",
-                     "_status_label", "_preview_label",
-                     "_result_header", "_result_label"):
+        for attr in (
+            "_bullet",
+            "_name_label",
+            "_summary_label",
+            "_status_label",
+            "_preview_label",
+            "_result_header",
+            "_result_label",
+        ):
             mock = MagicMock()
             mock.styleSheet.return_value = ""  # initial empty
             widget.__setattr__(attr, mock)
@@ -632,6 +638,7 @@ class TestBulkRenamerRowColorsRefresh(unittest.TestCase):
                 return _StubBrush(self._color)
 
         item = _StubItem("renamed", "#000000")
+
         # ``_refresh_row_status_colors`` reads
         # ``self._table.blockSignals(True)`` and iterates rows.  We
         # only need it to enter the loop body and call
@@ -660,6 +667,45 @@ class TestBulkRenamerRowColorsRefresh(unittest.TestCase):
             light_color,
             "renamed-status foreground must change between dark and light themes",
         )
+
+
+class TestExecutePythonWidgetThemeRefresh(unittest.TestCase):
+    """ExecutePythonWidget._apply_styles must repaint child labels on theme
+    switch — it migrated to bind_theme alongside the other tool widgets."""
+
+    def setUp(self) -> None:
+        _purge_ida_mocks()
+        _purge_rk_ui_modules()
+        _purge_rk_theme_modules()
+
+    def test_child_label_qss_changes_on_theme_switch(self) -> None:
+        from unittest.mock import MagicMock
+
+        from rikugan.ui.theme.manager import ThemeManager
+        from rikugan.ui.theme.tokens import ThemeMode
+        from rikugan.ui.tool_widgets import ExecutePythonWidget
+
+        ThemeManager.reset()
+        tm = ThemeManager.instance()
+        tm.set_mode(ThemeMode.DARK)
+        tm._apply_now()
+        widget = ExecutePythonWidget.__new__(ExecutePythonWidget)
+        widget.setStyleSheet = MagicMock()  # type: ignore[attr-defined]
+        for attr in ("_bullet", "_name_label", "_status_icon", "_result_label"):
+            mock = MagicMock()
+            mock.text.return_value = "" if attr != "_status_icon" else "✓"
+            widget.__setattr__(attr, mock)
+        widget._is_error = False
+        widget._result_content_visible = False
+        widget._apply_styles()
+        dark_status = widget._status_icon.setStyleSheet.call_args.args[0]
+        self.assertTrue(dark_status, "status icon must have a stylesheet")
+        # Switch theme and re-apply.
+        tm.set_mode(ThemeMode.LIGHT)
+        tm._apply_now()
+        widget._apply_styles()
+        light_status = widget._status_icon.setStyleSheet.call_args.args[0]
+        self.assertNotEqual(dark_status, light_status, "status icon QSS must change on theme switch")
 
 
 if __name__ == "__main__":

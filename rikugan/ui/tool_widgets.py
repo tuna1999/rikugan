@@ -534,13 +534,9 @@ class ToolCallWidget(QFrame):
         if getattr(self, "_bullet", None) is not None:
             self._bullet.setStyleSheet(f"color: {color}; font-size: inherit;")
         if getattr(self, "_name_label", None) is not None:
-            self._name_label.setStyleSheet(
-                f"color: {color}; font-weight: bold; font-size: inherit;"
-            )
+            self._name_label.setStyleSheet(f"color: {color}; font-weight: bold; font-size: inherit;")
         if getattr(self, "_summary_label", None) is not None:
-            self._summary_label.setStyleSheet(
-                f"color: {tool_colors['preview']}; font-size: inherit; margin-left: 6px;"
-            )
+            self._summary_label.setStyleSheet(f"color: {tool_colors['preview']}; font-size: inherit; margin-left: 6px;")
         # Status label colour depends on the current state — match
         # the logic in ``set_result`` / ``mark_done`` so a theme
         # switch on an in-flight call preserves the spinner colour
@@ -553,9 +549,7 @@ class ToolCallWidget(QFrame):
                 color_key = "status_success"
             else:
                 color_key = "status_spinner"
-            self._status_label.setStyleSheet(
-                f"color: {tool_colors[color_key]}; font-size: inherit;"
-            )
+            self._status_label.setStyleSheet(f"color: {tool_colors[color_key]}; font-size: inherit;")
         # Preview label (collapsed-state args).
         if getattr(self, "_preview_label", None) is not None:
             self._preview_label.setStyleSheet(
@@ -570,15 +564,11 @@ class ToolCallWidget(QFrame):
             )
         if getattr(self, "_result_label", None) is not None:
             if self._is_error:
-                self._result_label.setStyleSheet(
-                    f"color: {tool_colors['status_error']}; font-size: inherit;"
-                )
+                self._result_label.setStyleSheet(f"color: {tool_colors['status_error']}; font-size: inherit;")
             else:
                 # Result text uses the same muted preview colour as the
                 # collapsed state so dark/light consistency is preserved.
-                self._result_label.setStyleSheet(
-                    f"color: {tool_colors['preview']}; font-size: inherit;"
-                )
+                self._result_label.setStyleSheet(f"color: {tool_colors['preview']}; font-size: inherit;")
 
     def _build_header(self, tool_name: str) -> QHBoxLayout:
         """Build the compact header row: toggle ● name  summary  status."""
@@ -786,13 +776,9 @@ class ToolBatchWidget(QFrame):
         if getattr(self, "_bullet", None) is not None:
             self._bullet.setStyleSheet(f"color: {color}; font-size: inherit;")
         if getattr(self, "_name_label", None) is not None:
-            self._name_label.setStyleSheet(
-                f"color: {color}; font-weight: bold; font-size: inherit;"
-            )
+            self._name_label.setStyleSheet(f"color: {color}; font-weight: bold; font-size: inherit;")
         if getattr(self, "_count_label", None) is not None:
-            self._count_label.setStyleSheet(
-                f"color: {tool_colors['preview']}; font-size: inherit; margin-left: 6px;"
-            )
+            self._count_label.setStyleSheet(f"color: {tool_colors['preview']}; font-size: inherit; margin-left: 6px;")
         if getattr(self, "_status_label", None) is not None:
             text = self._status_label.text()
             if text.startswith("✗") or "✗" in text:
@@ -801,9 +787,7 @@ class ToolBatchWidget(QFrame):
                 color_key = "status_success"
             else:
                 color_key = "status_spinner"
-            self._status_label.setStyleSheet(
-                f"color: {tool_colors[color_key]}; font-size: inherit;"
-            )
+            self._status_label.setStyleSheet(f"color: {tool_colors[color_key]}; font-size: inherit;")
         # Preview label.
         if getattr(self, "_preview_label", None) is not None:
             self._preview_label.setStyleSheet(
@@ -1015,9 +999,7 @@ class ToolGroupWidget(QFrame):
         """
         tool_colors = get_tool_colors()
         if getattr(self, "_label", None) is not None:
-            self._label.setStyleSheet(
-                f"color: {tool_colors['preview']}; font-size: inherit; font-weight: bold;"
-            )
+            self._label.setStyleSheet(f"color: {tool_colors['preview']}; font-size: inherit; font-weight: bold;")
         if getattr(self, "_status_label", None) is not None:
             text = self._status_label.text()
             if text.startswith("✗") or "✗" in text:
@@ -1026,9 +1008,7 @@ class ToolGroupWidget(QFrame):
                 color_key = "status_success"
             else:
                 color_key = "status_spinner"
-            self._status_label.setStyleSheet(
-                f"color: {tool_colors[color_key]}; font-size: inherit;"
-            )
+            self._status_label.setStyleSheet(f"color: {tool_colors[color_key]}; font-size: inherit;")
 
     def add_widget(self, widget: QWidget, tool_name: str = "") -> None:
         """Add a tool widget into this group."""
@@ -1423,15 +1403,41 @@ class ExecutePythonWidget(QFrame):
         layout.addLayout(self._build_approval_buttons())
         layout.addWidget(self._build_result_block())
 
-        self._apply_card_style()
-        ThemeManager.instance().themeChanged.connect(self._apply_card_style)
+        # ``bind_theme`` runs the apply callback synchronously so the
+        # initial paint reflects the live tokens, and refreshes on every
+        # theme switch (matching ToolCallWidget / ToolGroupWidget). The
+        # previous ``ThemeManager.instance().themeChanged.connect`` pattern
+        # only refreshed the outer card QSS, leaving the bullet / name /
+        # status / result labels stuck on the construction-time palette.
+        bind_theme(self, self._apply_styles)
 
     # ------------------------------------------------------------------
     # Builders
     # ------------------------------------------------------------------
 
-    def _apply_card_style(self, _tokens: object = None) -> None:
+    def _apply_styles(self, _tokens: object = None) -> None:
+        """Re-apply card QSS and refresh child label colours on theme change."""
         self.setStyleSheet(_tool_card_css())
+        tool_colors = get_tool_colors()
+        color = _tool_color(constants.EXECUTE_PYTHON_TOOL_NAME)
+        if getattr(self, "_bullet", None) is not None:
+            self._bullet.setStyleSheet(f"color: {color}; font-size: inherit;")
+        if getattr(self, "_name_label", None) is not None:
+            self._name_label.setStyleSheet(f"color: {color}; font-weight: bold; font-size: inherit;")
+        # Re-paint the status icon / result label against the live palette so
+        # a theme switch on an already-finished card keeps its outcome colour.
+        status_text = getattr(self, "_status_icon", None)
+        if status_text is not None and status_text.text():
+            key = "status_error" if getattr(self, "_is_error", False) else "status_success"
+            status_text.setStyleSheet(f"color: {tool_colors[key]}; font-size: inherit;")
+        result_label = getattr(self, "_result_label", None)
+        if result_label is not None and getattr(self, "_result_content_visible", False):
+            result_key = "status_error" if getattr(self, "_is_error", False) else "preview"
+            result_label.setStyleSheet(f"color: {tool_colors[result_key]}; font-size: inherit;")
+
+    def shutdown(self) -> None:
+        """Detach the theme subscription so teardown does not warn."""
+        disconnect_theme(self)
 
     def _build_header(self) -> QHBoxLayout:
         tool_colors = get_tool_colors()
