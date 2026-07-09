@@ -5,6 +5,24 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.0] — 2026-07-09
+
+### Added
+- **Unified `execute_python` widget** (`ExecutePythonWidget`) — the tool's full lifecycle (code preview → docs-review status → approval buttons → result) now renders in one card instead of the previous split `ToolCallWidget` + `ToolApprovalWidget` pair. A single header toggle expands/collapses all content.
+- `DOCS_GATE_STATUS` event type — the docs-review gate now reports its state (`running` / `approved` / `blocked` / `failed`) as a UI-only signal keyed by `tool_call_id`, instead of mixing progress text into the assistant bubble and persisting it to history.
+
+### Changed
+- Docs-review messages no longer leak into the assistant message or session history. The status renders as a compact one-line row inside the `execute_python` card; a blocked review shows a short header with the reviewer summary in an expandable detail.
+- `execute_python` approvals inside a collapsed multi-tool group are now **promoted out** of the group so the Allow button is never hidden behind a collapsed header (previously looked like a hang while the loop waited on approval).
+- Result content and code editor are collapsed by default; a long script output no longer dominates the chat.
+- `_describe_tool_call` returns an empty description for `execute_python` — the unified widget renders its own code block, so the previously duplicated first line is gone.
+
+### Fixed
+- **Critical:** `ExecutePythonWidget` was missing `append_args_delta`, which `ChatView` calls on every `TOOL_CALL_ARGS_DELTA`. Every `execute_python` call from a streaming provider (Anthropic, OpenAI, Codex, Gemini) crashed the UI with `AttributeError`. Added as a no-op (code renders on `TOOL_CALL_DONE`).
+- Docs-gate `FAILED` (reviewer exception) now falls through to user approval instead of hard-blocking. A subagent crash is an infrastructure fault, not a script fault.
+- No duplicate reviewer summary: when the docs gate blocks, `set_result` skips rendering the result block (the summary already lives in the collapsible status line).
+- No empty gap below the widget when collapsed — the code section and result block frame are hidden alongside their content.
+
 ## [1.9.1] — 2026-07-08
 
 ### Added
