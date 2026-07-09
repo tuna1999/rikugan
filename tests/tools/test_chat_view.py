@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import types
 import unittest
@@ -33,9 +34,13 @@ for _mod_name in [
     _stub = _StubModule(_mod_name)
     # Add commonly-needed attrs
     for _attr in [
-        "PlanView", "TurnEvent",
-        "TurnEventType", "Message", "Role",
-        "ToolCall", "ToolResult",
+        "PlanView",
+        "TurnEvent",
+        "TurnEventType",
+        "Message",
+        "Role",
+        "ToolCall",
+        "ToolResult",
     ]:
         setattr(_stub, _attr, MagicMock())
     sys.modules[_mod_name] = _stub
@@ -65,6 +70,7 @@ from rikugan.ui.chat_view import _TOOL_GROUP_MIN_CALLS, _is_hidden_system_user_m
 # ---------------------------------------------------------------------------
 # _is_hidden_system_user_message
 # ---------------------------------------------------------------------------
+
 
 class TestIsHiddenSystemUserMessage(unittest.TestCase):
     def test_empty_string_returns_false(self):
@@ -96,6 +102,7 @@ class TestIsHiddenSystemUserMessage(unittest.TestCase):
 # Constants
 # ---------------------------------------------------------------------------
 
+
 class TestChatViewConstants(unittest.TestCase):
     def test_tool_group_min_calls_is_positive(self):
         self.assertGreater(_TOOL_GROUP_MIN_CALLS, 0)
@@ -123,6 +130,189 @@ class TestBulkRenamerLookup(unittest.TestCase):
         widget._table = table
         self.assertEqual(widget._find_row_for_address(0x401000), 1)
         table.rowCount.assert_called()
+
+
+# ---------------------------------------------------------------------------
+# Task 5 — Route `execute_python` to `ExecutePythonWidget` in ChatView.
+#
+# These tests exercise ``ChatView._handle_tool_event`` and
+# ``ChatView.handle_event`` with real ``TurnEvent`` objects, so the
+# dispatch path needs the *real* ``TurnEvent`` / ``TurnEventType`` symbols
+# (the stubs above are MagicMocks and would mask ``DOCS_GATE_STATUS``).
+#
+# We pop the stubs and re-import the real modules in :meth:`setUpClass`
+# — ``ChatView`` is then bound to real submodules for the lifetime of
+# this class. The other tests in this file (which use pure helpers and
+# ``BulkRenamerWidget``) captured their references at module-load time and
+# remain unaffected by the swap.
+# ---------------------------------------------------------------------------
+
+
+class TestExecutePythonRouting(unittest.TestCase):
+    """ChatView routes execute_python to ExecutePythonWidget."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        # Pop stubs so the re-imported ChatView binds to real submodules.
+        # Order matters: pop chat_view LAST so its import chain sees the
+        # freshly-imported real agent.turn / core.types / tool_widgets.
+        for _mod_name in [
+            "rikugan.ui.chat_view",
+            "rikugan.ui.tool_widgets",
+            "rikugan.agent.turn",
+            "rikugan.core.types",
+        ]:
+            sys.modules.pop(_mod_name, None)
+
+        from rikugan import constants as _constants
+        from rikugan.agent.turn import TurnEvent, TurnEventType
+        from rikugan.ui.chat_view import ChatView
+        from rikugan.ui.tool_widgets import (
+            ExecutePythonWidget,
+            ToolApprovalWidget,
+            ToolCallWidget,
+        )
+
+        cls._ChatView = ChatView
+        cls._TurnEvent = TurnEvent
+        cls._TurnEventType = TurnEventType
+        cls._ExecutePythonWidget = ExecutePythonWidget
+        cls._ToolCallWidget = ToolCallWidget
+        cls._ToolApprovalWidget = ToolApprovalWidget
+        cls._EXEC_PY = _constants.EXECUTE_PYTHON_TOOL_NAME
+
+    def setUp(self) -> None:
+        self.ChatView = self._ChatView
+        self.TurnEvent = self._TurnEvent
+        self.TurnEventType = self._TurnEventType
+        self.ExecutePythonWidget = self._ExecutePythonWidget
+        self.ToolCallWidget = self._ToolCallWidget
+        self.ToolApprovalWidget = self._ToolApprovalWidget
+        self.EXEC_PY = self._EXEC_PY
+
+    def _make_view(self):
+        """Bypass __init__ to avoid Qt container construction.
+
+        Stubs the collaborators ``_handle_tool_event`` (and downstream
+        ``_register_tool_widget``) calls: ``_insert_widget``,
+        ``_scroll_to_bottom``, ``_hide_thinking``, ``_reset_tool_run``,
+        ``_scroll_timer``, ``_layout``, ``_on_tool_approval``.
+        """
+        view = self.ChatView.__new__(self.ChatView)
+        view._thinking = None
+        view._thinking_shown_at = 0.0
+        view._tool_widgets = {}
+        view._tool_run_ids = []
+        view._tool_run_names = []
+        view._tool_run_widgets = []
+        view._tool_group = None
+        view._group_map = {}
+        view._current_assistant = None
+        view._layout = MagicMock()
+        view._scroll_timer = MagicMock()
+        view._scroll_timer.isActive.return_value = False
+        view._insert_widget = MagicMock()
+        view._scroll_to_bottom = lambda: None
+        view._hide_thinking = lambda: None
+        view._reset_tool_run = lambda: None
+        view._on_tool_approval = lambda *a, **k: None
+        # ``handle_event`` calls ``_begin_live_tail_append`` which reads
+        # ``_restore_paged``. Default to False (no paginated restore).
+        view._restore_paged = False
+        view._restore_live_tail_started = False
+        view._restore_messages = []
+        view._restore_pages = []
+        view._nav_widgets = []
+        view._begin_live_tail_append = lambda: None
+        return view
+
+    # ------------------------------------------------------------------
+    # TOOL_CALL_START routing
+    # ------------------------------------------------------------------
+
+    def test_tool_call_start_creates_execute_python_widget(self):
+        view = self._make_view()
+        ev = self.TurnEvent.tool_call_start("tc1", self.EXEC_PY)
+        view._handle_tool_event(ev)
+        self.assertIsInstance(view._tool_widgets["tc1"], self.ExecutePythonWidget)
+
+    def test_other_tool_still_uses_tool_call_widget(self):
+        view = self._make_view()
+        ev = self.TurnEvent.tool_call_start("tc2", "rename_function")
+        view._handle_tool_event(ev)
+        self.assertIsInstance(view._tool_widgets["tc2"], self.ToolCallWidget)
+
+    def test_tool_call_start_registers_widget_in_tool_run(self):
+        """``_register_tool_widget`` must be invoked for the new widget so
+        tool-run grouping continues to work for ``execute_python``."""
+        view = self._make_view()
+        view._handle_tool_event(self.TurnEvent.tool_call_start("tc1", self.EXEC_PY))
+        self.assertIn("tc1", view._tool_run_ids)
+        self.assertEqual(view._tool_run_names, [self.EXEC_PY])
+
+    # ------------------------------------------------------------------
+    # TOOL_CALL_DONE → set_arguments(code extraction)
+    # ------------------------------------------------------------------
+
+    def test_tool_call_done_sets_code(self):
+        view = self._make_view()
+        view._handle_tool_event(self.TurnEvent.tool_call_start("tc1", self.EXEC_PY))
+        view._handle_tool_event(
+            self.TurnEvent.tool_call_done(
+                "tc1",
+                self.EXEC_PY,
+                json.dumps({"code": "print(1)"}),
+            )
+        )
+        self.assertEqual(view._tool_widgets["tc1"]._code, "print(1)")
+        self.assertEqual(view._tool_widgets["tc1"]._code, "print(1)")
+
+    # ------------------------------------------------------------------
+    # TOOL_APPROVAL_REQUEST → reuse existing ExecutePythonWidget
+    # ------------------------------------------------------------------
+
+    def test_approval_request_routes_into_existing_widget(self):
+        """TOOL_APPROVAL_REQUEST for execute_python must NOT create a new
+        ToolApprovalWidget — it routes into the existing ExecutePythonWidget."""
+        view = self._make_view()
+        view._handle_tool_event(self.TurnEvent.tool_call_start("tc1", self.EXEC_PY))
+        ev = self.TurnEvent.tool_approval_request("tc1", self.EXEC_PY, '{"code":"x"}', "")
+        view._handle_tool_event(ev)
+        self.assertIsInstance(view._tool_widgets["tc1"], self.ExecutePythonWidget)
+        self.assertTrue(view._tool_widgets["tc1"]._buttons_visible)
+
+    def test_approval_request_for_other_tool_still_creates_approval_widget(self):
+        """Regression: TOOL_APPROVAL_REQUEST for non-execute_python tools
+        must keep creating the legacy ``ToolApprovalWidget``."""
+        view = self._make_view()
+        view._handle_tool_event(self.TurnEvent.tool_call_start("tc2", "rename_function"))
+        ev = self.TurnEvent.tool_approval_request("tc2", "rename_function", '{"new_name":"x"}', "")
+        view._handle_tool_event(ev)
+        # The legacy approval widget is inserted via _insert_widget; verify
+        # the call by inspecting the stub's recorded calls.
+        inserted = [c.args[0] for c in view._insert_widget.call_args_list]
+        # _insert_widget may have been called by _register_tool_widget too;
+        # the last call must be a ToolApprovalWidget for this tool_call_id.
+        self.assertTrue(any(isinstance(w, self.ToolApprovalWidget) for w in inserted))
+
+    # ------------------------------------------------------------------
+    # DOCS_GATE_STATUS dispatch (UI-level handle_event path)
+    # ------------------------------------------------------------------
+
+    def test_docs_gate_status_routes_to_widget(self):
+        view = self._make_view()
+        view._handle_tool_event(self.TurnEvent.tool_call_start("tc1", self.EXEC_PY))
+        ev = self.TurnEvent.docs_gate_status("tc1", "running", reasons=("2 IDA modules",))
+        view.handle_event(ev)
+        self.assertIn("Reviewing", view._tool_widgets["tc1"]._status_text)
+
+    def test_docs_gate_status_for_unknown_tool_call_is_noop(self):
+        """DOCS_GATE_STATUS with no matching widget must not raise."""
+        view = self._make_view()
+        ev = self.TurnEvent.docs_gate_status("nope", "running")
+        # No prior tool_call_start; should silently do nothing.
+        view.handle_event(ev)
+        self.assertEqual(view._tool_widgets, {})
 
 
 if __name__ == "__main__":
