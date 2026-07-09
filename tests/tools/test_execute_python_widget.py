@@ -170,6 +170,21 @@ class TestSetResult(unittest.TestCase):
         self.assertTrue(w._result_block_visible)
         self.assertFalse(w._result_content_visible)
 
+    def test_result_label_hidden_when_collapsed(self):
+        """When collapsed, the 'Result:' label must not linger either — the
+        tool header already carries the ✓/✗ status, so a stray label with
+        no content underneath is noise. The label appears only on expand."""
+        w = ExecutePythonWidget("tc1")
+        w.set_code("print(1)")
+        w.set_result("output", is_error=False)
+        # Collapsed: neither label nor content visible.
+        self.assertFalse(w._result_content_visible)
+        self.assertFalse(w._result_header_visible)
+        # Expand: both label and content visible together.
+        w.toggle_all()
+        self.assertTrue(w._result_content_visible)
+        self.assertTrue(w._result_header_visible)
+
     def test_result_expandable(self):
         """User can expand the result to read the full output.
         (Expansion is driven by the single header toggle, not a separate

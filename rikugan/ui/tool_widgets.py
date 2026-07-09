@@ -1203,6 +1203,7 @@ class ExecutePythonWidget(QFrame):
         self._status_text = ""
         self._result_block_visible = False
         self._result_content_visible = False
+        self._result_header_visible = False
         self._is_error = False
         self._blocked = False
 
@@ -1554,6 +1555,11 @@ class ExecutePythonWidget(QFrame):
 
         self._result_content_visible = expanded and self._result_block_visible
         self._result_label.setVisible(self._result_content_visible)
+        # The "Result:" label only shows alongside its content — when
+        # collapsed the tool header's ✓/✗ already conveys the status, so a
+        # stray label with nothing underneath is noise.
+        self._result_header_visible = self._result_content_visible
+        self._result_header_label.setVisible(self._result_header_visible)
 
         self._status_detail_visible = expanded and bool(self._status_detail_text)
         if self._status_detail_text:
