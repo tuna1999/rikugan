@@ -160,7 +160,14 @@ def _write_banner(fh: io.TextIOBase | None) -> None:
         # load (see bottom of file). Its ``__import__`` attribute is the real
         # builtin import function whose ``id`` lets us verify the Shiboken
         # guard is wrapping the same object across startup phases.
-        pieces.append(f"builtins_import_id={id(builtins_import.__import__)}")
+        # ``builtins_import`` is ``Module | None``; guard explicitly so mypy
+        # sees a non-Optional operand (the ``except`` covers the runtime miss
+        # when the module was somehow evicted, but the type check needs the
+        # narrowing to be explicit).
+        if builtins_import is not None:
+            pieces.append(f"builtins_import_id={id(builtins_import.__import__)}")
+        else:
+            pieces.append("builtins_import_id=?")
     except Exception:
         pieces.append("builtins_import_id=?")
     # Best-effort Qt5Core probe (Windows only). ctypes is stdlib; we do

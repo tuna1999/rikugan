@@ -268,7 +268,12 @@ class AnthropicProvider(LLMProvider):
         (``list[genai_types.Part]``) so an Anthropic provider never tries to
         forward Gemini SDK objects as Anthropic content blocks.
         """
-        formatted = []
+        # ``content`` is either a plain string (user/assistant text) or a
+        # list of provider-native content blocks (assistant tool_use /
+        # replayed raw parts). The explicit ``object`` value type lets mypy
+        # accept both shapes instead of inferring ``dict[str, str]`` from
+        # the first append and then rejecting the list-typed appends.
+        formatted: list[dict[str, object]] = []
         for msg in messages:
             if msg.role == Role.SYSTEM:
                 continue  # System goes in the `system` param
@@ -281,9 +286,12 @@ class AnthropicProvider(LLMProvider):
                 if self._is_valid_anthropic_raw_parts(raw_parts):
                     # Replay the original Anthropic-shaped block list
                     # (thinking + text + tool_use with signatures).
-                    formatted.append(
-                        {"role": "assistant", "content": list(raw_parts)}  # type: ignore[list-item]
-                    )
+                    # ``_is_valid_anthropic_raw_parts`` guarantees *raw_parts*
+                    # is a non-empty ``list[dict]``; the isinstance check
+                    # lets mypy narrow the ``Any`` return of ``getattr`` so
+                    # ``list(...)`` type-checks without an ignore.
+                    assert isinstance(raw_parts, list)
+                    formatted.append({"role": "assistant", "content": list(raw_parts)})
                     continue
 
                 content: list = []
