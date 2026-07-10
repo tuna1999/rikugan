@@ -79,10 +79,19 @@ def _build_widget_with_mocks(agents: list | None = None) -> tuple:
     # wire the dependencies. This lets the tests run without a real
     # Qt event loop.
     w = A2ABridgeWidget.__new__(A2ABridgeWidget)
-    # Initialize the QObject base so signals work.
-    from rikugan.ui.qt_compat import QObject
+    # Initialise the widget base so class-level Signal descriptors bind
+    # to the instance. Use ``QWidget.__init__`` (the *direct* base),
+    # not ``QObject.__init__``: shiboken rejects
+    # ``QObject.__init__(widget)`` with "QObject isn't a direct base
+    # class" whenever real PySide6 is loaded — which happens when a
+    # sibling test (e.g. ``test_markdown``) imports ``rikugan.ui.*``
+    # before this file runs, leaving real ``PySide6`` modules in
+    # ``sys.modules`` (``ensure_pyside6_stubs`` uses ``setdefault`` and
+    # keeps them). ``QWidget`` subclasses ``QObject`` so the init still
+    # wires the signal machinery.
+    from rikugan.ui.qt_compat import QWidget
 
-    QObject.__init__(w)
+    QWidget.__init__(w)
 
     w._dispatcher = fake_dispatcher
     w._history = {}
