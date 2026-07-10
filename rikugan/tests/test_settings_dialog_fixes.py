@@ -1852,7 +1852,7 @@ class TestMaxOutputTokensModelDrivenRange(unittest.TestCase):
             dlg.done(0)
 
     def test_model_with_high_max_output_tokens_sets_range(self) -> None:
-        dlg, cfg = self._make_dialog()
+        dlg, _cfg = self._make_dialog()
         try:
             from rikugan.core.types import ModelInfo
 
@@ -1971,7 +1971,7 @@ class TestMaxOutputTokensModelDrivenRange(unittest.TestCase):
     def test_unknown_model_uses_generous_fallback(self) -> None:
         """A manually typed model with no metadata uses a generous
         fallback upper bound (>= 1_000_000) and keeps the current value."""
-        dlg, cfg = self._make_dialog()
+        dlg, _cfg = self._make_dialog()
         try:
             dlg._fetched_models = []  # no metadata
             dlg._model_combo.addItem("my-custom-model", "my-custom-model")

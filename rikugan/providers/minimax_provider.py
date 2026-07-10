@@ -10,7 +10,7 @@ Auth:      plain API key (no OAuth)
 from __future__ import annotations
 
 import importlib
-from typing import Any, NoReturn
+from typing import Any, ClassVar, NoReturn
 
 from ..core.errors import (
     AuthenticationError,
@@ -32,7 +32,7 @@ class MiniMaxProvider(AnthropicProvider):
     # Model metadata is not exposed by MiniMax's /anthropic/v1/models endpoint,
     # so we maintain it locally and resolve it by model id.  Values follow the
     # MiniMax Anthropic-compatible Messages API documentation.
-    _MODEL_LIMITS: dict[str, dict[str, int]] = {
+    _MODEL_LIMITS: ClassVar[dict[str, dict[str, int]]] = {
         "MiniMax-M3": {
             "context_window": 1_000_000,
             "max_output_tokens": 524_288,
