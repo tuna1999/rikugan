@@ -87,6 +87,19 @@ def test_ask_user_requires_question_only() -> None:
     assert _required_fields(ASK_USER_SCHEMA) == ["question"]
 
 
+def test_ask_user_options_description_forbids_empty_strings() -> None:
+    """The options description must tell the LLM that empty strings are invalid.
+
+    Without this guidance, weaker models send ``options: [""]`` for open-ended
+    questions, which renders a single empty button in the UI and locks the
+    text input (the panel treats ``bool([""])`` as "has options → button-only").
+    """
+    options_desc = ASK_USER_SCHEMA["function"]["parameters"]["properties"]["options"]["description"]
+    assert "non-empty" in options_desc.lower() or "empty" in options_desc.lower()
+    # Must instruct the LLM to omit the field for open-ended questions
+    assert "omit" in options_desc.lower() or "open-ended" in options_desc.lower()
+
+
 def test_tool_names_are_unique_across_aggregate() -> None:
     """Anthropic rejects requests with duplicate tool names."""
     names = [s["function"]["name"] for s in ALL_PSEUDO_TOOL_SCHEMAS]

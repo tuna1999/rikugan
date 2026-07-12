@@ -1661,7 +1661,12 @@ class AgentLoop:
     def _handle_ask_user_tool(self, tc: ToolCall) -> Generator[TurnEvent, None, ToolResult]:
         """Handle the ask_user pseudo-tool."""
         question = tc.arguments.get("question", "")
-        options = tc.arguments.get("options", [])
+        raw_options = tc.arguments.get("options", [])
+        # Filter out empty/whitespace-only options. Some LLMs send
+        # ``options: [""]`` for open-ended questions; without filtering, the
+        # panel treats ``bool([""])`` as truthy, locks the text input, and
+        # renders a single empty button the user cannot act on.
+        options = [o for o in raw_options if isinstance(o, str) and o.strip()]
         yield TurnEvent.user_question(question, options, tc.id)
         answer = self._wait_for_queue(self._user_answer_queue)
         content = f"User answered: {answer}"
