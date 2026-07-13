@@ -579,6 +579,53 @@ class TestAgentLoop(unittest.TestCase):
             next(gate)
         self.assertTrue(done.exception.value)
 
+    def _collect_question_options(self, loop: AgentLoop, arguments: dict[str, Any]) -> list[str]:
+        """Drive _handle_ask_user_tool up to the USER_QUESTION event.
+
+        Feeds an empty answer so the generator completes without blocking.
+        Returns the normalized ``options`` list from the event metadata.
+        """
+        tc = ToolCall(id="call_ask_user_test", name="ask_user", arguments=arguments)
+        loop.submit_user_answer("")  # unblock the _wait_for_queue() call
+        gen = loop._handle_ask_user_tool(tc)
+        question_event = next(gen)
+        # Drain remaining events (TOOL_RESULT) so the generator closes cleanly
+        try:
+            while True:
+                next(gen)
+        except StopIteration:
+            pass
+        return list(question_event.metadata.get("options", []))
+
+    def test_ask_user_strips_empty_string_options(self):
+        """Empty-string options must be filtered before reaching the UI.
+
+        Regression guard: some LLMs send ``options: [""]`` for open-ended
+        questions. The panel treats ``bool([""])`` as truthy, locking the
+        text input and rendering a single empty button.
+        """
+        provider = MockProvider()
+        loop = self._make_loop(provider)
+        options = self._collect_question_options(loop, {"question": "Where to save?", "options": [""]})
+        self.assertEqual(options, [])
+
+    def test_ask_user_preserves_valid_options_when_filtering(self):
+        """A mix of empty and valid options keeps only the valid ones."""
+        provider = MockProvider()
+        loop = self._make_loop(provider)
+        options = self._collect_question_options(
+            loop,
+            {"question": "Continue?", "options": ["", "Yes", "", "No", "   "]},
+        )
+        self.assertEqual(options, ["Yes", "No"])
+
+    def test_ask_user_missing_options_yields_empty_list(self):
+        """No options field at all → empty list (free-text question)."""
+        provider = MockProvider()
+        loop = self._make_loop(provider)
+        options = self._collect_question_options(loop, {"question": "Thoughts?"})
+        self.assertEqual(options, [])
+
 
 class TestBackgroundAgentRunner(unittest.TestCase):
     def test_run_in_background(self):

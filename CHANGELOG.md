@@ -5,6 +5,11 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.3] — 2026-07-13
+
+### Fixed
+- **Blank approval button when `ask_user` options contained empty strings** — options are now filtered before rendering so the button row never shows an empty button. Affects mid-turn `USER_QUESTION` flows where a tool returned a mix of populated and empty option strings.
+
 ## [1.10.2] — 2026-07-10
 
 ### Fixed
