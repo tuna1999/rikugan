@@ -1365,10 +1365,17 @@ class AgentLoop:
             log_error(f"Tool {tc.name} error: {e}")
         except Exception as e:
             tb = traceback.format_exc()
-            result = f"Unexpected error: {e}\n{tb}"
             is_error = True
             self._consecutive_errors += 1
             log_error(f"Tool {tc.name} unexpected error: {e}\n{tb}")
+            # Only include the full traceback in the tool result for
+            # execute_python (the docs-review classifier consumes it). For
+            # other tools, keep the one-liner so internal paths/line numbers
+            # never leak into the LLM context.
+            if tc.name == constants.EXECUTE_PYTHON_TOOL_NAME:
+                result = f"Unexpected error: {e}\n{tb}"
+            else:
+                result = f"Unexpected error: {e}"
 
             # Post-error docs review for execute_python: spawn reviewer only
             # when the exception is API-shaped (AttributeError, ImportError,
@@ -2014,10 +2021,17 @@ class AgentLoop:
             log_error(f"Tool {tc.name} error: {e}")
         except Exception as e:
             tb = traceback.format_exc()
-            result = f"Unexpected error: {e}\n{tb}"
             is_error = True
             self._consecutive_errors += 1
             log_error(f"Tool {tc.name} unexpected error: {e}\n{tb}")
+            # Only include the full traceback in the tool result for
+            # execute_python (the docs-review classifier consumes it). For
+            # other tools, keep the one-liner so internal paths/line numbers
+            # never leak into the LLM context.
+            if tc.name == constants.EXECUTE_PYTHON_TOOL_NAME:
+                result = f"Unexpected error: {e}\n{tb}"
+            else:
+                result = f"Unexpected error: {e}"
 
             # Post-error docs review for execute_python: spawn reviewer only
             # when the exception is API-shaped (AttributeError, ImportError,

@@ -598,6 +598,151 @@ class TestDescribeToolCallExecutePython(unittest.TestCase):
         self.assertIn("process_data", desc)
 
 
+# ---------------------------------------------------------------------------
+# Integration: drive the REAL _execute_single_tool except block
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteSingleToolIntegration(unittest.TestCase):
+    """End-to-end tests that drive ``_execute_single_tool`` as a generator.
+
+    Unlike the unit-style tests in ``TestPostErrorReviewGate`` (which
+    reproduce the guard's ``if`` condition by hand), these tests feed a
+    real ``ToolCall`` through the method and assert on observable side
+    effects (the reviewer's verdict in the augmented result, the
+    ``_docs_reviewer_invoked`` flag, and the traceback scope in the
+    error result).
+
+    The exception path is exercised by monkey-patching
+    ``loop.tools.execute_coerced`` to raise an ``AttributeError`` shaped
+    like an IDA API hallucination. The static validator
+    (``validate_idapython``) is bypassed by using an API name not in
+    its block list (``idautils.NonExistentThing``).
+    """
+
+    _API_HALLUCINATED_CODE = "import idautils\nidautils.NonExistentThing()\n"
+
+    def _set_registry_to_raise(self, loop, exc):
+        """Replace ``tools.execute_coerced`` with a raising stub."""
+
+        def _raise(name, args):
+            raise exc
+
+        loop.tools.execute_coerced = _raise  # type: ignore[attr-defined]
+
+    def _drain_result(self, gen):
+        """Drain a generator that returns a ``ToolResult``."""
+        while True:
+            try:
+                next(gen)
+            except StopIteration as stop:
+                return stop.value
+
+    def test_execute_single_tool_spawns_reviewer_on_api_error(self):
+        """Integration: REAL ``_execute_single_tool`` raises AttributeError
+        on execute_python → docs-reviewer IS spawned via the real except
+        block → tool result is augmented with the verdict.
+
+        Catches regressions where someone:
+        * removes the ``tc.name == EXECUTE_PYTHON_TOOL_NAME`` guard,
+        * drops the ``not self._docs_reviewer_invoked`` check,
+        * or breaks the call into ``_review_failed_script`` entirely.
+        """
+        from rikugan.core.types import ToolCall
+
+        loop = _make_loop(gate_enabled=True)
+        # Bypass the approval prompt — we're testing the except block,
+        # not the approval gate. _always_allow_scripts short-circuits
+        # _wait_for_approval before it touches the queue.
+        loop._always_allow_scripts = True
+
+        api_error = AttributeError("module 'idautils' has no attribute 'NonExistentThing'")
+        self._set_registry_to_raise(loop, api_error)
+
+        runner = _FakeRunner(final_text="VERDICT: REWRITE_REQUIRED\nAPI_NOTES:\n- NonExistentThing is hallucinated")
+        import rikugan.agent.loop as loop_mod
+
+        original_runner = loop_mod.SubagentRunner
+        loop_mod.SubagentRunner = lambda *a, **kw: runner
+        try:
+            tc = ToolCall(
+                id="tc-int",
+                name="execute_python",
+                arguments={"code": self._API_HALLUCINATED_CODE},
+            )
+            gen = loop._execute_single_tool(tc)
+            tr = self._drain_result(gen)
+
+            # The reviewer should have been invoked via the real except
+            # block (not a hand-copied guard).
+            self.assertTrue(
+                loop._docs_reviewer_invoked,
+                "reviewer subagent should have been spawned via the real _execute_single_tool except block",
+            )
+            # Augmented result carries the reviewer's verdict.
+            self.assertIn("REWRITE_REQUIRED", tr.content)
+            self.assertIn("NonExistentThing", tr.content)
+            self.assertTrue(tr.is_error)
+        finally:
+            loop_mod.SubagentRunner = original_runner
+
+    def test_execute_single_tool_skips_reviewer_on_non_execute_python(self):
+        """Regression for Finding 1: a non-execute_python tool that raises
+        must NOT include the full traceback in the result (would leak
+        internal paths/line numbers into the LLM context).
+
+        Drives the real ``_execute_single_tool`` end-to-end with a
+        raising stub. Asserts:
+        * The reviewer is NOT spawned (``_docs_reviewer_invoked`` stays
+          False; the guard's ``tc.name == EXECUTE_PYTHON_TOOL_NAME``
+          check rejects the branch).
+        * The tool result is a one-liner without ``Traceback`` (the
+          full traceback stays in the server log only).
+        """
+        from rikugan.core.types import ToolCall
+
+        loop = _make_loop(gate_enabled=True)
+        loop._always_allow_scripts = True
+
+        api_error = RuntimeError("simulated tool failure")
+        self._set_registry_to_raise(loop, api_error)
+
+        # Patch SubagentRunner anyway — must NOT be called.
+        called = {"count": 0}
+
+        class _CountingRunner(_FakeRunner):
+            def __init__(self):
+                super().__init__(final_text="VERDICT: APPROVED")
+
+            def run_task(self, *args, **kwargs):
+                called["count"] += 1
+                return super().run_task(*args, **kwargs)
+
+        import rikugan.agent.loop as loop_mod
+
+        original_runner = loop_mod.SubagentRunner
+        loop_mod.SubagentRunner = lambda *a, **kw: _CountingRunner()
+        try:
+            tc = ToolCall(
+                id="tc-leak",
+                name="some_other_tool",
+                arguments={"foo": "bar"},
+            )
+            gen = loop._execute_single_tool(tc)
+            tr = self._drain_result(gen)
+
+            # Reviewer must not be spawned for non-execute_python tools.
+            self.assertFalse(loop._docs_reviewer_invoked)
+            self.assertEqual(called["count"], 0)
+            # Result must be the one-liner — no traceback leak.
+            self.assertNotIn("Traceback", tr.content)
+            self.assertIn("Unexpected error", tr.content)
+            self.assertIn("simulated tool failure", tr.content)
+            self.assertTrue(tr.is_error)
+        finally:
+            loop_mod.SubagentRunner = original_runner
+
+
 def _drain_str(gen):
     """Drain a generator that returns a ``str``.
 
