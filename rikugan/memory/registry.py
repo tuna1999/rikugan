@@ -263,6 +263,22 @@ class MemoryRegistry:
     # Raw SHA-256 resolve-or-create
     # ------------------------------------------------------------------
 
+    def find_raw(self, source_sha256: str) -> WorkspaceRecord | None:
+        """Return the workspace bound to a current ``raw_sha256`` digest, or None."""
+        conn = self._connect(read_only=True)
+        try:
+            row = conn.execute(
+                """
+                SELECT w.* FROM workspaces w
+                JOIN identity_evidence e ON e.memory_id = w.memory_id
+                WHERE e.kind = 'raw_sha256' AND e.value = ? AND e.status = 'current'
+                """,
+                (source_sha256,),
+            ).fetchone()
+            return _row_to_record(row) if row else None
+        finally:
+            conn.close()
+
     def resolve_or_create_raw(
         self,
         source_sha256: str,
@@ -349,6 +365,20 @@ class MemoryRegistry:
                 (normalized_path,),
             ).fetchone()
             return row["memory_id"] if row else None
+        finally:
+            conn.close()
+
+    def find_by_path_for(self, memory_id: str) -> str | None:
+        """Return the current normalized path alias for a workspace."""
+        conn = self._connect(read_only=True)
+        try:
+            row = conn.execute(
+                "SELECT normalized_path FROM path_aliases"
+                " WHERE memory_id = ? AND status = 'current'"
+                " ORDER BY last_seen_at DESC LIMIT 1",
+                (memory_id,),
+            ).fetchone()
+            return row["normalized_path"] if row else None
         finally:
             conn.close()
 
