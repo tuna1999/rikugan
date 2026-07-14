@@ -346,6 +346,12 @@ class AgentLoop:
         )
 
         # Mutation log for /undo support
+        self._mutation_log: list = []
+
+        # Central memory service (set by controller when memory_workspaces_enabled).
+        # When None, AgentLoop uses the legacy folder-scoped RIKUGAN.md path.
+        self.memory_service = None
+        self._memory_authority = None
         self._mutation_log: list[MutationRecord] = []
 
         # Exploration mode state (populated when /modify or /explore is used)
@@ -1554,6 +1560,24 @@ class AgentLoop:
         if not fact:
             content = "Error: 'fact' is required."
             is_err = True
+        elif self.memory_service is not None and self._memory_authority is not None:
+            # Central memory path: write through BinaryMemoryService.
+            try:
+                result = self.memory_service.save_fact(
+                    self._memory_authority,
+                    category=category,
+                    fact=fact,
+                    source="save_memory",
+                )
+                if result.projection_dirty:
+                    content = f"Saved to MEMORY.md (projection pending): [{category}] {fact}"
+                else:
+                    content = f"Saved to MEMORY.md: [{category}] {fact}"
+                is_err = False
+                log_info(f"save_memory: [{category}] {fact[:80]}")
+            except Exception as e:
+                content = f"Error saving to central memory: {e}"
+                is_err = True
         else:
             idb_dir = os.path.dirname(self.session.idb_path) if self.session.idb_path else ""
             if not idb_dir:
