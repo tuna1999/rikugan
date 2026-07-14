@@ -37,3 +37,12 @@ SKILLS_DIR_NAME = "skills"
 MCP_CONFIG_FILE = "mcp.json"
 MCP_TOOL_PREFIX = "mcp_"
 MCP_DEFAULT_TIMEOUT = 30.0
+
+# ---------------------------------------------------------------------------
+# Central memory workspaces
+# ---------------------------------------------------------------------------
+MEMORY_DIR_NAME = "memory"
+MEMORY_REGISTRY_SCHEMA_VERSION = 1
+MEMORY_WORKSPACE_SCHEMA_VERSION = 1
+MEMORY_LOCK_TIMEOUT_SECONDS = 5.0
+MEMORY_MARKDOWN_MAX_BYTES = 16 * 1024 * 1024

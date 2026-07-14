@@ -33,6 +33,7 @@ from ..constants import (
     DEFAULT_MAX_TOKENS,
     DEFAULT_TEMPERATURE,
     MCP_CONFIG_FILE,
+    MEMORY_DIR_NAME,
     SKILLS_DIR_NAME,
 )
 from .host import get_user_config_base_dir
@@ -145,6 +146,15 @@ class RikuganConfig:
     # system prompt's token budget.
     knowledge_max_context_chars: int = 12_000
 
+    # ------------------------------------------------------------------
+    # Central memory workspaces (see rikugan.memory.*)
+    # ------------------------------------------------------------------
+    # Dark-scaffolding switch: False until the atomic cutover plan
+    # activates it.  When False, no central workspace directories are
+    # created and all runtime memory continues to use the legacy
+    # folder-scoped RIKUGAN.md / .rikugan-kb layout.
+    memory_workspaces_enabled: bool = False
+
     # Startup behavior
     # "all"    — restore every saved session for this database (default, preserves existing behavior)
     # "latest" — restore only the most recent session (opt-in, faster)
@@ -177,6 +187,11 @@ class RikuganConfig:
     def cache_dir(self) -> str:
         """Directory for Rikugan-managed persistent caches (e.g. raw string cache)."""
         return os.path.join(self._config_dir, CACHE_DIR_NAME)
+
+    @property
+    def memory_dir(self) -> str:
+        """Root for Rikugan-owned durable memory workspaces."""
+        return os.path.join(self._config_dir, MEMORY_DIR_NAME)
 
     def validate(self) -> list[str]:
         """Validate config values. Returns list of error messages (empty = valid)."""
@@ -335,6 +350,7 @@ class RikuganConfig:
             "knowledge_show_retrieved_in_chat",
             "knowledge_max_context_items",
             "knowledge_max_context_chars",
+            "memory_workspaces_enabled",
         ):
             if k in data:
                 val = data[k]
@@ -361,6 +377,21 @@ class RikuganConfig:
                 # Normalize invalid docs_review_mode to "on_error"
                 if k == "docs_review_mode" and val not in ("on_error", "off"):
                     val = "on_error"
+                # Boolean fields must be real JSON booleans — reject
+                # truthy strings/integers so a hand-edited config file
+                # can never silently enable central persistence.
+                _BOOLEAN_FIELDS = {
+                    "auto_context",
+                    "plan_mode_default",
+                    "checkpoint_auto_save",
+                    "approve_mutations",
+                    "silent_retry_mode",
+                    "knowledge_enabled",
+                    "knowledge_show_retrieved_in_chat",
+                    "memory_workspaces_enabled",
+                }
+                if k in _BOOLEAN_FIELDS and not isinstance(val, bool):
+                    continue
                 setattr(self, k, val)
 
     def has_encrypted_keys(self) -> bool:
