@@ -489,7 +489,10 @@ class SessionControllerBase:
 
         # Inject central memory service when enabled.
         if getattr(self.config, "memory_workspaces_enabled", False):
+            log_info("Central memory enabled — wiring service into loop")
             self._wire_central_memory(loop)
+        else:
+            log_debug("Central memory disabled — using legacy RIKUGAN.md path")
 
         self._runner = BackgroundAgentRunner(loop)
         self._runner.start(user_message)
@@ -550,8 +553,12 @@ class SessionControllerBase:
             loop.memory_service = service
             loop._memory_authority = issuer.issue(context)
             session.binary_memory_id = result.binding.memory_id
+            log_info(f"Central memory wired: memory_id={result.binding.memory_id[:12]}")
         except Exception as e:
             log_error(f"Central memory wiring failed: {e}")
+            import traceback
+
+            log_error(traceback.format_exc())
 
     def get_event(self, timeout: float = 0) -> TurnEvent | None:
         if self._runner is None:
