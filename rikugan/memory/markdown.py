@@ -140,6 +140,27 @@ def _escape_marker_text(text: str) -> str:
     return text
 
 
+def extract_unmanaged_markdown(content: str) -> str:
+    """Return ``prefix + suffix`` from a MEMORY.md, never the managed block.
+
+    Strips all managed-region delimiters and hidden record markers so the
+    returned text is safe to include as ``manual_notes`` in a prompt.
+    """
+    try:
+        doc = parse_memory_document(content)
+    except ManagedRegionError:
+        # If markers are malformed, return the whole content minus markers
+        cleaned = content.replace(MANAGED_START, "").replace(MANAGED_END, "")
+        return _strip_record_markers(cleaned)
+    unmanaged = doc.prefix + doc.suffix
+    return _strip_record_markers(unmanaged)
+
+
+def _strip_record_markers(text: str) -> str:
+    """Remove hidden ``<!-- rikugan:record ... -->`` markers from text."""
+    return _RECORD_RE.sub("", text)
+
+
 def _read_bounded_regular_utf8(path: Path, *, default: str = "# Memory\n") -> str:
     """Read a regular file with bounded size, rejecting symlinks/reparse points."""
     if not path.exists():

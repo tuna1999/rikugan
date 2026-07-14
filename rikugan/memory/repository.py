@@ -179,3 +179,69 @@ class SQLiteKnowledgeRepository:
     def count_observations(self) -> int:
         """Count all observations."""
         return self._store.count_observations()
+
+    # ------------------------------------------------------------------
+    # Convenience: allocate-and-append
+    # ------------------------------------------------------------------
+
+    def upsert_memory_fact(
+        self,
+        category: str,
+        fact: str,
+        source: str,
+    ) -> KnowledgeMemory:
+        """Allocate or update one fact and append an observation atomically.
+
+        Creates a new fact ID (or updates the latest fact of the same
+        category if one exists), then appends an observation recording the
+        source. Returns the resulting :class:`KnowledgeMemory`.
+        """
+        from .workspace import new_record_id
+
+        # Find an existing fact with the same category to update
+        existing = None
+        for mem in self.list_memories():
+            if mem.type == category:
+                existing = mem
+                break
+
+        if existing is not None:
+            # Update existing fact with new content
+            current = self._store.get_fact(existing.id)
+            expected_rev = current.revision if current else 0
+            self._store.put_fact(
+                existing.id,
+                category,
+                existing.title,
+                fact,
+                0.7,
+                expected_revision=expected_rev,
+            )
+            result = KnowledgeMemory(
+                id=existing.id,
+                binary_id=self.owner_memory_id,
+                type=category,
+                title=existing.title,
+                content=fact,
+                confidence=0.7,
+            )
+        else:
+            fid = new_record_id("fact")
+            self._store.put_fact(fid, category, category, fact, 0.7, expected_revision=0)
+            result = KnowledgeMemory(
+                id=fid,
+                binary_id=self.owner_memory_id,
+                type=category,
+                title=category,
+                content=fact,
+                confidence=0.7,
+            )
+
+        # Append observation
+        oid = new_record_id("observation")
+        self._store.append_observation(
+            oid,
+            source,
+            json.dumps({"category": category}, ensure_ascii=False, sort_keys=True),
+        )
+        return result
