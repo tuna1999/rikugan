@@ -465,10 +465,23 @@ class AgentLoop:
         if self.skills:
             skill_summary = self.skills.get_summary_for_prompt()
 
-        # Derive IDB directory for persistent memory loading
+        # Derive IDB directory for persistent memory loading (legacy path).
         idb_dir = ""
         if self.session.idb_path:
             idb_dir = os.path.dirname(self.session.idb_path)
+
+        # Central memory prompt sources: when memory_service is wired,
+        # load structured facts from SQLite and manual notes from
+        # unmanaged MEMORY.md. Otherwise these stay empty and the legacy
+        # RIKUGAN.md path is used.
+        structured_memory = ""
+        manual_memory_notes = ""
+        if self.memory_service is not None:
+            try:
+                structured_memory = self.memory_service.structured_context()
+                manual_memory_notes = self.memory_service.manual_notes_context()
+            except Exception as e:
+                log_debug(f"central memory context load failed: {e}")
 
         # Retrieved knowledge — per-turn compilation of stored memories,
         # entities, relations, and note excerpts relevant to the current
@@ -495,6 +508,8 @@ class AgentLoop:
             # the same string.  Invalidation happens when a tool is
             # registered/unregistered or capabilities change.
             tools_table=self.tools.tools_catalog(),
+            structured_memory=structured_memory,
+            manual_memory_notes=manual_memory_notes,
         )
 
     def _build_retrieved_knowledge_section(

@@ -115,16 +115,26 @@ def build_system_prompt(
     idb_dir: str | None = None,
     profile: AnalysisProfile | None = None,
     tools_table: str | None = None,
+    structured_memory: str = "",
+    manual_memory_notes: str = "",
 ) -> str:
     """Build the full system prompt with optional binary context."""
     base_prompt = IDA_BASE_PROMPT
     parts = [base_prompt]
 
-    # Persistent memory — loaded early so it's part of the cached prefix.
-    # Sanitized to prevent poisoned memory files from injecting instructions.
-    memory = _load_persistent_memory(idb_dir or "")
-    if memory:
-        parts.append(f"\n## Persistent Memory (RIKUGAN.md)\n{sanitize_memory(memory)}")
+    # Central memory path: when structured_memory or manual_memory_notes
+    # are supplied by BinaryMemoryService, use them instead of legacy
+    # RIKUGAN.md. Otherwise fall back to the legacy path.
+    if structured_memory or manual_memory_notes:
+        if structured_memory:
+            parts.append(f"\n{structured_memory}")
+        if manual_memory_notes:
+            parts.append(f"\n## Manual Notes\n{sanitize_memory(manual_memory_notes)}")
+    else:
+        # Legacy persistent memory from RIKUGAN.md.
+        memory = _load_persistent_memory(idb_dir or "")
+        if memory:
+            parts.append(f"\n## Persistent Memory (RIKUGAN.md)\n{sanitize_memory(memory)}")
 
     if active_goal:
         parts.append(
