@@ -86,11 +86,21 @@ def open_sqlite(
 
     if read_only:
         uri_path = quote(path.as_posix(), safe="/:")
-        conn = sqlite3.connect(f"file:{uri_path}?mode=ro", uri=True, timeout=5.0)
+        conn = sqlite3.connect(
+            f"file:{uri_path}?mode=ro",
+            uri=True,
+            timeout=5.0,
+            check_same_thread=False,
+        )
     else:
         path.parent.mkdir(parents=True, exist_ok=True)
         if allow_create and not path.exists():
-            conn = sqlite3.connect(path, timeout=5.0, isolation_level=None)
+            conn = sqlite3.connect(
+                path,
+                timeout=5.0,
+                isolation_level=None,
+                check_same_thread=False,
+            )
         else:
             # Use mode=rw URI to guard against silent recreation of a
             # missing file.
@@ -102,6 +112,7 @@ def open_sqlite(
                 uri=True,
                 timeout=5.0,
                 isolation_level=None,
+                check_same_thread=False,
             )
 
     conn.row_factory = sqlite3.Row

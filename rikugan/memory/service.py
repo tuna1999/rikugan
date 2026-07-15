@@ -145,12 +145,17 @@ class BinaryMemoryService:
         if not normalized_fact:
             raise ValueError("fact must not be empty after sanitization")
 
-
         record = self.repository.upsert_memory_fact(
             normalized_category,
             normalized_fact,
             source,
         )
+        # Verify the fact was actually committed before returning success
+        verify = self.repository._store.get_fact(record.id)
+        if verify is None:
+            from ..core.logging import log_error as _le
+
+            _le(f"save_fact BUG: fact {record.id} not found after upsert_memory_fact!")
         try:
             self.projector.project(self.paths, self.store)
             return SaveMemoryResult(
