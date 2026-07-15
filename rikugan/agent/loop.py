@@ -234,6 +234,9 @@ def _parse_user_command(user_message: str) -> _ParsedCommand:
         )
     if lower == "/orchestra" or lower.startswith("/orchestra "):
         return _ParsedCommand(message=stripped[10:].strip() if len(stripped) > 10 else "", use_orchestra_mode=True)
+    # /case <action> <args...> — analysis case management
+    if lower == "/case" or lower.startswith("/case "):
+        return _ParsedCommand(message=stripped, direct_command="/case")
     # /a2a <agent> <message...>  — delegate to external agent directly
     # without LLM mediation. The first whitespace-separated token is
     # the agent name; the rest is the task. Empty body is treated as
@@ -443,6 +446,50 @@ class AgentLoop:
                 return q.get(timeout=0.5)
             except queue.Empty:
                 continue  # poll timeout — retry until item arrives or cancelled
+
+    def _handle_case_command(self, user_message: str) -> Generator[TurnEvent, None, None]:
+        """Handle /case slash commands."""
+        from ..memory.case_commands import dispatch_case_command, parse_case_command
+
+        parsed = parse_case_command(user_message)
+        if parsed is None:
+            yield TurnEvent.text_done("Invalid /case command.")
+            return
+
+        if self.memory_service is None:
+            yield TurnEvent.text_done("Central memory is not enabled. Set memory_workspaces_enabled=true in config.")
+            return
+
+        try:
+            from ..memory.case_repository import CaseRepository
+            from ..memory.case_service import CaseMemoryService
+
+            # Build case repository and service from the current session's memory binding
+            session = self.session
+            if not session.binary_memory_id:
+                yield TurnEvent.text_done("No active binary workspace binding.")
+                return
+
+            # Access the manager through the controller (if available) or create a temporary one
+
+            manager = getattr(self, "_memory_manager", None)
+            if manager is None:
+                yield TurnEvent.text_done("Case operations require an active controller session.")
+                return
+
+            cases = CaseRepository(manager._registry, manager.locator)
+            case_service = CaseMemoryService(cases, binary_repository=self.memory_service.repository)
+            result = dispatch_case_command(
+                parsed,
+                case_repository=cases,
+                case_service=case_service,
+                manager=manager,
+                authority=self._memory_authority,
+                context=manager.run_context(),
+            )
+            yield TurnEvent.text_done(result)
+        except Exception as e:
+            yield TurnEvent.error_event(f"Case command failed: {e}")
 
     def _build_system_prompt(self) -> str:
         profile = self.config.get_active_profile()
@@ -2240,6 +2287,9 @@ class AgentLoop:
                 return
             if cmd.direct_command == "/memory":
                 yield from _handle_memory_command(self)
+                return
+            if cmd.direct_command == "/case":
+                yield from self._handle_case_command(user_message)
                 return
             if cmd.direct_command == "/undo":
                 yield from _handle_undo_command(self, cmd.direct_arg)

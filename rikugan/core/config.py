@@ -155,6 +155,15 @@ class RikuganConfig:
     # folder-scoped RIKUGAN.md / .rikugan-kb layout.
     memory_workspaces_enabled: bool = False
 
+    # Analysis case subsystem: when True and central memory is enabled,
+    # case context (cross-binary facts) is included in the prompt.
+    case_memory_enabled: bool = False
+
+    # Controlled peer retrieval: when True and a case is active, facts
+    # from related peer binaries (relation confidence >= 0.7) are included
+    # in the prompt. Explicit /case search always works regardless.
+    peer_retrieval_enabled: bool = False
+
     # Startup behavior
     # "all"    — restore every saved session for this database (default, preserves existing behavior)
     # "latest" — restore only the most recent session (opt-in, faster)
@@ -351,6 +360,8 @@ class RikuganConfig:
             "knowledge_max_context_items",
             "knowledge_max_context_chars",
             "memory_workspaces_enabled",
+            "case_memory_enabled",
+            "peer_retrieval_enabled",
         ):
             if k in data:
                 val = data[k]
@@ -389,6 +400,8 @@ class RikuganConfig:
                     "knowledge_enabled",
                     "knowledge_show_retrieved_in_chat",
                     "memory_workspaces_enabled",
+                    "case_memory_enabled",
+                    "peer_retrieval_enabled",
                 }
                 if k in _BOOLEAN_FIELDS and not isinstance(val, bool):
                     continue
