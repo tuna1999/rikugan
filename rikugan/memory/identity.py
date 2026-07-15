@@ -234,6 +234,17 @@ class MemoryIdentityResolver:
     ) -> IdentityResolution:
         fs_id = request.filesystem_identity
 
+        # Explicit "without persistence" choice → ephemeral
+        if choice is not None and choice.action == "without_persistence":
+            return IdentityResolution(
+                status=ResolutionStatus.EPHEMERAL,
+                binding=WorkspaceBinding(
+                    memory_id="",
+                    state="disabled",
+                    display_name=request.display_name,
+                ),
+            )
+
         # Rules 6/7: no durable evidence → ephemeral
         if fs_id is None:
             return IdentityResolution(
@@ -264,22 +275,14 @@ class MemoryIdentityResolver:
                 )
             return self._bind_existing(fs_workspaces[0], request.display_name, ResolutionStatus.RESOLVED)
 
-        # No filesystem match; check UUID-only match
+        # No filesystem match, but UUID matches — the file index likely
+        # changed (common on Windows). Link to the existing workspace
+        # rather than creating a new one, because the netnode UUID is the
+        # durable identity that survives reopen.
         if uuid_workspaces:
-            existing = uuid_workspaces[0]
+            return self._link_existing(request, uuid_workspaces[0])
 
-            # Rule 4: UUID + new filesystem + old file still exists → COPY_DETACHED
-            # The "old file" is the original file of the existing workspace.
-            # We detect this by checking if any current path alias for the
-            # existing workspace still resolves to an existing file.
-            old_path = self._registry.find_by_path_for(existing.memory_id)
-            if old_path and self._path_exists(old_path):
-                return self._create_copy_detached(request)
-
-            # Rule 5: UUID + old unavailable → AMBIGUOUS unless choice supplied
-            return self._resolve_ambiguous(request, existing.memory_id, choice)
-
-        # Rule 6: no existing match, has filesystem evidence → create new
+        # No match at all → create new
         return self._create_new(request)
 
     # ------------------------------------------------------------------

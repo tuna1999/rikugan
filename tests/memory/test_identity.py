@@ -124,46 +124,34 @@ class TestIdbResolution:
         assert result.status is ResolutionStatus.CONFLICT
         assert result.binding is None
 
-    def test_copy_detaches_when_original_binding_is_current(self, tmp_path: Path) -> None:
+    def test_uuid_match_with_different_filesystem_links_existing(self, tmp_path: Path) -> None:
+        """UUID is durable identity: different file index → link, not create new.
+
+        On Windows, file index can change between opens. The netnode UUID
+        survives reopen, so UUID match should link to the existing workspace
+        rather than creating duplicates.
+        """
         registry = MemoryRegistry(tmp_path / "registry.db")
         registry.initialize()
-        resolver = MemoryIdentityResolver(
-            registry,
-            path_exists=lambda path: path.endswith("a.i64"),
-        )
+        resolver = MemoryIdentityResolver(registry)
 
         original = resolver.resolve(_idb(tmp_path / "a.i64", "uuid-a", ("vol", "7")))
-        copied = resolver.resolve(_idb(tmp_path / "copy.i64", "uuid-a", ("vol", "8")))
+        # Same UUID, different filesystem identity (simulating file index change)
+        reopened = resolver.resolve(_idb(tmp_path / "a.i64", "uuid-a", ("vol", "99")))
 
         assert original.binding is not None
-        assert copied.binding is not None
-        assert copied.status is ResolutionStatus.COPY_DETACHED
-        assert copied.binding.memory_id != original.binding.memory_id
-        assert copied.netnode_uuid_to_persist
+        assert reopened.binding is not None
+        assert reopened.status is ResolutionStatus.RESOLVED
+        assert reopened.binding.memory_id == original.binding.memory_id
 
-    def test_missing_prior_file_requires_explicit_choice(self, tmp_path: Path) -> None:
+    def test_without_persistence_choice_returns_ephemeral(self, tmp_path: Path) -> None:
+        """``without_persistence`` choice returns ephemeral binding."""
         registry = MemoryRegistry(tmp_path / "registry.db")
         registry.initialize()
-        resolver = MemoryIdentityResolver(
-            registry,
-            path_exists=lambda _path: False,
-        )
-
-        original = resolver.resolve(_idb(tmp_path / "a.i64", "uuid-a", ("vol", "7")))
-        assert original.binding is not None
-        ambiguous = resolver.resolve(_idb(tmp_path / "moved.i64", "uuid-a", ("new", "9")))
-        assert ambiguous.status is ResolutionStatus.AMBIGUOUS
-        assert ambiguous.binding is None
-
-        linked = resolver.resolve(
-            _idb(tmp_path / "moved.i64", "uuid-a", ("new", "9")),
-            IdentityChoice.link_existing(original.binding.memory_id),
-        )
-        assert linked.binding is not None
-        assert linked.binding.memory_id == original.binding.memory_id
+        resolver = MemoryIdentityResolver(registry)
 
         offline = resolver.resolve(
-            _idb(tmp_path / "other.i64", "uuid-a", ("new", "10")),
+            _idb(tmp_path / "a.i64", "uuid-a", ("vol", "1")),
             IdentityChoice.without_persistence(),
         )
         assert offline.status is ResolutionStatus.EPHEMERAL
