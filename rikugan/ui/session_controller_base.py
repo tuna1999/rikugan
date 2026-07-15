@@ -552,6 +552,7 @@ class SessionControllerBase:
             )
             loop.memory_service = service
             loop._memory_authority = issuer.issue(context)
+            loop._memory_manager = manager
             session.binary_memory_id = result.binding.memory_id
             log_info(f"Central memory wired: memory_id={result.binding.memory_id[:12]}")
         except Exception as e:

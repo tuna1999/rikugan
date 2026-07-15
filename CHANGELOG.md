@@ -13,7 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`memory.db`) replace folder-scoped `RIKUGAN.md` / `.rikugan-kb/*.jsonl`
   as the authoritative structured-memory backend. Each workspace has
   deterministic `MEMORY.md` projection with managed/unmanaged region
-  separation and cross-process `portalocker` locking.
+  separation and cross-process `portalocker` locking. UUID-priority
+  identity resolution prevents duplicate workspaces when Windows file
+  index changes between opens.
 - **Identity resolver** — ordered copy/move/conflict decision table
   resolves IDB identity via filesystem evidence (POSIX `st_dev/st_ino`,
   Windows volume serial + 64-bit file index) and netnode UUID. Raw
@@ -22,21 +24,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bound to a frozen `MemoryRunContext`; subagents never receive write
   authority and can only emit `MemoryCandidate` records for explicit
   main-agent review.
+- **Prompt source separation** — system prompt reads structured facts
+  from SQLite and manual notes from unmanaged `MEMORY.md` when central
+  memory is enabled. Legacy `RIKUGAN.md` path used when disabled.
 - **Analysis cases** — cross-binary case membership with five relation
   types (`embeds_or_loads`, `communicates_with`, `derived_from`,
   `same_family_as`, `shares_artifact_with`), explicit promotion with
-  provenance, and lazy source-drift validation.
+  provenance, lazy source-drift validation, and controlled peer
+  retrieval with read-only/query-only opens.
+- **`/case` commands** — parser and dispatch for case CRUD, membership,
+  promotion, and active-case binding.
 - **Bundle interchange** — versioned ZIP format with validated manifest,
-  member-name safety checks, and coherent SQLite-snapshot export.
+  member-name safety checks, coherent SQLite-snapshot export, and staged
+  import with graph-wide ID remap.
+- **SQLite backup/restore** — `Connection.backup()` API for coherent
+  snapshots; restore creates new workspace with updated owner metadata.
 - **Storage guard** — centralized path containment, symlink, size, and
   permission checks for all central-memory file operations.
 - **Legacy importer** — one-time migration from `RIKUGAN.md` /
   `.rikugan-kb/*.jsonl` into the central workspace, idempotent by
   source fingerprint + target + selected items.
-- **Config flag** — `memory_workspaces_enabled` (default `False`).
-  When disabled, all runtime memory continues using the legacy
-  folder-scoped path. Typed-load rejection prevents a string `"true"`
-  from silently enabling the feature.
+- **Config flags** — `memory_workspaces_enabled`, `case_memory_enabled`,
+  and `peer_retrieval_enabled` (all default `False`). Typed-load
+  rejection prevents string values from silently enabling features.
+
+### Fixed — Central Memory Runtime
+
+- First-open workspace DB creation (was calling `open()` on missing file)
+- SQLite `check_same_thread=False` for agent worker threads
+- UUID-priority identity linking when Windows file index changes
+- MEMORY.md projection now works after `portalocker` installed in IDA
 
 ## [1.10.4] — 2026-07-14
 
