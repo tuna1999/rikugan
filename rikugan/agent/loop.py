@@ -512,15 +512,9 @@ class AgentLoop:
         if self.skills:
             skill_summary = self.skills.get_summary_for_prompt()
 
-        # Derive IDB directory for persistent memory loading (legacy path).
-        idb_dir = ""
-        if self.session.idb_path:
-            idb_dir = os.path.dirname(self.session.idb_path)
-
-        # Central memory prompt sources: when memory_service is wired,
-        # load structured facts from SQLite and manual notes from
-        # unmanaged MEMORY.md. Otherwise these stay empty and the legacy
-        # RIKUGAN.md path is used.
+        # Central memory prompt sources: structured facts from SQLite and
+        # manual notes from unmanaged MEMORY.md. Both supplied by
+        # BinaryMemoryService when wired, otherwise stay empty.
         structured_memory = ""
         manual_memory_notes = ""
         if self.memory_service is not None:
@@ -549,7 +543,6 @@ class AgentLoop:
             active_goal=self.session.metadata.get(_GOAL_METADATA_KEY, ""),
             tool_names=self.tools.list_names(),
             skill_summary=skill_summary,
-            idb_dir=idb_dir,
             profile=profile,
             # Cached — first call rebuilds, every subsequent call returns
             # the same string.  Invalidation happens when a tool is
