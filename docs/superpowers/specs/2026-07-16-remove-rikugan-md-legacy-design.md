@@ -43,9 +43,10 @@ Central path kích hoạt qua `memory_workspaces_enabled` flag, hiện `False`.
 - Trong `load()`: các key cũ nếu xuất hiện trong config file user sẽ tự bị bỏ qua (không trong load-key list → không `setattr`). Không cần cleanup riêng — behavior tự nhiên.
 
 **Hệ quả (không cần sửa — đã always-on):**
-- `MemoryWorkspaceManager.__init__` luôn `self._registry.initialize()` (guard `if config.memory_workspaces_enabled` dòng 52 trở thành always-true → xóa guard).
-- `MemoryWorkspaceManager.bind()` xóa dark-mode branch (dòng 65-74).
-- `MemoryWorkspaceManager.set_active_case()` xóa guard dòng 112-113.
+- `MemoryWorkspaceManager.__init__` luôn `self._registry.initialize()` (guard `if config.memory_workspaces_enabled` dòng 52 → xóa guard, gọi `initialize()` unconditionally).
+- `MemoryWorkspaceManager.bind()` xóa dark-mode branch (dòng 65-74) — luôn đi path `self._resolver.resolve(...)`.
+- `MemoryWorkspaceManager.set_active_case()`: xóa **chỉ guard flag** (dòng 112-113). **GIỮ** guard binding-state (dòng 114-115 `if self._binding is None or state not in {active, provisional} → raise PersistenceDisabled`) — vẫn valid cho identity-failure path.
+- `require_persistent_paths()` (dòng 141-148): **GIỮ nguyên** — guard check binding-state, không liên quan flag. Vẫn raise `PersistenceDisabled` khi chưa bind.
 - `session_controller_base.py:491` xóa `if getattr(self.config, "memory_workspaces_enabled", False)` → luôn gọi `_wire_central_memory()`.
 
 ### Phase 2 — Runtime legacy code cleanup
@@ -90,13 +91,16 @@ Central path kích hoạt qua `memory_workspaces_enabled` flag, hiện `False`.
 **Xóa file hoàn toàn (test feature flag / legacy — vô nghĩa sau cutover):**
 - `tests/memory/test_legacy.py` (importer đã xóa)
 - `tests/memory/test_activation_gate.py` (toàn bộ 5 test đều test `memory_workspaces_enabled` flag: default-disabled, round-trip, invalid-type, manager-init, full-flow — flag không còn)
-- `tests/memory/test_foundation_gate.py` — kiểm tra: dòng 25 `assert config.memory_workspaces_enabled is False`, dòng 35-38 test `_load_persistent_memory`. Nếu cả file chỉ test flag + legacy → xóa; nếu còn test foundation khác → sửa giữ lại.
+- `tests/memory/test_foundation_gate.py` — **sửa có chọn lọc, không xóa file**. File có 3 class: (a) `TestDarkModeGate` (3 test, dòng 19-38) — tất cả test flag/legacy → **xóa cả class**; (b) `TestStableTypes` (6 test, dòng 41-102) — export checks runtime, **giữ nguyên**; (c) `TestEndToEndDarkFlow` — xóa `test_disabled_bind_returns_ephemeral_and_no_paths` (dòng 108-130, test dark-mode), giữ `test_enabled_full_flow` (dòng 132-164, bỏ dòng 139 `config.memory_workspaces_enabled = True`).
 
 **Sửa (xóa flag references, không xóa file):**
 - `tests/memory/test_config.py`: dòng 17 `assert ... is False`, dòng 23-25 test typed-load của flag → xóa các assertion liên quan flag (giữ phần test config khác nếu có).
-- `tests/memory/test_manager.py`: **7 sites** set `config.memory_workspaces_enabled = True` (dòng 68, 85, 98, 115, 133, 145, 165) → xóa tất cả (manager luôn-on sau cutover). Verify test vẫn pass không cần flag.
+- `tests/memory/test_manager.py`:
+  - **Xóa cả class `TestDarkBinding`** (dòng 34-61, 3 test): `test_disabled_config_returns_ephemeral_binding` (sau cutover bind luôn resolve → không còn EPHEMERAL), `test_disabled_config_does_not_create_registry` (manager luôn init registry), `test_require_persistent_paths_fails_in_disabled_mode` (tên sai ngữ nghĩa — guard binding-state vẫn raise khi chưa bind, nhưng "disabled mode" không còn).
+  - Xóa **7 sites** set `config.memory_workspaces_enabled = True` (dòng 68, 85, 98, 115, 133, 145, 165) trong `TestEnabledBinding`+ — manager luôn-on.
+  - Docstring module dòng 1 "dark binding, generation, disabled mode" → cập nhật bỏ "dark/disabled".
 - `tests/memory/test_first_open_regression.py`: 3 sites set flag (dòng 28, 69, 100) → xóa.
-- `tests/memory/test_case_binding.py`: 4 sites (dòng 20, 94 set `True`/`False`) → xóa. Test dòng 94 (`= False`) có thể cần rewrite logic nếu nó verify dark-mode.
+- `tests/memory/test_case_binding.py`: xóa set flag tại dòng 20 (`= True`). **Xóa hẳn test** `test_disabled_config_rejects_case_operations` (dòng 91-97) — nó verify dark-mode raise `PersistenceDisabled`, sau cutover `set_active_case` không còn guard đó nên test vô nghĩa. Giữ các test case-binding khác.
 - `tests/memory/test_case_e2e.py` (dòng 32), `test_case_commands.py` (dòng 53): xóa set flag.
 - `tests/agent/test_memory_cutover.py`: xóa `test_legacy_path_still_works_without_service` (dòng 74-88) + dòng 38 set flag.
 - `tests/agent/test_prompt_cutover.py` (dòng 37): xóa set flag, update cho `build_system_prompt` không còn param `idb_dir`.
