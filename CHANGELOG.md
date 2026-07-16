@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Central memory subsystem (`BinaryMemoryService`) now the sole persistent
+  memory path — SQLite structured facts + `MEMORY.md` managed region.
+
+### Removed
+- Legacy `RIKUGAN.md` runtime read/write. **Legacy `RIKUGAN.md` data is
+  not migrated — the old file is ignored.**
+- `rikugan/memory/legacy.py` importer (clean break, no migration tool).
+- Config flags `memory_workspaces_enabled`, `case_memory_enabled`,
+  `peer_retrieval_enabled` (central memory is always-on).
+
 ## [1.11.0] — 2026-07-16
 
 ### Added — Central Memory Subsystem
