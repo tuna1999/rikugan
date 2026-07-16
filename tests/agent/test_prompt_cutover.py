@@ -34,7 +34,6 @@ def _make_loop_with_central_memory(tmp_path: Path) -> tuple[AgentLoop, BinaryMem
     )
 
     config = RikuganConfig()
-    config.memory_workspaces_enabled = True
     session = SessionState(idb_path=str(tmp_path / "test.i64"))
     provider = MagicMock()
     tools = MagicMock()
@@ -125,11 +124,11 @@ class TestPromptSourceSeparation:
         # The legacy "## Persistent Memory (RIKUGAN.md)" section should NOT appear
         assert "## Persistent Memory (RIKUGAN.md)" not in prompt
 
-    def test_build_system_prompt_falls_back_to_legacy(self, tmp_path: Path) -> None:
-        """Without structured_memory, legacy RIKUGAN.md path is used."""
+    def test_build_system_prompt_no_memory_section_when_empty(self, tmp_path: Path) -> None:
+        """Without structured_memory or manual_memory_notes, no memory section appears."""
         from rikugan.agent.system_prompt import build_system_prompt
 
-        # No structured_memory/manual_memory_notes → legacy path
-        prompt = build_system_prompt(idb_dir="/nonexistent")
-        # No crash, no RIKUGAN.md content (file doesn't exist)
-        assert "## Current Binary" in prompt or len(prompt) > 100
+        prompt = build_system_prompt()
+        # No memory content, but base prompt is present
+        assert "## Persistent Memory (RIKUGAN.md)" not in prompt
+        assert "## Structured Memory" not in prompt

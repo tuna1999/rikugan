@@ -487,12 +487,8 @@ class SessionControllerBase:
             host_name=self.host_name,
         )
 
-        # Inject central memory service when enabled.
-        if getattr(self.config, "memory_workspaces_enabled", False):
-            log_info("Central memory enabled — wiring service into loop")
-            self._wire_central_memory(loop)
-        else:
-            log_debug("Central memory disabled — using legacy RIKUGAN.md path")
+        # Inject central memory service for every agent run.
+        self._wire_central_memory(loop)
 
         self._runner = BackgroundAgentRunner(loop)
         self._runner.start(user_message)
@@ -501,8 +497,9 @@ class SessionControllerBase:
     def _wire_central_memory(self, loop: AgentLoop) -> None:
         """Construct and inject BinaryMemoryService into the loop.
 
-        Called only when ``config.memory_workspaces_enabled`` is True.
-        In dark mode (default), the loop keeps its legacy memory path.
+        Called for every agent run. If identity resolution fails (bind
+        returns ephemeral), this method returns early without injecting
+        a service, so the loop runs without central memory.
         """
         try:
             from ..memory.authority import MemoryAuthorityIssuer

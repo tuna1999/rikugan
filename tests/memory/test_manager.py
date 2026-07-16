@@ -1,16 +1,14 @@
-"""Tests for MemoryWorkspaceManager: dark binding, generation, disabled mode."""
+"""Tests for MemoryWorkspaceManager: binding, generation, persistence."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from rikugan.core.config import RikuganConfig
 from rikugan.memory.identity import (
     ResolutionStatus,
 )
-from rikugan.memory.manager import MemoryWorkspaceManager, PersistenceDisabled
+from rikugan.memory.manager import MemoryWorkspaceManager
 from rikugan.memory.workspace import (
     FilesystemIdentity,
     IdentityRequest,
@@ -31,41 +29,10 @@ def _idb_request(
     )
 
 
-class TestDarkBinding:
-    def test_disabled_config_returns_ephemeral_binding(self, tmp_path: Path) -> None:
-        config = RikuganConfig()
-        config._config_dir = str(tmp_path)
-        manager = MemoryWorkspaceManager(config)
-
-        request = _idb_request(tmp_path / "a.i64", "uuid-a", ("vol", "1"))
-        result = manager.bind(request)
-
-        assert result.status is ResolutionStatus.EPHEMERAL
-        assert result.binding is not None
-        assert result.binding.state == "disabled"
-        assert result.binding.memory_id == ""
-
-    def test_disabled_config_does_not_create_registry(self, tmp_path: Path) -> None:
-        config = RikuganConfig()
-        config._config_dir = str(tmp_path)
-        MemoryWorkspaceManager(config)
-
-        assert not (tmp_path / "memory" / "registry.db").exists()
-
-    def test_require_persistent_paths_fails_in_disabled_mode(self, tmp_path: Path) -> None:
-        config = RikuganConfig()
-        config._config_dir = str(tmp_path)
-        manager = MemoryWorkspaceManager(config)
-
-        with pytest.raises(PersistenceDisabled):
-            manager.require_persistent_paths()
-
-
 class TestEnabledBinding:
     def test_enabled_config_creates_registry_and_resolves(self, tmp_path: Path) -> None:
         config = RikuganConfig()
         config._config_dir = str(tmp_path)
-        config.memory_workspaces_enabled = True
         manager = MemoryWorkspaceManager(config)
 
         request = _idb_request(tmp_path / "a.i64", "uuid-a", ("vol", "1"))
@@ -82,7 +49,6 @@ class TestEnabledBinding:
     def test_run_context_is_frozen_per_run(self, tmp_path: Path) -> None:
         config = RikuganConfig()
         config._config_dir = str(tmp_path)
-        config.memory_workspaces_enabled = True
         manager = MemoryWorkspaceManager(config)
 
         request = _idb_request(tmp_path / "a.i64", "uuid-a", ("vol", "1"))
@@ -95,7 +61,6 @@ class TestEnabledBinding:
     def test_database_generation_increments_on_rebind(self, tmp_path: Path) -> None:
         config = RikuganConfig()
         config._config_dir = str(tmp_path)
-        config.memory_workspaces_enabled = True
         manager = MemoryWorkspaceManager(config)
 
         request1 = _idb_request(tmp_path / "a.i64", "uuid-a", ("vol", "1"))
@@ -112,7 +77,6 @@ class TestEnabledBinding:
     def test_validate_run_context_rejects_stale(self, tmp_path: Path) -> None:
         config = RikuganConfig()
         config._config_dir = str(tmp_path)
-        config.memory_workspaces_enabled = True
         manager = MemoryWorkspaceManager(config)
 
         request = _idb_request(tmp_path / "a.i64", "uuid-a", ("vol", "1"))
@@ -130,7 +94,6 @@ class TestEnabledBinding:
     def test_require_persistent_paths_returns_workspace_paths(self, tmp_path: Path) -> None:
         config = RikuganConfig()
         config._config_dir = str(tmp_path)
-        config.memory_workspaces_enabled = True
         manager = MemoryWorkspaceManager(config)
 
         request = _idb_request(tmp_path / "a.i64", "uuid-a", ("vol", "1"))
@@ -142,7 +105,6 @@ class TestEnabledBinding:
     def test_raw_source_resolves_workspace(self, tmp_path: Path) -> None:
         config = RikuganConfig()
         config._config_dir = str(tmp_path)
-        config.memory_workspaces_enabled = True
         manager = MemoryWorkspaceManager(config)
 
         request = IdentityRequest(
@@ -162,7 +124,6 @@ class TestRunContext:
     def test_context_contains_empty_case_id_by_default(self, tmp_path: Path) -> None:
         config = RikuganConfig()
         config._config_dir = str(tmp_path)
-        config.memory_workspaces_enabled = True
         manager = MemoryWorkspaceManager(config)
 
         request = _idb_request(tmp_path / "a.i64", "uuid-a", ("vol", "1"))

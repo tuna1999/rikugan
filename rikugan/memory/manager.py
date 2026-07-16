@@ -1,19 +1,15 @@
-"""MemoryWorkspaceManager: dark scaffolding facade for the central memory subsystem.
+"""MemoryWorkspaceManager: facade for the central memory subsystem.
 
 This manager wraps the registry, identity resolver, and locator into a single
 controller-owned object. It binds identity evidence to a workspace, tracks
 process-local generations, and produces frozen run contexts.
-
-When ``config.memory_workspaces_enabled`` is False (the current default),
-the manager operates in dark mode: it returns disabled/ephemeral bindings
-and never touches the registry or workspace directories.
 """
 
 from __future__ import annotations
 
 from ..core.config import RikuganConfig
 from .case_repository import CaseRepository
-from .identity import IdentityResolution, MemoryIdentityResolver, ResolutionStatus
+from .identity import IdentityResolution, MemoryIdentityResolver
 from .registry import MemoryRegistry
 from .workspace import (
     IdentityRequest,
@@ -35,8 +31,7 @@ class MemoryWorkspaceManager:
     Parameters
     ----------
     config:
-        RikuganConfig — only ``memory_dir`` and ``memory_workspaces_enabled``
-        are read.
+        RikuganConfig — only ``memory_dir`` is read.
     """
 
     def __init__(self, config: RikuganConfig) -> None:
@@ -49,30 +44,14 @@ class MemoryWorkspaceManager:
         self._case_binding_generation = 0
         self._active_case_id: str = ""
 
-        if config.memory_workspaces_enabled:
-            self._registry.initialize()
+        self._registry.initialize()
 
     def bind(
         self,
         request: IdentityRequest,
         choice: object | None = None,
     ) -> IdentityResolution:
-        """Bind identity evidence to a workspace and return the resolution.
-
-        In dark mode (feature disabled), returns a disabled binding without
-        touching the registry.
-        """
-        if not self._config.memory_workspaces_enabled:
-            self._binding = WorkspaceBinding(
-                memory_id="",
-                state="disabled",
-                display_name=request.display_name,
-            )
-            return IdentityResolution(
-                status=ResolutionStatus.EPHEMERAL,
-                binding=self._binding,
-            )
-
+        """Bind identity evidence to a workspace and return the resolution."""
         resolution = self._resolver.resolve(request, choice)
         if resolution.binding is not None:
             if self._binding is None or resolution.binding.memory_id != self._binding.memory_id:
@@ -109,8 +88,6 @@ class MemoryWorkspaceManager:
         Requires the binary to be a current member of a non-deleted case.
         Increments ``case_binding_generation`` on every change.
         """
-        if not self._config.memory_workspaces_enabled:
-            raise PersistenceDisabled("central memory persistence is unavailable")
         if self._binding is None or self._binding.state not in {"active", "provisional"}:
             raise PersistenceDisabled("no active binary binding")
 

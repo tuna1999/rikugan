@@ -174,7 +174,7 @@ Mọi tool call mutate database đều capture pre-state + build reverse operati
 
 ### Context window
 
-Auto-compaction khi vượt 80% token window. Tóm tắt đi qua `strip_injection_markers()` trước khi lưu. Persistent memory (`RIKUGAN.md` cạnh file IDB) chứa facts do agent `save_memory` ghi, load vào system prompt mỗi session.
+Auto-compaction khi vượt 80% token window. Tóm tắt đi qua `strip_injection_markers()` trước khi lưu. Persistent memory chạy trên **central memory subsystem** (`BinaryMemoryService` — SQLite structured facts + `MEMORY.md` manual notes) luôn-on; agent ghi qua `save_memory` tool, load vào system prompt mỗi session.
 
 ---
 
@@ -206,7 +206,7 @@ Binary được analyze chứa strings, function names, decompiled code — tấ
 | `sanitize_tool_result()` | mọi tool result trước khi append history |
 | `sanitize_mcp_result()` | mọi MCP server response |
 | `sanitize_binary_context()` | binary info trong system prompt |
-| `sanitize_memory()` | nội dung RIKUGAN.md |
+| `sanitize_memory()` | nội dung MEMORY.md (manual notes) |
 | `sanitize_skill_body()` | skill bodies, kể cả user-created |
 | `strip_injection_markers()` | mọi raw binary data tại điểm vào |
 
