@@ -81,12 +81,6 @@ from .turn import TurnEvent, TurnEventType
 
 _MIN_CONTEXT_WINDOW_TOKENS = 8_000
 
-_MEMORY_HEADER = (
-    "# Rikugan Persistent Memory\n\n"
-    "This file persists across sessions. "
-    "The agent reads the first 200 lines into its system prompt.\n\n"
-)
-
 # Backward-compat alias — the canonical key now lives in loop_commands
 # so the parser, the state-only handler, and the prompt builder all
 # share one source of truth.
@@ -246,15 +240,6 @@ def _parse_user_command(user_message: str) -> _ParsedCommand:
         body = stripped[5:].strip() if len(stripped) > 5 else ""
         return _ParsedCommand(message=body, use_a2a_mode=True)
     return _ParsedCommand(message=stripped)
-
-
-def append_to_memory_file(md_path: str, content: str) -> None:
-    """Create RIKUGAN.md with header if missing, then append *content*."""
-    if not os.path.exists(md_path):
-        with open(md_path, "w", encoding="utf-8") as f:
-            f.write(_MEMORY_HEADER)
-    with open(md_path, "a", encoding="utf-8") as f:
-        f.write(content)
 
 
 # Maximum length allowed for a save_memory category token. Anything longer
